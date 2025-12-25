@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -17,105 +16,90 @@ import (
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor Pro v3")
+	myWindow := myApp.NewWindow("Executor Pro (APatch)")
 	myWindow.Resize(fyne.NewSize(600, 450))
 
-	// Elemen Antarmuka
 	outputArea := widget.NewMultiLineEntry()
-	outputArea.SetPlaceHolder("Log output akan muncul di sini...")
-	
-	statusLabel := widget.NewLabel("Status: Siap")
+	statusLabel := widget.NewLabel("Status: Ready")
 
-	// Fungsi Eksekusi
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		
-		statusLabel.SetText("Status: Menyiapkan Sandbox...")
-		outputArea.SetText("Sedang menyalin file ke folder internal...\n")
+		statusLabel.SetText("Status: Copying file...")
+		outputArea.SetText("")
 
-		// 1. Tentukan path aman di folder internal aplikasi
-		// Android melarang eksekusi langsung dari /sdcard meskipun root
-		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "exec_script.sh")
-
-		// 2. Salin isi file
-		out, err := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		if err != nil {
-			outputArea.SetText("Gagal membuat file internal: " + err.Error())
-			return
-		}
-		_, err = io.Copy(out, reader)
+		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "run.sh")
+		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+		io.Copy(out, reader)
 		out.Close()
 
-		if err != nil {
-			outputArea.SetText("Gagal menyalin script: " + err.Error())
-			return
-		}
-
-		// 3. Eksekusi di Goroutine (Mencegah Blank Hitam/Freeze)
 		go func() {
-			statusLabel.SetText("Status: Mengeksekusi (ROOT)...")
+			statusLabel.SetText("Status: Executing ROOT...")
 
-			// Memanggil Superuser (su) untuk menjalankan shell (sh)
-			cmd := exec.Command("su", "-c", "sh "+internalPath)
+			// Gunakan shell interaktif untuk menghindari hang pada APatch
+			cmd := exec.Command("su")
+			
+			// Hubungkan stdin agar kita bisa menyuapkan perintah
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				statusLabel.SetText("Error: Failed to open stdin")
+				return
+			}
 
-			// INJEKSI PATH: Sangat penting agar perintah standar Linux (ls, echo, dll) ditemukan
-			cmd.Env = append(os.Environ(), 
-				"PATH=/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin",
-				"HOME=/data/local/tmp",
-			)
+			// Tangkap output gabungan
+			combinedBuf := &customBuffer{area: outputArea, window: myWindow}
+			cmd.Stdout = combinedBuf
+			cmd.Stderr = combinedBuf
 
-			// Gunakan Buffer untuk menangkap output secara aman
-			var resOut bytes.Buffer
-			cmd.Stdout = &resOut
-			cmd.Stderr = &resOut
+			// Jalankan perintah su
+			if err := cmd.Start(); err != nil {
+				outputArea.SetText("Error starting SU: " + err.Error())
+				return
+			}
 
-			// Menjalankan perintah
-			err := cmd.Run()
+			// Suntikkan perintah ke dalam shell root
+			// Kita tambah 'exit' di akhir agar shell menutup sendiri setelah selesai
+			fmt.Fprintf(stdin, "export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH\n")
+			fmt.Fprintf(stdin, "sh %s\n", internalPath)
+			fmt.Fprintf(stdin, "exit\n")
+			stdin.Close()
 
-			// Kembali ke UI Thread untuk update tampilan
-			myWindow.Canvas().Refresh(outputArea)
+			// Tunggu sampai selesai
+			err = cmd.Wait()
 			
 			if err != nil {
-				outputArea.SetText(fmt.Sprintf("STATUS: ERROR\nLog: %v\n\nOutput Terakhir:\n%s", err, resOut.String()))
-				statusLabel.SetText("Status: Gagal")
+				statusLabel.SetText("Status: Finished with Error")
+				outputArea.Append("\n[Process Exited with Error]\n")
 			} else {
-				if resOut.Len() == 0 {
-					outputArea.SetText("Script berhasil dieksekusi tanpa output teks.")
-				} else {
-					outputArea.SetText(resOut.String())
-				}
-				statusLabel.SetText("Status: Berhasil")
+				statusLabel.SetText("Status: Success")
+				outputArea.Append("\n[Process Finished]\n")
 			}
 		}()
 	}
 
-	// Tombol-tombol
-	btnSelect := widget.NewButton("Pilih & Jalankan Script", func() {
+	btnSelect := widget.NewButton("Pilih Script", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil {
-				dialog.ShowError(err, myWindow)
-				return
-			}
-			if reader == nil {
-				return
-			}
-			executeFile(reader)
+			if reader != nil { executeFile(reader) }
 		}, myWindow)
 		fd.Show()
 	})
 
-	btnClear := widget.NewButton("Bersihkan Log", func() {
-		outputArea.SetText("")
-		statusLabel.SetText("Status: Siap")
-	})
-
-	// Layouting
 	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, btnClear, statusLabel), 
-		nil, nil, nil, 
-		outputArea,
+		container.NewVBox(btnSelect, statusLabel), nil, nil, nil, outputArea,
 	))
-
 	myWindow.ShowAndRun()
+}
+
+// customBuffer untuk update teks secara real-time
+type customBuffer struct {
+	area   *widget.Entry
+	window fyne.Window
+}
+
+func (cb *customBuffer) Write(p []byte) (n int, err error) {
+	text := string(p)
+	cb.area.Append(text)
+	cb.window.Canvas().Refresh(cb.area)
+	return len(p), nil
 }
 
