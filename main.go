@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -16,7 +17,7 @@ import (
 )
 
 /* ===============================
-   BUFFER OUTPUT (FIXED)
+          BUFFER OUTPUT
 ================================ */
 
 type customBuffer struct {
@@ -24,13 +25,13 @@ type customBuffer struct {
 	scroll *container.Scroll
 }
 
-/* --- Hapus ANSI CONTROL (cursor, clear, dll) --- */
-func stripControlANSI(s string) string {
-	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+/* --- HAPUS ANSI KONTROL SAJA (BUKAN WARNA) --- */
+func stripCursorANSI(s string) string {
+	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
 	return re.ReplaceAllString(s, "")
 }
 
-/* --- Map ANSI color → Fyne Theme --- */
+/* --- ANSI COLOR MAP --- */
 func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
@@ -41,18 +42,20 @@ func ansiColor(code string) fyne.ThemeColorName {
 		return theme.ColorNameWarning
 	case "34":
 		return theme.ColorNamePrimary
+	case "36":
+		return theme.ColorNamePrimary
 	default:
 		return theme.ColorNameForeground
 	}
 }
 
-/* --- ANSI → RichText (COLOR ONLY) --- */
+/* --- ANSI → RichText (SUPPORT MULTI CODE) --- */
 func ansiToRich(text string) []widget.RichTextSegment {
 	var segs []widget.RichTextSegment
 	colorNow := theme.ColorNameForeground
 
-	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	matches := re.FindAllStringIndex(text, -1)
+	re := regexp.MustCompile(`\x1b\[([0-9;]+)m`)
+	matches := re.FindAllStringSubmatchIndex(text, -1)
 
 	last := 0
 	for _, m := range matches {
@@ -66,12 +69,16 @@ func ansiToRich(text string) []widget.RichTextSegment {
 			})
 		}
 
-		code := text[m[0]+2 : m[1]-1]
-		if code == "0" {
-			colorNow = theme.ColorNameForeground
-		} else {
-			colorNow = ansiColor(code)
+		codes := strings.Split(text[m[2]:m[3]], ";")
+		colorNow = theme.ColorNameForeground
+		for _, c := range codes {
+			if c == "0" {
+				colorNow = theme.ColorNameForeground
+			} else {
+				colorNow = ansiColor(c)
+			}
 		}
+
 		last = m[1]
 	}
 
@@ -87,11 +94,12 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	return segs
 }
 
-/* --- WRITE OUTPUT --- */
+/* --- WRITE OUTPUT (URUTAN BENAR) --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
-	text := stripControlANSI(string(p))
+	raw := string(p)
+	raw = stripCursorANSI(raw)
 
-	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(text)...)
+	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(raw)...)
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
 
@@ -104,22 +112,21 @@ func (cb *customBuffer) Write(p []byte) (int, error) {
 
 func main() {
 	a := app.New()
+	a.Settings().SetTheme(theme.DarkTheme())
+
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
-	/* OUTPUT */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff // <<< PENTING (BIAR ASCII TIDAK PECAH)
+	output.Wrapping = fyne.TextWrapOff
 	scroll := container.NewScroll(output)
 
-	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik input lalu Enter...")
 
 	status := widget.NewLabel("Status: Siap")
 	var stdin io.WriteCloser
 
-	/* EXEC FILE */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -160,25 +167,22 @@ func main() {
 		}()
 	}
 
-	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
-			output.Segments = append(output.Segments,
-				&widget.TextSegment{
-					Text: "> " + input.Text + "\n",
-					Style: widget.RichTextStyle{
-						ColorName: theme.ColorNamePrimary,
-						TextStyle: fyne.TextStyle{Monospace: true},
-					},
-				})
+			output.Segments = append(output.Segments, &widget.TextSegment{
+				Text: "> " + input.Text + "\n",
+				Style: widget.RichTextStyle{
+					ColorName: theme.ColorNamePrimary,
+					TextStyle: fyne.TextStyle{Monospace: true},
+				},
+			})
 			output.Refresh()
 			input.SetText("")
 		}
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI */
 	w.SetContent(container.NewBorder(
 		container.NewVBox(
 			widget.NewButton("Pilih File", func() {
