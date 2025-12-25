@@ -21,7 +21,6 @@ import (
 )
 
 // --- KONFIGURASI WARNA ANSI ---
-// Map warna manual agar tidak ketergantungan library luar
 var ansiColors = map[int]color.Color{
 	30: color.RGBA{128, 128, 128, 255}, // Black/Gray
 	31: color.RGBA{255, 80, 80, 255},   // Red
@@ -48,12 +47,11 @@ type VirtualTerminal struct {
 	scroll *container.Scroll
 	mutex  sync.Mutex
 
-	// Cursor Position
+	// Posisi Kursor
 	row int
 	col int
 
-	// Simpan warna sebagai variabel biasa (bukan struct TextGridStyle)
-	// Ini menghindari error "invalid composite literal"
+	// Simpan warna saat ini (Foreground & Background)
 	currFg color.Color
 	currBg color.Color
 }
@@ -80,7 +78,7 @@ func (vt *VirtualTerminal) Clear() {
 	vt.mutex.Lock()
 	defer vt.mutex.Unlock()
 	
-	// Reset Grid
+	// Reset Grid dengan teks kosong
 	vt.grid.SetText("")
 	vt.row = 0
 	vt.col = 0
@@ -89,7 +87,7 @@ func (vt *VirtualTerminal) Clear() {
 	vt.grid.Refresh()
 }
 
-// Core Logic: Menulis byte stream ke Grid
+// Core Logic: Menulis byte stream ke Grid (Tanpa Regex)
 func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 	vt.mutex.Lock()
 	defer vt.mutex.Unlock()
@@ -106,20 +104,22 @@ func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 		if char == '\x1b' {
 			// Cari akhir sequence (biasanya huruf m, J, H, K)
 			endIdx := i + 1
+			foundEnd := false
 			for endIdx < lenRunes {
 				c := runes[endIdx]
 				// ANSI command biasanya huruf a-z atau A-Z
 				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+					foundEnd = true
 					endIdx++
 					break
 				}
 				endIdx++
 			}
 			
-			// Ambil kode ANSI (misal: "[31m")
-			if endIdx <= lenRunes {
-				ansiSeq := string(runes[i+1 : endIdx]) // skip \x1b
-				vt.handleAnsi(ansiSeq)
+			if foundEnd {
+				ansiSeq := string(runes[i+1 : endIdx-1]) // Ambil isi antara [ dan huruf
+				cmd := runes[endIdx-1]                   // Huruf perintah
+				vt.handleAnsi(ansiSeq, cmd)
 				i = endIdx
 				continue
 			}
@@ -160,22 +160,21 @@ func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Helper untuk menaruh 1 karakter di grid
+// Helper untuk menaruh 1 karakter di grid dengan Style yang benar
 func (vt *VirtualTerminal) putChar(r rune) {
 	// Pastikan Baris Cukup
 	for len(vt.grid.Rows) <= vt.row {
-		// Tambah baris kosong
 		vt.grid.Rows = append(vt.grid.Rows, widget.TextGridRow{})
 	}
 
-	// Pastikan Kolom Cukup (isi spasi jika loncat)
+	// Pastikan Kolom Cukup
 	rowCells := vt.grid.Rows[vt.row].Cells
 	for len(rowCells) <= vt.col {
 		rowCells = append(rowCells, widget.TextGridCell{Rune: ' '})
 	}
 
-	// Buat Style baru saat ini juga (Local Scope)
-	// Ini trik untuk menghindari error "Composite Literal" di struct global
+	// Buat Style baru untuk sel ini
+	// PENTING: Kita buat struct literal di sini agar tidak error
 	style := widget.TextGridStyle{
 		FGColor: vt.currFg,
 		BGColor: vt.currBg,
@@ -193,17 +192,10 @@ func (vt *VirtualTerminal) putChar(r rune) {
 }
 
 // Parser ANSI Sederhana
-func (vt *VirtualTerminal) handleAnsi(seq string) {
-	if len(seq) < 2 { return }
-	
-	cmd := seq[len(seq)-1] // Huruf terakhir (m, J, dll)
-	
-	// Hapus '[' di awal dan huruf perintah di akhir untuk ambil angka
-	paramRaw := seq
+func (vt *VirtualTerminal) handleAnsi(paramRaw string, cmd rune) {
+	// Hapus '[' di awal jika ada
 	if strings.HasPrefix(paramRaw, "[") {
-		paramRaw = paramRaw[1 : len(paramRaw)-1]
-	} else {
-		return 
+		paramRaw = paramRaw[1:]
 	}
 
 	switch cmd {
@@ -212,6 +204,7 @@ func (vt *VirtualTerminal) handleAnsi(seq string) {
 		for _, p := range parts {
 			val, _ := strconv.Atoi(p)
 			if val == 0 {
+				// Reset
 				vt.currFg = color.White
 				vt.currBg = color.Transparent
 			} else if val >= 30 && val <= 37 { // FG Color
@@ -225,7 +218,6 @@ func (vt *VirtualTerminal) handleAnsi(seq string) {
 		}
 	case 'J': // Clear Screen
 		if strings.Contains(paramRaw, "2") {
-			// Clear logic
 			vt.grid.SetText("")
 			vt.row = 0
 			vt.col = 0
@@ -244,7 +236,6 @@ func main() {
 	term := NewVirtualTerminal()
 
 	// 2. Background Hitam Pekat (PENTING untuk TextGrid)
-	// Kita gunakan Stack: Paling bawah Rectangle Hitam, Paling atas Terminal Scroll
 	bgRect := canvas.NewRectangle(color.RGBA{10, 10, 10, 255})
 	
 	// Layout Terminal Area (Stack menumpuk objek)
@@ -278,7 +269,7 @@ func main() {
 			}()
 			copyCmd.Run()
 
-			// Beri jeda sedikit
+			// Beri jeda sedikit agar file siap
 			time.Sleep(500 * time.Millisecond)
 
 			statusLabel.SetText("Running...")
