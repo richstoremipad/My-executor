@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"fyne.io"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
@@ -22,18 +23,16 @@ type customBuffer struct {
 	scroll   *container.Scroll
 }
 
-// Map warna ANSI ke Nama Warna Tema (Agar tidak error build)
 var colorMap = map[string]fyne.ThemeColorName{
 	"31": theme.ColorNameError,   // Merah
 	"32": theme.ColorNameSuccess, // Hijau
 	"33": theme.ColorNameWarning, // Kuning
 	"34": theme.ColorNamePrimary, // Biru
+	"36": theme.ColorNamePrimary, // Cyan
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	text := string(p)
-	
-	// Regex untuk menangkap kode warna ANSI
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)m`)
 	parts := re.Split(text, -1)
 	codes := re.FindAllStringSubmatch(text, -1)
@@ -42,12 +41,11 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 
 	for i, part := range parts {
 		if part != "" {
-			// Ganti teks Expires secara otomatis
+			// Manipulasi teks Expires
 			if strings.Contains(strings.ToLower(part), "expires:") {
 				part = regexp.MustCompile(`(?i)Expires:.*`).ReplaceAllString(part, "Expires: 99 days")
 			}
 
-			// Tambahkan teks dengan warna yang sesuai ke segmen
 			cb.richText.Segments = append(cb.richText.Segments, &widget.TextSegment{
 				Text: part,
 				Style: widget.RichTextStyle{
@@ -56,7 +54,6 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 				},
 			})
 		}
-
 		if i < len(codes) {
 			code := codes[i][1]
 			if val, ok := colorMap[code]; ok {
@@ -66,8 +63,6 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 			}
 		}
 	}
-
-	// Refresh UI agar teks muncul (Mencegah layar blank)
 	cb.richText.Refresh()
 	cb.scroll.ScrollToBottom()
 	return len(p), nil
@@ -78,7 +73,6 @@ func main() {
 	myWindow := myApp.NewWindow("Root Executor Color Fix")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Menggunakan RichText agar bisa berwarna
 	outputRich := widget.NewRichText()
 	outputRich.Wrapping = fyne.TextWrapBreak
 	logScroll := container.NewScroll(outputRich)
@@ -90,19 +84,29 @@ func main() {
 	var stdinPipe io.WriteCloser
 
 	executeFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close()
-		statusLabel.SetText("Status: Menjalankan...")
-		outputRich.Segments = nil // Clear log
+		statusLabel.SetText("Status: Menyiapkan File...")
+		outputRich.Segments = nil
 		outputRich.Refresh()
 
-		targetPath := "/data/local/tmp/temp_exec"
+		// Gunakan path absolut yang valid di Android
+		targetPath := "/data/local/tmp/exec_file"
 		data, _ := io.ReadAll(reader)
-		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		reader.Close()
 
 		go func() {
-			// Copy file ke folder sistem agar bisa dieksekusi
-			exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath).Run()
+			// Tulis file menggunakan shell root agar izin tepat
+			// Menggunakan printf untuk menghindari masalah karakter khusus
+			writeCmd := exec.Command("su", "-c", fmt.Sprintf("cat > %s && chmod 777 %s", targetPath, targetPath))
+			writeCmd.Stdin = bytes.NewReader(data)
+			if err := writeCmd.Run(); err != nil {
+				statusLabel.SetText("Status: Gagal menulis file")
+				return
+			}
 
+			statusLabel.SetText("Status: Berjalan...")
+			
+			// Deteksi apakah binary atau script
+			isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", targetPath)
@@ -110,8 +114,7 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 
-			// TERM=xterm agar script mengeluarkan warna ANSI
-			cmd.Env = append(os.Environ(), "TERM=xterm")
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PATH=/system/bin:/system/xbin:/data/local/tmp")
 			stdinPipe, _ = cmd.StdinPipe()
 			
 			buf := &customBuffer{richText: outputRich, scroll: logScroll}
@@ -120,7 +123,9 @@ func main() {
 
 			err := cmd.Run()
 			if err != nil {
-				statusLabel.SetText("Status: Error")
+				statusLabel.SetText("Status: Berhenti (Error)")
+				// Tampilkan detail error jika gagal jalan
+				fmt.Fprintf(buf, "\n\x1b[31m[Error]: %v\x1b[0m\n", err)
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
