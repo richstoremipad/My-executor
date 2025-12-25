@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -14,92 +15,102 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-func main() {
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Executor Pro (APatch)")
-	myWindow.Resize(fyne.NewSize(600, 450))
-
-	outputArea := widget.NewMultiLineEntry()
-	statusLabel := widget.NewLabel("Status: Ready")
-
-	executeFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close()
-		
-		statusLabel.SetText("Status: Copying file...")
-		outputArea.SetText("")
-
-		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "run.sh")
-		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		io.Copy(out, reader)
-		out.Close()
-
-		go func() {
-			statusLabel.SetText("Status: Executing ROOT...")
-
-			// Gunakan shell interaktif untuk menghindari hang pada APatch
-			cmd := exec.Command("su")
-			
-			// Hubungkan stdin agar kita bisa menyuapkan perintah
-			stdin, err := cmd.StdinPipe()
-			if err != nil {
-				statusLabel.SetText("Error: Failed to open stdin")
-				return
-			}
-
-			// Tangkap output gabungan
-			combinedBuf := &customBuffer{area: outputArea, window: myWindow}
-			cmd.Stdout = combinedBuf
-			cmd.Stderr = combinedBuf
-
-			// Jalankan perintah su
-			if err := cmd.Start(); err != nil {
-				outputArea.SetText("Error starting SU: " + err.Error())
-				return
-			}
-
-			// Suntikkan perintah ke dalam shell root
-			// Kita tambah 'exit' di akhir agar shell menutup sendiri setelah selesai
-			fmt.Fprintf(stdin, "export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH\n")
-			fmt.Fprintf(stdin, "sh %s\n", internalPath)
-			fmt.Fprintf(stdin, "exit\n")
-			stdin.Close()
-
-			// Tunggu sampai selesai
-			err = cmd.Wait()
-			
-			if err != nil {
-				statusLabel.SetText("Status: Finished with Error")
-				outputArea.Append("\n[Process Exited with Error]\n")
-			} else {
-				statusLabel.SetText("Status: Success")
-				outputArea.Append("\n[Process Finished]\n")
-			}
-		}()
-	}
-
-	btnSelect := widget.NewButton("Pilih Script", func() {
-		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if reader != nil { executeFile(reader) }
-		}, myWindow)
-		fd.Show()
-	})
-
-	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, statusLabel), nil, nil, nil, outputArea,
-	))
-	myWindow.ShowAndRun()
-}
-
-// customBuffer untuk update teks secara real-time
+// customBuffer digunakan untuk menangkap output dan memperbarui UI secara real-time
 type customBuffer struct {
 	area   *widget.Entry
 	window fyne.Window
 }
 
+// Fungsi untuk menghapus kode warna ANSI (seperti [1;36m) agar teks bersih
+func cleanAnsi(str string) string {
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	return ansi.ReplaceAllString(str, "")
+}
+
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	text := string(p)
-	cb.area.Append(text)
+	// Bersihkan teks dari kode warna sebelum ditampilkan
+	cleanText := cleanAnsi(string(p))
+	cb.area.Append(cleanText)
+	// Paksa UI untuk refresh agar log mengalir ke bawah
 	cb.window.Canvas().Refresh(cb.area)
 	return len(p), nil
+}
+
+func main() {
+	myApp := app.New()
+	myWindow := myApp.NewWindow("Root Executor Pro (Stabil)")
+	myWindow.Resize(fyne.NewSize(600, 500))
+
+	// UI Elements
+	outputArea := widget.NewMultiLineEntry()
+	outputArea.TextStyle = fyne.TextStyle{Monospace: true} // Gunakan font terminal
+	
+	statusLabel := widget.NewLabel("Status: Siap")
+
+	executeFile := func(reader fyne.URIReadCloser) {
+		defer reader.Close()
+		
+		statusLabel.SetText("Status: Menyiapkan file...")
+		outputArea.SetText("") // Bersihkan log lama setiap kali mulai
+
+		// Simpan ke folder internal agar bisa dieksekusi
+		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "temp_script.sh")
+		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+		io.Copy(out, reader)
+		out.Close()
+
+		go func() {
+			statusLabel.SetText("Status: Mengeksekusi ROOT...")
+
+			// Gunakan 'su -c' dengan perintah tunggal untuk mencegah looping shell
+			// TERM=dumb memberitahu sistem bahwa kita tidak mendukung terminal interaktif
+			cmd := exec.Command("su", "-c", "sh "+internalPath)
+			cmd.Env = []string{
+				"PATH=/system/bin:/system/xbin:/vendor/bin:/product/bin",
+				"TERM=dumb",
+				"HOME=/data/local/tmp",
+			}
+
+			// Gunakan custom buffer untuk output real-time
+			combinedBuf := &customBuffer{area: outputArea, window: myWindow}
+			cmd.Stdout = combinedBuf
+			cmd.Stderr = combinedBuf
+
+			// Jalankan perintah
+			err := cmd.Run()
+			
+			if err != nil {
+				statusLabel.SetText("Status: Selesai dengan Error")
+				outputArea.Append("\n[Proses Berhenti: " + err.Error() + "]\n")
+			} else {
+				statusLabel.SetText("Status: Selesai")
+				outputArea.Append("\n[Proses Selesai]\n")
+			}
+		}()
+	}
+
+	// Buttons
+	btnSelect := widget.NewButton("Pilih & Jalankan Script", func() {
+		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+			if reader != nil {
+				executeFile(reader)
+			}
+		}, myWindow)
+		fd.Show()
+	})
+
+	btnClear := widget.NewButton("Bersihkan Layar", func() {
+		outputArea.SetText("")
+		statusLabel.SetText("Status: Siap")
+	})
+
+	// Layout
+	myWindow.SetContent(container.NewBorder(
+		container.NewVBox(btnSelect, btnClear, statusLabel), 
+		nil, nil, nil, 
+		outputArea,
+	))
+
+	myWindow.ShowAndRun()
 }
 
