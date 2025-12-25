@@ -30,20 +30,19 @@ type Terminal struct {
 	curCol   int
 	curStyle *widget.CustomTextGridStyle
 	mutex    sync.Mutex
-	reAnsi   *regexp.Regexp 
+	reAnsi   *regexp.Regexp
 }
 
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
-	g.ShowLineNumbers = false 
-	
+	g.ShowLineNumbers = false
+
 	// Default Style: Putih (Foreground)
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
 
-	// Regex Menangkap ESC + [ + parameter + Command
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 
 	return &Terminal{
@@ -56,23 +55,22 @@ func NewTerminal() *Terminal {
 	}
 }
 
-// Map Kode Warna ANSI
 func ansiToColor(code string) color.Color {
 	switch code {
 	case "30", "90": return color.Gray{Y: 100}
-	case "31", "91": return theme.ErrorColor()   // Merah
-	case "32", "92": return theme.SuccessColor() // Hijau
-	case "33", "93": return theme.WarningColor() // Kuning
-	case "34", "94": return theme.PrimaryColor() // Biru
-	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Ungu
-	case "36", "96": return theme.PrimaryColor() // Cyan
-	case "37", "97": return theme.ForegroundColor() // Putih
-	default: return nil 
+	case "31", "91": return theme.ErrorColor()
+	case "32", "92": return theme.SuccessColor()
+	case "33", "93": return theme.WarningColor()
+	case "34", "94": return theme.PrimaryColor()
+	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
+	case "36", "96": return theme.PrimaryColor()
+	case "37", "97": return theme.ForegroundColor()
+	default: return nil
 	}
 }
 
 func (t *Terminal) Clear() {
-	t.grid.SetText("") 
+	t.grid.SetText("")
 	t.curRow = 0
 	t.curCol = 0
 }
@@ -82,7 +80,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	defer t.mutex.Unlock()
 
 	raw := string(p)
-	raw = strings.ReplaceAll(raw, "\r\n", "\n") 
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
@@ -96,7 +94,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			t.printText(raw[:loc[0]])
 		}
 
-		ansiCode := raw[loc[0]:loc[1]] 
+		ansiCode := raw[loc[0]:loc[1]]
 		t.handleAnsiCode(ansiCode)
 
 		raw = raw[loc[1]:]
@@ -107,15 +105,14 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Logika Handler ANSI
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
-	
+
 	content := codeSeq[2 : len(codeSeq)-1]
-	command := codeSeq[len(codeSeq)-1] 
+	command := codeSeq[len(codeSeq)-1]
 
 	switch command {
-	case 'm': // Ganti Warna
+	case 'm':
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
@@ -127,11 +124,11 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 				}
 			}
 		}
-	case 'J': // Clear Screen
+	case 'J':
 		if strings.Contains(content, "2") {
-			t.Clear() 
+			t.Clear()
 		}
-	case 'H': // Cursor Home
+	case 'H':
 		t.curRow = 0
 		t.curCol = 0
 	}
@@ -145,7 +142,7 @@ func (t *Terminal) printText(text string) {
 			continue
 		}
 		if char == '\r' {
-			t.curCol = 0 
+			t.curCol = 0
 			continue
 		}
 
@@ -160,8 +157,8 @@ func (t *Terminal) printText(text string) {
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
 
-		cellStyle := *t.curStyle 
-		
+		cellStyle := *t.curStyle
+
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
 			Style: &cellStyle,
@@ -181,14 +178,26 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
-	/* --- KONFIRMASI KELUAR (FITUR BARU) --- */
-	w.SetCloseIntercept(func() {
-		dialog.ShowConfirm("Konfirmasi Keluar", "Apakah Anda yakin ingin keluar?", func(ok bool) {
+	/* --- LOGIKA KONFIRMASI KELUAR (FIX ANDROID BACK) --- */
+	
+	// Fungsi wrapper agar bisa dipanggil dari tombol Back maupun Close Window
+	askToQuit := func() {
+		dialog.ShowConfirm("Konfirmasi Keluar", "Yakin ingin menutup aplikasi?", func(ok bool) {
 			if ok {
-				w.SetCloseIntercept(nil) // Lepas intercept agar window bisa close
-				w.Close()
+				a.Quit() // Gunakan a.Quit() agar benar-benar mati
 			}
 		}, w)
+	}
+
+	// 1. Intercept tombol Close (X) di Desktop
+	w.SetCloseIntercept(askToQuit)
+
+	// 2. Intercept tombol Hardware Back di Android (KeyEscape)
+	w.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
+		// Android Back Button biasanya dipetakan ke KeyEscape di Fyne
+		if k.Name == fyne.KeyEscape {
+			askToQuit()
+		}
 	})
 
 	/* TERMINAL SETUP */
@@ -224,15 +233,14 @@ func main() {
 
 			status.SetText("Status: Berjalan")
 
-			// COMMAND EXECUTION
 			cmdStr := fmt.Sprintf("stty raw -echo; sh %s", target)
 			if isBinary {
 				cmdStr = target
 			}
 
 			cmd := exec.Command("su", "-c", cmdStr)
-
-			// INJECT TERM variable (PENTING UNTUK WARNA)
+			
+			// Inject variable TERM agar warna keluar
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
@@ -240,7 +248,7 @@ func main() {
 			cmd.Stderr = term
 
 			err := cmd.Run()
-			
+
 			if err != nil {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
@@ -279,10 +287,10 @@ func main() {
 	bottomControl := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
 
 	w.SetContent(container.NewBorder(
-		topControl,    
-		bottomControl, 
-		nil, nil,      
-		term.scroll,   
+		topControl,
+		bottomControl,
+		nil, nil,
+		term.scroll,
 	))
 
 	w.ShowAndRun()
