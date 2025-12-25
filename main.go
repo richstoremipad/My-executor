@@ -20,34 +20,7 @@ import (
 )
 
 /* ==========================================
-   1. CUSTOM INPUT (AGAR BACK KEY TERDETEKSI SAAT NGETIK)
-========================================== */
-
-type BackButtonEntry struct {
-	widget.Entry
-	onBack func()
-}
-
-func NewBackButtonEntry(onBack func()) *BackButtonEntry {
-	entry := &BackButtonEntry{onBack: onBack}
-	entry.ExtendBaseWidget(entry)
-	return entry
-}
-
-func (e *BackButtonEntry) TypedKey(key *fyne.KeyEvent) {
-	// Di Android, Back Button = KeyEscape
-	if key.Name == fyne.KeyEscape {
-		if e.onBack != nil {
-			e.onBack()
-		}
-		// Return agar tidak lanjut ke default handler (menutup keyboard tanpa exit)
-		return 
-	}
-	e.Entry.TypedKey(key)
-}
-
-/* ==========================================
-   2. TERMINAL WIDGET
+   TERMINAL WIDGET (TextGrid + ANSI Color Fix)
 ========================================== */
 
 type Terminal struct {
@@ -64,11 +37,13 @@ func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
 
+	// Default Style: Teks Putih/Abu, Background Transparan
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
 
+	// Regex untuk menangkap kode ANSI (Warna & Kontrol)
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 
 	return &Terminal{
@@ -81,17 +56,31 @@ func NewTerminal() *Terminal {
 	}
 }
 
+// Map Kode Warna ANSI agar mirip MT Manager
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30", "90": return color.Gray{Y: 100}
-	case "31", "91": return theme.ErrorColor()
-	case "32", "92": return theme.SuccessColor()
-	case "33", "93": return theme.WarningColor()
-	case "34", "94": return theme.PrimaryColor()
-	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36", "96": return theme.PrimaryColor()
-	case "37", "97": return theme.ForegroundColor()
-	default: return nil
+	// Standard Colors (30-37)
+	case "30": return color.Gray{Y: 100}                 // Black/Dark Grey
+	case "31": return theme.ErrorColor()                 // Red
+	case "32": return theme.SuccessColor()               // Green
+	case "33": return theme.WarningColor()               // Yellow/Orange
+	case "34": return theme.PrimaryColor()               // Blue
+	case "35": return color.RGBA{200, 0, 200, 255}       // Magenta
+	case "36": return color.RGBA{0, 255, 255, 255}       // Cyan (XFILES Blue)
+	case "37": return theme.ForegroundColor()            // White
+
+	// Bright/Bold Colors (90-97) - Sering dipakai MT Manager
+	case "90": return color.Gray{Y: 150}                 // Bright Grey
+	case "91": return color.RGBA{255, 100, 100, 255}     // Bright Red
+	case "92": return color.RGBA{100, 255, 100, 255}     // Bright Green
+	case "93": return color.RGBA{255, 255, 100, 255}     // Bright Yellow
+	case "94": return color.RGBA{100, 100, 255, 255}     // Bright Blue
+	case "95": return color.RGBA{255, 100, 255, 255}     // Bright Magenta
+	case "96": return color.RGBA{100, 255, 255, 255}     // Bright Cyan
+	case "97": return color.White                        // Bright White
+
+	// Kode "1" (Bold) kita return nil agar TIDAK mereset warna yang sudah ada
+	default: return nil 
 	}
 }
 
@@ -115,11 +104,17 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			t.printText(raw)
 			break
 		}
+
+		// Cetak teks sebelum kode ANSI
 		if loc[0] > 0 {
 			t.printText(raw[:loc[0]])
 		}
+
+		// Proses kode ANSI
 		ansiCode := raw[loc[0]:loc[1]]
 		t.handleAnsiCode(ansiCode)
+
+		// Lanjut ke sisa string
 		raw = raw[loc[1]:]
 	}
 
@@ -134,23 +129,27 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	command := codeSeq[len(codeSeq)-1]
 
 	switch command {
-	case 'm':
+	case 'm': // Ganti Warna
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
+				// Reset ke default
 				t.curStyle.FGColor = theme.ForegroundColor()
 			} else {
+				// Cek warna
 				col := ansiToColor(part)
 				if col != nil {
+					// HANYA ganti jika col tidak nil.
+					// Ini mencegah kode "1" (Bold) mengubah warna jadi putih.
 					t.curStyle.FGColor = col
 				}
 			}
 		}
-	case 'J':
+	case 'J': // Clear Screen
 		if strings.Contains(content, "2") {
 			t.Clear()
 		}
-	case 'H':
+	case 'H': // Cursor Home
 		t.curRow = 0
 		t.curCol = 0
 	}
@@ -167,16 +166,23 @@ func (t *Terminal) printText(text string) {
 			t.curCol = 0
 			continue
 		}
+
+		// Expand Rows
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
+
+		// Expand Cols
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
+
+		// Copy style value agar warna "menempel" di karakter tersebut
 		cellStyle := *t.curStyle
+		
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
 			Style: &cellStyle,
@@ -195,37 +201,11 @@ func main() {
 
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
-	
-	// [WAJIB UNTUK ANDROID] 
-	// Tanpa ini, Back Button dianggap "Minimize/Home" oleh OS, bukan "Close Window"
-	w.SetMaster() 
-
-	/* --- LOGIKA KELUAR AMAN --- */
-	confirmExit := func() {
-		// Gunakan dialog.ShowConfirm biasa
-		dialog.ShowConfirm("Konfirmasi Keluar", "Apakah Anda yakin ingin keluar?", func(ok bool) {
-			if ok {
-				a.Quit()
-			}
-		}, w)
-	}
-
-	// 1. Intercept Close Request (Saat w.SetMaster aktif, Back akan memicu ini)
-	w.SetCloseIntercept(confirmExit)
-
-	// 2. Global Key Listener (Backup jika fokus ada di canvas/background)
-	w.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
-		if k.Name == fyne.KeyEscape {
-			confirmExit()
-		}
-	})
 
 	/* TERMINAL SETUP */
 	term := NewTerminal()
 
-	/* INPUT SETUP */
-	// Gunakan Custom Entry agar saat mengetik pun Back bisa dicegat
-	input := NewBackButtonEntry(confirmExit)
+	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
 
 	status := widget.NewLabel("Status: Siap")
@@ -260,7 +240,8 @@ func main() {
 			}
 
 			cmd := exec.Command("su", "-c", cmdStr)
-			// PENTING: Inject TERM agar warna keluar
+			
+			// Inject TERM agar script mau mengeluarkan warna
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
@@ -268,6 +249,7 @@ func main() {
 			cmd.Stderr = term
 
 			err := cmd.Run()
+			
 			if err != nil {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
@@ -287,7 +269,7 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT */
+	/* UI LAYOUT (Original) */
 	topControl := container.NewVBox(
 		widget.NewButton("Pilih File", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
