@@ -199,6 +199,8 @@ func main() {
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 
+	var stdin io.WriteCloser // Variable Utama
+
 	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
 	kernelLabel.TextSize = 10; kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -216,7 +218,6 @@ func main() {
 	}
 	updateKernelStatus()
 
-	// --- FUNGSI RUN FILE LOKAL (Memperbaiki Error "bytes" & "layout" unused) ---
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -224,8 +225,6 @@ func main() {
 		
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
-		
-		// "bytes" sekarang terpakai di sini
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		
 		go func() {
@@ -240,7 +239,14 @@ func main() {
 			} else { cmd = exec.Command("su", "-c", "sh "+target) }
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			
-			stdin, _ := cmd.StdinPipe()
+			// --- PERBAIKAN DI SINI ---
+			// Menggunakan '=' (bukan ':=') agar variabel 'stdin' utama terisi
+			var errPipe error
+			stdin, errPipe = cmd.StdinPipe()
+			if errPipe != nil {
+				term.Write([]byte("Error: Failed to create stdin pipe\n"))
+			}
+
 			cmd.Stdout = term; cmd.Stderr = term
 			cmd.Run()
 			
@@ -249,6 +255,15 @@ func main() {
 			stdin = nil
 		}()
 	}
+
+	send := func() {
+		if stdin != nil && input.Text != "" {
+			fmt.Fprintln(stdin, input.Text)
+			term.Write([]byte(fmt.Sprintf("\x1b[36m> %s\x1b[0m\n", input.Text)))
+			input.SetText("")
+		}
+	}
+	input.OnSubmitted = func(string) { send() }
 
 	/* --- AUTO INSTALLER --- */
 	autoInstallKernel := func() {
@@ -331,7 +346,6 @@ func main() {
 		}()
 	}
 
-	/* --- UI LAYOUT --- */
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
@@ -343,21 +357,23 @@ func main() {
 			term.Write(out)
 		}()
 	})
+	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
 
-	// Floating Action Button (Folder) - Ini yang membutuhkan "layout"
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	// Container untuk Header
 	header := container.NewBorder(nil, nil, container.NewVBox(canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), kernelLabel), container.NewHBox(installBtn, checkBtn, clearBtn))
+	inputContainer := container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input))
 	
-	// Layout Utama
-	mainContent := container.NewBorder(container.NewVBox(header, widget.NewSeparator()), nil, nil, nil, term.scroll)
+	mainContent := container.NewBorder(
+		container.NewVBox(header, widget.NewSeparator()), 
+		inputContainer, 
+		nil, nil, 
+		term.scroll,
+	)
 	
-	// Layout Tumpuk (Stack) agar FAB melayang di atas terminal
-	// "layout" sekarang terpakai di sini (layout.NewSpacer)
 	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), fabBtn, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
 	
 	finalLayout := container.NewStack(mainContent, fabContainer)
