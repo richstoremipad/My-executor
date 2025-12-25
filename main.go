@@ -86,7 +86,7 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 func (t *Terminal) printText(text string) {
 	for _, char := range text {
 		if char == '\n' { t.curRow++; t.curCol = 0; continue }
-		if char == '\r' { t.curCol = 0; continue } // Penting untuk Progress Bar
+		if char == '\r' { t.curCol = 0; continue }
 		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{}) }
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
@@ -104,7 +104,6 @@ func (t *Terminal) printText(text string) {
    REAL-TIME PROGRESS LOGIC
 ========================================== */
 
-// Struct untuk menghitung progress download
 type WriteCounter struct {
 	Total         uint64
 	ContentLength uint64
@@ -119,20 +118,13 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 }
 
 func (wc *WriteCounter) PrintProgress() {
-	// Hitung Persentase
 	percent := float64(wc.Total) / float64(wc.ContentLength) * 100
-	
-	// Hitung Ukuran (KB/MB)
 	currentMB := float64(wc.Total) / 1024 / 1024
 	totalMB := float64(wc.ContentLength) / 1024 / 1024
 	statusStr := fmt.Sprintf("%.2f/%.2f MB", currentMB, totalMB)
-
-	if wc.OnProgress != nil {
-		wc.OnProgress(percent, statusStr)
-	}
+	if wc.OnProgress != nil { wc.OnProgress(percent, statusStr) }
 }
 
-// FUNGSI GAMBAR BAR
 func drawRealTimeBar(term *Terminal, percent float64, info string) {
 	barLength := 20
 	filledLength := int((percent * float64(barLength)) / 100)
@@ -140,7 +132,6 @@ func drawRealTimeBar(term *Terminal, percent float64, info string) {
 	for i := 0; i < barLength; i++ {
 		if i < filledLength { bar += "█" } else { bar += "░" }
 	}
-	// \r untuk menimpa baris sebelumnya (Animasi)
 	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%% (%s)   \x1b[0m", bar, percent, info)
 	term.Write([]byte(msg))
 }
@@ -155,55 +146,37 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
-// DOWNLOADER REAL-TIME (PENGGANTI CURL)
 func downloadFileRealTime(url string, filepath string, term *Terminal) error {
-	// Hapus file lama
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 
-	// 1. Setup Client (Anti SSL Error = true)
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Mirip curl -k
-	}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
 
-	// 2. Request Data
 	resp, err := client.Get(url)
 	if err != nil { return err }
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
+	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode) }
 
-	// 3. Siapkan Counter
 	counter := &WriteCounter{
 		ContentLength: uint64(resp.ContentLength),
-		OnProgress: func(p float64, info string) {
-			drawRealTimeBar(term, p, info)
-		},
+		OnProgress: func(p float64, info string) { drawRealTimeBar(term, p, info) },
 	}
 
-	// 4. Buat File Lokal (Di folder tmp aplikasi dulu biar aman permissionnya)
-	// Kita download ke /data/local/tmp/ langsung via Go mungkin permission denied.
-	// Jadi kita download ke folder cache aplikasi dulu, baru move pakai su.
 	localTemp := os.TempDir() + "/kernel_temp.sh"
 	out, err := os.Create(localTemp)
 	if err != nil { return err }
 	
-	// 5. Copy Data (Proses Download Real-Time terjadi di sini)
 	if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
-		out.Close()
-		return err
+		out.Close(); return err
 	}
 	out.Close()
-	term.Write([]byte("\n")) // Newline setelah bar selesai
+	term.Write([]byte("\n"))
 
-	// 6. Pindahkan ke Target menggunakan SU (Root)
 	moveCmd := fmt.Sprintf("cp %s %s && chmod 777 %s", localTemp, filepath, filepath)
 	if err := exec.Command("su", "-c", moveCmd).Run(); err != nil {
 		return fmt.Errorf("Gagal memindahkan file ke sistem")
 	}
-	
 	return nil
 }
 
@@ -243,6 +216,40 @@ func main() {
 	}
 	updateKernelStatus()
 
+	// --- FUNGSI RUN FILE LOKAL (Memperbaiki Error "bytes" & "layout" unused) ---
+	runFile := func(reader fyne.URIReadCloser) {
+		defer reader.Close()
+		term.Clear()
+		status.SetText("Processing File...")
+		
+		data, _ := io.ReadAll(reader)
+		target := "/data/local/tmp/temp_exec"
+		
+		// "bytes" sekarang terpakai di sini
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		
+		go func() {
+			exec.Command("su", "-c", "rm -f "+target).Run()
+			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
+			in, _ := copyCmd.StdinPipe()
+			go func() { defer in.Close(); in.Write(data) }()
+			copyCmd.Run()
+			
+			var cmd *exec.Cmd
+			if isBinary { cmd = exec.Command("su", "-c", target)
+			} else { cmd = exec.Command("su", "-c", "sh "+target) }
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			
+			stdin, _ := cmd.StdinPipe()
+			cmd.Stdout = term; cmd.Stderr = term
+			cmd.Run()
+			
+			term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
+			status.SetText("System: Idle")
+			stdin = nil
+		}()
+	}
+
 	/* --- AUTO INSTALLER --- */
 	autoInstallKernel := func() {
 		term.Clear()
@@ -256,7 +263,6 @@ func main() {
 			term.Write([]byte("\x1b[36m║   REAL-TIME KERNEL DRIVER INSTALLER  ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
 			
-			// Deteksi Versi
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil { term.Write([]byte("\x1b[31m[X] Kernel Error\x1b[0m\n")); return }
 			rawVersion := strings.TrimSpace(string(out))
@@ -265,7 +271,6 @@ func main() {
 			downloadPath := "/data/local/tmp/kernel_installer.sh"
 			var found bool = false
 
-			// Helper Cek URL (Head Request Only - Cepat)
 			checkURL := func(url string) bool {
 				tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 				client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
@@ -274,14 +279,9 @@ func main() {
 				return false
 			}
 
-			// LOGIKA PENCARIAN & DOWNLOAD
-			targets := []string{
-				rawVersion + ".sh", // Full
-			}
-			// Tambah short version
+			targets := []string{rawVersion + ".sh"}
 			parts := strings.Split(rawVersion, "-")
 			if len(parts) > 0 { targets = append(targets, parts[0]+".sh") }
-			// Tambah major version
 			parts = strings.Split(rawVersion, ".")
 			if len(parts) >= 2 { targets = append(targets, parts[0]+"."+parts[1]+".sh") }
 
@@ -291,14 +291,12 @@ func main() {
 				
 				if checkURL(fullURL) {
 					term.Write([]byte("\x1b[32m[FOUND]\x1b[0m\n"))
-					
-					// DOWNLOAD REAL TIME DISINI
 					term.Write([]byte("\n\x1b[97m[*] Starting Download...\x1b[0m\n"))
 					if err := downloadFileRealTime(fullURL, downloadPath, term); err != nil {
 						term.Write([]byte(fmt.Sprintf("\x1b[31m[!] Download Failed: %v\x1b[0m\n", err)))
 					} else {
 						found = true
-						break // Keluar loop jika sukses download
+						break 
 					}
 				} else {
 					term.Write([]byte("\x1b[31m[404]\x1b[0m\n"))
@@ -306,19 +304,17 @@ func main() {
 			}
 
 			if !found {
-				term.Write([]byte("\n\x1b[31m[FATAL] No suitable driver found in repository.\x1b[0m\n"))
+				term.Write([]byte("\n\x1b[31m[FATAL] No suitable driver found.\x1b[0m\n"))
 				status.SetText("System: Failed")
 			} else {
 				term.Write([]byte("\x1b[97m[*] Executing Root Installer...\x1b[0m\n"))
 				term.Write([]byte("----------------------------------------\n"))
 				
-				// Eksekusi
 				cmd := exec.Command("su", "-c", "sh "+downloadPath)
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 				
 				pipeStdin, _ := cmd.StdinPipe()
-				cmd.Stdout = term
-				cmd.Stderr = term // Ini akan menampilkan log error/sukses dari script sh
+				cmd.Stdout = term; cmd.Stderr = term 
 				err = cmd.Run()
 				pipeStdin.Close()
 				
@@ -335,11 +331,10 @@ func main() {
 		}()
 	}
 
-	/* --- UI --- */
+	/* --- UI LAYOUT --- */
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
-	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
 	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
 		go func() { 
@@ -349,9 +344,25 @@ func main() {
 		}()
 	})
 
+	// Floating Action Button (Folder) - Ini yang membutuhkan "layout"
+	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
+	})
+	fabBtn.Importance = widget.HighImportance
+
+	// Container untuk Header
 	header := container.NewBorder(nil, nil, container.NewVBox(canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), kernelLabel), container.NewHBox(installBtn, checkBtn, clearBtn))
-	content := container.NewBorder(container.NewVBox(header, widget.NewSeparator()), nil, nil, nil, term.scroll)
-	w.SetContent(content)
+	
+	// Layout Utama
+	mainContent := container.NewBorder(container.NewVBox(header, widget.NewSeparator()), nil, nil, nil, term.scroll)
+	
+	// Layout Tumpuk (Stack) agar FAB melayang di atas terminal
+	// "layout" sekarang terpakai di sini (layout.NewSpacer)
+	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), fabBtn, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
+	
+	finalLayout := container.NewStack(mainContent, fabContainer)
+
+	w.SetContent(finalLayout)
 	w.ShowAndRun()
 }
 
