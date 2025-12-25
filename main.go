@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"io"
 	"os/exec"
 	"regexp"
@@ -17,6 +18,45 @@ import (
 )
 
 /* ===============================
+      CUSTOM THEME (AGAR RAPAT)
+================================ */
+
+// myTheme digunakan untuk memaksa jarak antar baris (Padding) menjadi 0
+// dan mengecilkan font sedikit agar mirip terminal MT Manager.
+type myTheme struct{}
+
+func (m myTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	return theme.DefaultTheme().Color(name, variant)
+}
+
+func (m myTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (m myTheme) Font(style fyne.TextStyle) fyne.Resource {
+	// Pastikan font Monospace digunakan
+	if style.Monospace {
+		return theme.DefaultTheme().Font(style)
+	}
+	return theme.DefaultTheme().Font(style)
+}
+
+func (m myTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNamePadding:
+		return 0 // PENTING: Menghilangkan jarak antar elemen/baris
+	case theme.SizeNameText:
+		return 12 // Ukuran font sedikit lebih kecil agar muat banyak (Compact)
+	case theme.SizeNameInnerPadding:
+		return 2
+	default:
+		return theme.DefaultTheme().Size(name)
+	}
+}
+
+var _ fyne.Theme = (*myTheme)(nil)
+
+/* ===============================
           BUFFER OUTPUT
 ================================ */
 
@@ -25,15 +65,13 @@ type customBuffer struct {
 	scroll *container.Scroll
 }
 
-/* --- HAPUS ANSI KONTROL (CURSOR, CLEAR) --- */
+/* --- HAPUS ANSI KONTROL --- */
 func stripCursorANSI(s string) string {
-	// Menghapus kode ANSI untuk pergerakan kursor (Up/Down/Clear) 
-	// yang sering membuat tampilan "loncat" atau berantakan
 	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
 	return re.ReplaceAllString(s, "")
 }
 
-/* --- MAP ANSI COLOR → FYNE --- */
+/* --- MAP ANSI COLOR --- */
 func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
@@ -46,7 +84,7 @@ func ansiColor(code string) fyne.ThemeColorName {
 		return theme.ColorNamePrimary
 	case "36":
 		return theme.ColorNamePrimary
-	case "1": // Bold
+	case "1":
 		return theme.ColorNameForeground
 	default:
 		return theme.ColorNameForeground
@@ -58,7 +96,6 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	var segs []widget.RichTextSegment
 	colorNow := theme.ColorNameForeground
 
-	// Regex menangkap kode warna: ESC[...m
 	re := regexp.MustCompile(`\x1b\[([0-9;]+)m`)
 	matches := re.FindAllStringSubmatchIndex(text, -1)
 
@@ -69,7 +106,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 				Text: text[last:m[0]],
 				Style: widget.RichTextStyle{
 					ColorName: colorNow,
-					TextStyle: fyne.TextStyle{Monospace: true}, // Wajib Monospace
+					TextStyle: fyne.TextStyle{Monospace: true},
 				},
 			})
 		}
@@ -100,45 +137,52 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	return segs
 }
 
-/* --- WRITE OUTPUT (LOGIKA FIX RAPAT) --- */
+/* --- WRITE OUTPUT (LOGIKA OVERWRITE) --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
 	raw := string(p)
 
-	// 1. Standarisasi CRLF (\r\n) menjadi LF (\n)
+	// 1. Ubah CRLF jadi LF biasa
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 
-	// 2. Hapus Carriage Return (\r) sisa agar tidak menimpa baris
-	raw = strings.ReplaceAll(raw, "\r", "")
-
-	// 3. [FIX UTAMA] Hapus Double Newline (\n\n) secara agresif.
-	// Jika ada 2 enter berturut-turut, ubah jadi 1 enter.
-	// Ini yang bikin tampilan "renggang" atau ASCII terbelah.
-	for strings.Contains(raw, "\n\n") {
-		raw = strings.ReplaceAll(raw, "\n\n", "\n")
+	// 2. [LOGIKA PENTING] Penanganan \r (Carriage Return)
+	// Script bash sering output: "Loading..." lalu "\rSelesai".
+	// Kita harus memecah berdasarkan baris (\n), lalu di setiap baris
+	// kita pecah berdasarkan \r dan hanya mengambil bagian TERAKHIR.
+	// Ini membuat tampilan jadi satu baris (seperti "✓ Checking...").
+	
+	var cleanLines []string
+	lines := strings.Split(raw, "\n")
+	
+	for _, line := range lines {
+		if strings.Contains(line, "\r") {
+			parts := strings.Split(line, "\r")
+			// Ambil bagian terakhir saja (simulasi overwrite)
+			cleanLines = append(cleanLines, parts[len(parts)-1])
+		} else {
+			cleanLines = append(cleanLines, line)
+		}
 	}
+	// Gabungkan kembali
+	raw = strings.Join(cleanLines, "\n")
 
-	// 4. Bersihkan kode kursor
+	// 3. Hapus ANSI cursor movement
 	raw = stripCursorANSI(raw)
 
 	if raw == "" {
 		return len(p), nil
 	}
 
+	// 4. Konversi ke Segment
 	newSegments := ansiToRich(raw)
 
-	// OPTIMASI: Gabungkan segment jika style (warna) sama dengan segment terakhir.
-	// Ini mencegah rendering Fyne membuat celah antar potongan teks.
+	// Optimasi penggabungan text segment (biar makin rapat)
 	if len(cb.rich.Segments) > 0 {
 		lastIdx := len(cb.rich.Segments) - 1
-		// Cek apakah segment terakhir adalah TextSegment
 		if lastSeg, ok := cb.rich.Segments[lastIdx].(*widget.TextSegment); ok {
-			// Cek segment baru pertama
 			if len(newSegments) > 0 {
 				if firstNewSeg, ok2 := newSegments[0].(*widget.TextSegment); ok2 {
-					// Jika warna sama, gabungkan teksnya
 					if lastSeg.Style == firstNewSeg.Style {
 						lastSeg.Text += firstNewSeg.Text
-						// Hapus segment pertama dari newSegments karena sudah digabung
 						newSegments = newSegments[1:]
 					}
 				}
@@ -146,10 +190,7 @@ func (cb *customBuffer) Write(p []byte) (int, error) {
 		}
 	}
 
-	// Append sisa segment
 	cb.rich.Segments = append(cb.rich.Segments, newSegments...)
-	
-	// Refresh UI
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
 
@@ -162,21 +203,23 @@ func (cb *customBuffer) Write(p []byte) (int, error) {
 
 func main() {
 	a := app.New()
-	a.Settings().SetTheme(theme.DarkTheme())
+	
+	// SET THEME CUSTOM KITA DI SINI
+	a.Settings().SetTheme(&myTheme{})
 
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
 	/* OUTPUT CONFIG */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff // TextWrapOff + Scroll container = Terminal look
+	output.Wrapping = fyne.TextWrapOff 
 	output.Scroll = container.ScrollNone
 	
 	scroll := container.NewScroll(output)
 
 	/* INPUT */
 	input := widget.NewEntry()
-	input.SetPlaceHolder("Ketik perintah/pilihan menu...")
+	input.SetPlaceHolder("Ketik perintah...")
 
 	status := widget.NewLabel("Status: Siap")
 	status.TextStyle = fyne.TextStyle{Bold: true}
@@ -196,7 +239,6 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Copy file
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -208,12 +250,13 @@ func main() {
 			status.SetText("Status: Berjalan")
 
 			var cmd *exec.Cmd
-			// Gunakan sh untuk menjalankan script
+			// Tambahkan stty -echo agar input tidak double, dan sh
+			cmdString := fmt.Sprintf("stty -echo; sh %s", target)
 			if isBinary {
-				cmd = exec.Command("su", "-c", target)
-			} else {
-				cmd = exec.Command("su", "-c", "sh "+target)
+				cmdString = target
 			}
+			
+			cmd = exec.Command("su", "-c", cmdString)
 
 			stdin, _ = cmd.StdinPipe()
 			buf := &customBuffer{rich: output, scroll: scroll}
@@ -237,18 +280,15 @@ func main() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
 			
-			// Tampilkan input user (warna biru)
-			userSeg := &widget.TextSegment{
+			output.Segments = append(output.Segments, &widget.TextSegment{
 				Text: "> " + input.Text + "\n",
 				Style: widget.RichTextStyle{
 					ColorName: theme.ColorNamePrimary,
 					TextStyle: fyne.TextStyle{Monospace: true},
 				},
-			}
-			output.Segments = append(output.Segments, userSeg)
+			})
 			output.Refresh()
 			
-			// Auto scroll
 			cbScroll := &customBuffer{rich: output, scroll: scroll}
 			cbScroll.scroll.ScrollToBottom()
 			
@@ -257,9 +297,7 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT (KEMBALI KE ORIGINAL) */
-	
-	// Tombol disusun Vertikal (VBox) di bagian atas
+	/* UI LAYOUT (VERTIKAL TOMBOL DI ATAS) */
 	topControl := container.NewVBox(
 		widget.NewButton("Pilih File", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
@@ -275,14 +313,13 @@ func main() {
 		status,
 	)
 
-	// Input bar di bagian bawah
 	bottomControl := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
 
 	w.SetContent(container.NewBorder(
-		topControl,    // Atas
-		bottomControl, // Bawah
-		nil, nil,      // Kiri, Kanan
-		scroll,        // Tengah (Isi Log)
+		topControl,    
+		bottomControl, 
+		nil, nil,      
+		scroll,        
 	))
 
 	w.ShowAndRun()
