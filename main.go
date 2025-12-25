@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -17,7 +17,7 @@ import (
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor Pro")
+	myWindow := myApp.NewWindow("Root Executor v2")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
 	outputArea := widget.NewMultiLineEntry()
@@ -29,48 +29,48 @@ func main() {
 		statusLabel.SetText("Status: Menyiapkan Sandbox...")
 		outputArea.SetText("Menyalin file ke internal storage...\n")
 
-		// Path internal agar bisa chmod +x
-		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "script_jalan.sh")
+		// Gunakan folder cache internal aplikasi
+		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "exec_script.sh")
 
-		// Copy file
+		// Proses Copy
 		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 		io.Copy(out, reader)
 		out.Close()
 
-		// Menjalankan di Goroutine agar UI tetap responsif
+		// Jalankan di Background (Goroutine)
 		go func() {
-			statusLabel.SetText("Status: Meminta Akses ROOT...")
+			statusLabel.SetText("Status: Mengeksekusi (ROOT)...")
 			
-			// Perintah su -c yang lebih kuat
-			// Kita bungkus path dengan tanda kutip tunggal untuk menghindari error spasi
-			cmdString := fmt.Sprintf("/system/bin/sh '%s'", internalPath)
+			// Gunakan shell internal secara eksplisit
+			// Bungkus dengan sh -c agar lebih stabil di banyak versi Android
+			cmdString := fmt.Sprintf("sh %s", internalPath)
 			cmd := exec.Command("su", "-c", cmdString)
 
-			output, err := cmd.CombinedOutput()
+			// Gunakan buffer untuk menangkap output agar tidak stuck
+			var resOut bytes.Buffer
+			cmd.Stdout = &resOut
+			cmd.Stderr = &resOut
 
-			// Update tampilan di UI Thread
+			err := cmd.Run()
+
+			// Update UI
 			myWindow.Canvas().Refresh(outputArea)
 			
 			if err != nil {
-				// Cek jika error karena izin root ditolak
-				errMsg := err.Error()
-				if strings.Contains(errMsg, "exit status 1") {
-					errMsg = "Izin ROOT Ditolak atau Script Error"
-				}
-				outputArea.SetText(fmt.Sprintf("STATUS: ERROR\nLOG: %v\n\nOUTPUT:\n%s", errMsg, string(output)))
+				outputArea.SetText(fmt.Sprintf("STATUS: ERROR/STUCK\nLog: %v\n\nOutput Terakhir:\n%s", err, resOut.String()))
 				statusLabel.SetText("Status: Gagal")
 			} else {
-				if len(output) == 0 {
-					outputArea.SetText("Script berhasil dijalankan (Tanpa Output)")
+				if resOut.Len() == 0 {
+					outputArea.SetText("Script selesai tanpa output teks.")
 				} else {
-					outputArea.SetText(string(output))
+					outputArea.SetText(resOut.String())
 				}
-				statusLabel.SetText("Status: Sukses")
+				statusLabel.SetText("Status: Berhasil")
 			}
 		}()
 	}
 
-	btnSelect := widget.NewButton("Pilih File .sh", func() {
+	btnSelect := widget.NewButton("Pilih Script .sh", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if reader != nil {
 				executeFile(reader)
@@ -79,8 +79,14 @@ func main() {
 		fd.Show()
 	})
 
+	btnClear := widget.NewButton("Bersihkan Log", func() {
+		outputArea.SetText("")
+		statusLabel.SetText("Status: Siap")
+	})
+
 	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, statusLabel), nil, nil, nil, outputArea,
+		container.NewVBox(btnSelect, btnClear, statusLabel), nil, nil, nil, outputArea,
 	))
 	myWindow.ShowAndRun()
 }
+
