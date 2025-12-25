@@ -32,7 +32,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL UI LOGIC
+   TERMINAL UI LOGIC (FIXED COLORS & CLEAR)
 ========================================== */
 type Terminal struct {
 	grid     *widget.TextGrid
@@ -48,6 +48,7 @@ func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
 	defStyle := &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent}
+	// Regex yang lebih lengkap untuk menangkap Clear Screen [2J dan Warna [m
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	return &Terminal{grid: g, scroll: container.NewScroll(g), curStyle: defStyle, reAnsi: re}
 }
@@ -59,27 +60,73 @@ func (t *Terminal) Clear() {
 
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock(); defer t.mutex.Unlock()
-	raw := strings.ReplaceAll(string(p), "\r\n", "\n")
+	
+	// Handle Carriage Return (\r) manual agar progress bar bisa menimpa teks
+	raw := string(p)
+	if strings.Contains(raw, "\r") && !strings.Contains(raw, "\n") {
+		// Ini mode progress bar: Reset kolom ke 0 tapi jangan ganti baris
+		t.curCol = 0
+		// Hapus sisa baris (opsional, biar bersih)
+		t.cleanCurrentLine() 
+	}
+	
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
-		if loc == nil { t.printText(raw); break }
-		if loc[0] > 0 { t.printText(raw[:loc[0]]) }
-		t.handleAnsiCode(raw[loc[0]:loc[1]])
+		if loc == nil { 
+			t.printText(raw)
+			break 
+		}
+		if loc[0] > 0 { 
+			t.printText(raw[:loc[0]]) 
+		}
+		
+		// Proses Kode ANSI (Warna / Clear)
+		ansiCode := raw[loc[0]:loc[1]]
+		t.handleAnsiCode(ansiCode)
+		
 		raw = raw[loc[1]:]
 	}
 	t.grid.Refresh(); t.scroll.ScrollToBottom()
 	return len(p), nil
 }
 
+// Membersihkan sisa baris (agar animasi bar tidak meninggalkan jejak)
+func (t *Terminal) cleanCurrentLine() {
+	if t.curRow < len(t.grid.Rows) {
+		row := t.grid.Rows[t.curRow]
+		for i := t.curCol; i < len(row.Cells); i++ {
+			t.grid.SetCell(t.curRow, i, widget.TextGridCell{Rune: ' '})
+		}
+	}
+}
+
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
-	if codeSeq[len(codeSeq)-1] == 'm' {
-		if content == "0" || content == "" { t.curStyle.FGColor = theme.ForegroundColor() }
-		if content == "31" || content == "91" { t.curStyle.FGColor = theme.ErrorColor() }
-		if content == "32" || content == "92" { t.curStyle.FGColor = theme.SuccessColor() }
-		if content == "33" || content == "93" { t.curStyle.FGColor = theme.WarningColor() }
-		if content == "36" || content == "96" { t.curStyle.FGColor = color.RGBA{0, 255, 255, 255} }
+	command := codeSeq[len(codeSeq)-1]
+
+	switch command {
+	case 'm': // Ganti Warna
+		parts := strings.Split(content, ";")
+		for _, part := range parts {
+			if part == "" || part == "0" { t.curStyle.FGColor = theme.ForegroundColor() }
+			if part == "31" || part == "91" { t.curStyle.FGColor = theme.ErrorColor() } // Merah
+			if part == "32" || part == "92" { t.curStyle.FGColor = theme.SuccessColor() } // Hijau
+			if part == "33" || part == "93" { t.curStyle.FGColor = theme.WarningColor() } // Kuning
+			if part == "34" || part == "94" { t.curStyle.FGColor = theme.PrimaryColor() } // Biru
+			if part == "36" || part == "96" { t.curStyle.FGColor = color.RGBA{0, 255, 255, 255} } // Cyan
+			if part == "37" || part == "97" { t.curStyle.FGColor = color.White }
+			if part == "90" { t.curStyle.FGColor = color.Gray{Y: 100} }
+		}
+	case 'J': // Clear Screen
+		// \033[2J atau \033[J
+		if strings.Contains(content, "2") || content == "" {
+			t.Clear()
+		}
+	case 'H': // Cursor Home (Kadang dipakai bareng clear)
+		t.curRow = 0; t.curCol = 0
 	}
 }
 
@@ -87,13 +134,20 @@ func (t *Terminal) printText(text string) {
 	for _, char := range text {
 		if char == '\n' { t.curRow++; t.curCol = 0; continue }
 		if char == '\r' { t.curCol = 0; continue }
-		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{}) }
+		
+		// Auto expand rows
+		for t.curRow >= len(t.grid.Rows) { 
+			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{}) 
+		}
+		
+		// Auto expand cols logic
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
+		
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
 		t.curCol++
@@ -101,13 +155,13 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   SMART PROGRESS BAR LOGIC (ANIMATED)
+   TURBO ANIMATION LOGIC (PING-PONG)
 ========================================== */
 
 type WriteCounter struct {
 	Total         uint64
 	ContentLength int64
-	OnProgress    func(uint64, int64) // Kirim TotalBytes dan TotalSize
+	OnProgress    func(uint64, int64)
 }
 
 func (wc *WriteCounter) Write(p []byte) (int, error) {
@@ -117,11 +171,10 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Fungsi menggambar bar
 func drawProgressBar(term *Terminal, current uint64, total int64) {
-	barLength := 25
+	barLength := 30 // Lebih panjang biar puas
 	
-	// MODE 1: UKURAN DIKETAHUI (PERCENTAGE BAR)
+	// MODE 1: UKURAN PASTI (Persentase Normal)
 	if total > 0 {
 		percent := float64(current) / float64(total) * 100
 		filledLength := int((percent * float64(barLength)) / 100)
@@ -134,24 +187,33 @@ func drawProgressBar(term *Terminal, current uint64, total int64) {
 		return
 	}
 
-	// MODE 2: UKURAN TIDAK DIKETAHUI (ANIMASI BERGERAK / RUNNING LED)
-	// Bar akan bergerak loop dari kiri ke kanan berdasarkan jumlah byte yang masuk
-	// Ini menjamin bar terlihat "Hidup" walau file kecil atau besar.
+	// MODE 2: UNKNOWN SIZE (TURBO BOUNCE ANIMATION)
+	// Kita gunakan Waktu (UnixMilli) agar kecepatannya tidak tergantung internet.
+	// Semakin kecil pembaginya (/40), semakin cepat gerakannya.
+	speed := int64(40) 
+	t := time.Now().UnixMilli() / speed
 	
-	animationStep := int((current / 1024) % uint64(barLength)) // Bergerak setiap 1KB
+	// Logika Ping-Pong (Bolak Balik)
+	// Posisi bergerak dari 0 ke (barLength-1) lalu kembali ke 0
+	maxPos := barLength - 4 // -4 adalah lebar kotak yang bergerak
+	cycle := maxPos * 2
+	pos := int(t % int64(cycle))
+	
+	if pos >= maxPos {
+		pos = cycle - pos // Gerak mundur (Kanan ke Kiri)
+	}
+
+	// Gambar Bar
 	bar := ""
-	blockSize := 5 // Panjang balok yang bergerak
-	
 	for i := 0; i < barLength; i++ {
-		// Logika balok bergerak (Wrapping)
-		if i >= animationStep && i < animationStep+blockSize {
+		// Buat kotak bergerak (lebar 4 blok)
+		if i >= pos && i < pos+4 {
 			bar += "█"
 		} else {
 			bar += "░"
 		}
 	}
 	
-	// Tampilkan status "Active" tanpa persen palsu
 	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] Active   \x1b[0m", bar)
 	term.Write([]byte(msg))
 }
@@ -234,7 +296,6 @@ func main() {
 	rootLabel := canvas.NewText("ROOT: CHECKING...", color.RGBA{150, 150, 150, 255})
 	rootLabel.TextSize = 10; rootLabel.TextStyle = fyne.TextStyle{Bold: true}
 
-	// Update Kernel Status
 	updateKernelStatus := func() {
 		go func() {
 			if CheckKernelDriver() {
@@ -249,7 +310,6 @@ func main() {
 	}
 	updateKernelStatus()
 
-	// Update Root Status
 	go func() {
 		if CheckRootAccess() {
 			rootLabel.Text = "ROOT: GRANTED"
@@ -385,8 +445,6 @@ func main() {
 		}()
 	}
 
-	// --- LAYOUTING UI ---
-	
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
