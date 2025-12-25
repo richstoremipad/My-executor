@@ -33,7 +33,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL UI LOGIC (FULL COLOR SUPPORT)
+   TERMINAL UI LOGIC (FIXED POINTER ERROR)
 ========================================== */
 type Terminal struct {
 	grid     *widget.TextGrid
@@ -48,8 +48,8 @@ type Terminal struct {
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
+	// Default Style
 	defStyle := &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent}
-	// Regex Paling Kompatibel untuk ANSI Code
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	return &Terminal{grid: g, scroll: container.NewScroll(g), curStyle: defStyle, reAnsi: re}
 }
@@ -99,29 +99,42 @@ func (t *Terminal) cleanCurrentLine() {
 	}
 }
 
+// FIX: Menggunakan dereferencing (*t.curStyle) agar bisa di-assign
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
 
 	switch command {
-	case 'm': // Warna
+	case 'm': // Warna & Style
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			val, _ := strconv.Atoi(part)
+			
+			// Copy style saat ini ke variabel sementara
+			currentStyle := *t.curStyle
+
 			// Reset
-			if val == 0 { t.curStyle.FGColor = theme.ForegroundColor(); t.curStyle.Style = fyne.TextStyle{} }
+			if val == 0 { 
+				currentStyle.FGColor = theme.ForegroundColor()
+				currentStyle.Style = fyne.TextStyle{} // Reset Bold/Italic
+			}
 			// Bold
-			if val == 1 { t.curStyle.Style = fyne.TextStyle{Bold: true} }
+			if val == 1 { 
+				currentStyle.Style = fyne.TextStyle{Bold: true} 
+			}
 			// Colors
-			if val == 30 || val == 90 { t.curStyle.FGColor = color.Gray{Y: 100} }
-			if val == 31 || val == 91 { t.curStyle.FGColor = theme.ErrorColor() } // Merah
-			if val == 32 || val == 92 { t.curStyle.FGColor = theme.SuccessColor() } // Hijau
-			if val == 33 || val == 93 { t.curStyle.FGColor = theme.WarningColor() } // Kuning
-			if val == 34 || val == 94 { t.curStyle.FGColor = theme.PrimaryColor() } // Biru
-			if val == 35 || val == 95 { t.curStyle.FGColor = color.RGBA{255, 0, 255, 255} } // Ungu
-			if val == 36 || val == 96 { t.curStyle.FGColor = color.RGBA{0, 255, 255, 255} } // Cyan
-			if val == 37 || val == 97 { t.curStyle.FGColor = color.White }
+			if val == 30 || val == 90 { currentStyle.FGColor = color.Gray{Y: 100} }
+			if val == 31 || val == 91 { currentStyle.FGColor = theme.ErrorColor() }
+			if val == 32 || val == 92 { currentStyle.FGColor = theme.SuccessColor() }
+			if val == 33 || val == 93 { currentStyle.FGColor = theme.WarningColor() }
+			if val == 34 || val == 94 { currentStyle.FGColor = theme.PrimaryColor() }
+			if val == 35 || val == 95 { currentStyle.FGColor = color.RGBA{255, 0, 255, 255} }
+			if val == 36 || val == 96 { currentStyle.FGColor = color.RGBA{0, 255, 255, 255} }
+			if val == 37 || val == 97 { currentStyle.FGColor = color.White }
+
+			// Simpan kembali ke pointer struct
+			t.curStyle = &currentStyle
 		}
 	case 'J': // Clear Screen
 		if strings.Contains(content, "2") || content == "" { t.Clear() }
@@ -183,8 +196,8 @@ func drawProgressBar(term *Terminal, current uint64, total int64) {
 	}
 
 	// MODE 2: UNKNOWN SIZE (TURBO OVAL PING-PONG)
-	// Speed: Semakin kecil angkanya, semakin ngebut (15 sangat cepat)
-	speed := int64(15) 
+	// Speed: 5 (Sangat Cepat/Turbo)
+	speed := int64(5) 
 	t := time.Now().UnixMilli() / speed
 	
 	// Logika Ping-Pong
@@ -199,14 +212,18 @@ func drawProgressBar(term *Terminal, current uint64, total int64) {
 	// Konstruksi Bar Oval
 	var barBuilder strings.Builder
 	for i := 0; i < barLength; i++ {
+		// Ujung Kiri Oval
 		if i == pos {
-			barBuilder.WriteString("▐") // Ujung Kiri Bulat
+			barBuilder.WriteString("▐") 
+		// Ujung Kanan Oval
 		} else if i == pos+blockSize-1 {
-			barBuilder.WriteString("▌") // Ujung Kanan Bulat
+			barBuilder.WriteString("▌") 
+		// Badan Oval
 		} else if i > pos && i < pos+blockSize-1 {
-			barBuilder.WriteString("█") // Badan Oval
+			barBuilder.WriteString("█") 
+		// Background
 		} else {
-			barBuilder.WriteString("░") // Background
+			barBuilder.WriteString("░") 
 		}
 	}
 	
