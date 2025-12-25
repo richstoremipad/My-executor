@@ -179,30 +179,34 @@ func CheckKernelDriver() bool {
 	return err == nil 
 }
 
-// [FIXED] FUNGSI DOWNLOAD "SENJATA PAMUNGKAS"
-// Mencoba CURL (Root) dulu, baru fallback ke Go HTTP
+// [FIXED] FUNGSI DOWNLOAD dengan PATH ABSOLUT
 func downloadFile(url string, filepath string) (error, string) {
-	// Hapus file lama agar tidak korup
-	os.Remove(filepath)
+	// Hapus file lama agar tidak korup (pakai root biar pasti kehapus)
+	exec.Command("su", "-c", "rm -f "+filepath).Run()
 
-	// METODE 1: CURL (Recommended untuk Root/Termux)
-	// -k: Skip SSL (Penting untuk Android lama/Root)
+	// METODE 1: CURL (Recommended untuk Root)
+	// Kita pastikan curl menulis ke path absolut (/data/local/tmp/...)
+	// -k: Skip SSL
 	// -L: Follow Redirect
 	// -f: Fail silently on HTTP error (404)
-	// --connect-timeout 5: Biar gak nunggu lama kalau down
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
 	
 	if err == nil {
 		// Cek apakah file benar-benar terisi
-		info, statErr := os.Stat(filepath)
-		if statErr == nil && info.Size() > 0 {
+		// Kita cek pakai 'ls' via root karena aplikasi biasa mungkin gak bisa baca stat di tmp
+		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
+		if checkCmd.Run() == nil {
 			return nil, "Success via CURL"
 		}
 	}
 
-	// METODE 2: Go HTTP Client (Fallback jika CURL gagal)
+	// METODE 2: Go HTTP Client (Fallback)
+	// Jika CURL gagal, kita coba download pakai Go.
+	// TAPI: App biasa mungkin gak bisa tulis ke /data/local/tmp.
+	// Jadi kita harus pipe streamnya ke perintah 'su' agar bisa ditulis.
+	
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -222,18 +226,24 @@ func downloadFile(url string, filepath string) (error, string) {
 		return fmt.Errorf("HTTP %d", resp.StatusCode), fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 
-	out, err := os.Create(filepath)
+	// [TRICKY] Pipe isi download langsung ke file tujuan via Root
+	// Ini menghindari "File Create Err" karena permission denied
+	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
+	stdin, err := writeCmd.StdinPipe()
 	if err != nil {
-		return err, "File Create Err"
+		return err, "Pipe Err"
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return err, "Save Err"
+	go func() {
+		defer stdin.Close()
+		io.Copy(stdin, resp.Body)
+	}()
+
+	if err := writeCmd.Run(); err != nil {
+		return err, "Write Err (Root)"
 	}
 	
-	return nil, "Success via HTTP"
+	return nil, "Success via HTTP+Root"
 }
 
 /* ===============================
@@ -290,11 +300,13 @@ func main() {
 				return
 			}
 			
-			// [PENTING] Trim spasi/newline agar URL tidak rusak
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
+			// [FIXED] Gunakan Absolute Path di /data/local/tmp
+			downloadPath := "/data/local/tmp/temp_kernel_dl" 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
+			
 			var downloadUrl string
 			var found bool = false
 			var failReason string
@@ -302,7 +314,7 @@ func main() {
 			// 1. Cek Full Name
 			url1 := GitHubRepo + rawVersion + ".sh"
 			term.Write([]byte(fmt.Sprintf("\x1b[90m[1] Checking: %s\x1b[0m\n", url1)))
-			err, reason := downloadFile(url1, "temp_kernel_dl")
+			err, reason := downloadFile(url1, downloadPath)
 			if err == nil {
 				downloadUrl = url1
 				found = true
@@ -319,7 +331,7 @@ func main() {
 					shortVersion := parts[0]
 					url2 := GitHubRepo + shortVersion + ".sh"
 					term.Write([]byte(fmt.Sprintf("\x1b[90m[2] Checking: %s\x1b[0m\n", url2)))
-					err, reason = downloadFile(url2, "temp_kernel_dl")
+					err, reason = downloadFile(url2, downloadPath)
 					if err == nil {
 						downloadUrl = url2
 						found = true
@@ -338,7 +350,7 @@ func main() {
 					majorVersion := parts[0] + "." + parts[1]
 					url3 := GitHubRepo + majorVersion + ".sh"
 					term.Write([]byte(fmt.Sprintf("\x1b[90m[3] Checking: %s\x1b[0m\n", url3)))
-					err, reason = downloadFile(url3, "temp_kernel_dl")
+					err, reason = downloadFile(url3, downloadPath)
 					if err == nil {
 						downloadUrl = url3
 						found = true
@@ -360,17 +372,9 @@ func main() {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
 				term.Write([]byte("[*] Installing...\n"))
 				
-				data, _ := os.ReadFile("temp_kernel_dl")
-				os.Remove("temp_kernel_dl")
-
-				exec.Command("su", "-c", "rm -f "+targetFile).Run()
-				copyCmd := exec.Command("su", "-c", "cat > "+targetFile+" && chmod 777 "+targetFile)
-				in, _ := copyCmd.StdinPipe()
-				go func() {
-					defer in.Close()
-					in.Write(data)
-				}()
-				copyCmd.Run()
+				// Rename hasil download ke target file eksekusi
+				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
+				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
 
 				cmd := exec.Command("su", "-c", "sh "+targetFile)
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
