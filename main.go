@@ -16,22 +16,29 @@ import (
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Executor ARM64")
+	myWindow := myApp.NewWindow("Root Executor ARM64")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
+	// UI Elements
 	outputArea := widget.NewMultiLineEntry()
-	statusLabel := widget.NewLabel("Status: Ready")
+	outputArea.SetPlaceHolder("Log output akan muncul di sini...")
+	
+	statusLabel := widget.NewLabel("Status: Siap")
 
+	// Fungsi utama eksekusi
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Menyiapkan file...")
+		
+		// Update UI awal
+		statusLabel.SetText("Status: Menyalin file...")
+		outputArea.SetText("")
 
-		// 1. Buat path di folder internal aplikasi
-		// Ini adalah area 'Sandbox' yang diizinkan untuk eksekusi
-		tmpPath := filepath.Join(myApp.Storage().RootURI().Path(), "run_script.sh")
+		// 1. Tentukan path aman di folder internal aplikasi
+		// Android melarang eksekusi langsung dari /sdcard
+		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "exec_script.sh")
 
-		// 2. Salin isi file dari picker ke folder internal
-		out, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+		// 2. Salin file dari Picker ke Internal Storage
+		out, err := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 		if err != nil {
 			outputArea.SetText("Gagal membuat file internal: " + err.Error())
 			return
@@ -40,37 +47,58 @@ func main() {
 		out.Close()
 
 		if err != nil {
-			outputArea.SetText("Gagal menyalin file: " + err.Error())
+			outputArea.SetText("Gagal menyalin script: " + err.Error())
 			return
 		}
 
-		// 3. Eksekusi
-		statusLabel.SetText("Status: Menjalankan...")
-		cmd := exec.Command("sh", tmpPath)
-		output, err := cmd.CombinedOutput()
+		// 3. Eksekusi di dalam Goroutine agar UI tidak blank/hang
+		go func() {
+			statusLabel.SetText("Status: Menjalankan (ROOT)...")
 
-		if err != nil {
-			outputArea.SetText(fmt.Sprintf("Error: %v\n\nLog:\n%s", err, string(output)))
-			statusLabel.SetText("Status: Gagal")
-		} else {
-			outputArea.SetText(string(output))
-			statusLabel.SetText("Status: Sukses")
-		}
+			// Menggunakan 'su -c' untuk memanggil akses root
+			// Kita panggil 'sh' untuk menjalankan file yang tadi disalin
+			cmdString := fmt.Sprintf("sh %s", internalPath)
+			cmd := exec.Command("su", "-c", cmdString)
+
+			// Menangkap output (stdout & stderr)
+			output, err := cmd.CombinedOutput()
+
+			// Update UI harus kembali ke main thread (Canvas Refresh)
+			myWindow.Canvas().Refresh(outputArea)
+			
+			if err != nil {
+				outputArea.SetText(fmt.Sprintf("ERROR:\n%v\n\nOUTPUT:\n%s", err, string(output)))
+				statusLabel.SetText("Status: Gagal")
+			} else {
+				outputArea.SetText(string(output))
+				statusLabel.SetText("Status: Selesai")
+			}
+		}()
 	}
 
-	btnSelect := widget.NewButton("Pilih dan Jalankan Script", func() {
+	// Tombol Pilih File
+	btnSelect := widget.NewButton("Pilih & Jalankan File (.sh/.bin)", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err == nil && reader != nil {
-				executeFile(reader)
+			if err != nil {
+				dialog.ShowError(err, myWindow)
+				return
 			}
+			if reader == nil {
+				return
+			}
+			executeFile(reader)
 		}, myWindow)
 		fd.Show()
 	})
 
-	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, statusLabel),
-		nil, nil, nil, outputArea,
-	))
+	// Layouting
+	content := container.NewBorder(
+		container.NewVBox(btnSelect, statusLabel), 
+		nil, nil, nil, 
+		outputArea,
+	)
+
+	myWindow.SetContent(content)
 	myWindow.ShowAndRun()
 }
 
