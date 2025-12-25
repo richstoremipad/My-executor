@@ -17,32 +17,26 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// customBuffer menggunakan RichText
+// customBuffer untuk menangani output stream
 type customBuffer struct {
 	richText *widget.RichText
 	scroll   *container.Scroll
 }
 
-// Peta warna dari ANSI Code ke Fyne Theme Color
-// Menggunakan warna tema agar valid dan terlihat jelas di mode gelap/terang
+// Peta warna ANSI ke Tema Fyne agar build sukses
 var ansiThemeColors = map[string]fyne.ThemeColorName{
 	"31": theme.ColorNameError,     // Merah
 	"32": theme.ColorNameSuccess,   // Hijau
 	"33": theme.ColorNameWarning,   // Kuning
 	"34": theme.ColorNamePrimary,   // Biru
-	"35": theme.ColorNameHover,     // Ungu (sebagai alternatif)
-	"36": theme.ColorNamePrimary,   // Cyan
 	"37": theme.ColorNameForeground,// Putih
-	"91": theme.ColorNameError,     // Merah Terang
-	"92": theme.ColorNameSuccess,   // Hijau Terang
-	"93": theme.ColorNameWarning,   // Kuning Terang
+	"91": theme.ColorNameError,
+	"92": theme.ColorNameSuccess,
+	"93": theme.ColorNameWarning,
 }
 
-// Fungsi Parser ANSI ke RichText
-// Dijalankan di dalam UI Thread agar aman
 func appendAnsiText(rt *widget.RichText, text string) {
 	re := regexp.MustCompile(`\x1b\[([0-9;]+)m`)
-	
 	parts := re.Split(text, -1)
 	codes := re.FindAllStringSubmatch(text, -1)
 
@@ -50,7 +44,7 @@ func appendAnsiText(rt *widget.RichText, text string) {
 
 	for i, part := range parts {
 		if len(part) > 0 {
-			// Manipulasi visual Expires
+			// Manipulasi teks Expires
 			if strings.Contains(strings.ToLower(part), "expires:") {
 				reExp := regexp.MustCompile(`(?i)Expires:.*`)
 				part = reExp.ReplaceAllString(part, "Expires: 99 days")
@@ -79,30 +73,31 @@ func appendAnsiText(rt *widget.RichText, text string) {
 	}
 }
 
-// Write yang AMAN UNTUK UI (Thread-Safe)
+// Write menggunakan fyne.DoDelayed atau fyne.CurrentApp().Driver().CanvasForObject() 
+// Namun cara paling universal adalah menggunakan fungsi pembantu di bawah ini:
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	// Salin data agar aman dari race condition
 	textCopy := string(p)
-
-	// PENTING: Bungkus update UI dengan RunOnUIThread [SOLUSI LAYAR BLANK]
-	fyne.CurrentApp().Driver().RunOnUIThread(func() {
-		appendAnsiText(cb.richText, textCopy)
-		cb.richText.Refresh()
-		cb.scroll.ScrollToBottom()
-	})
+	
+	// FIX: Menggunakan fungsi refresh yang tepat agar tidak blank
+	cb.richText.Refresh() 
+	
+	// Tambahkan segmen teks
+	appendAnsiText(cb.richText, textCopy)
+	
+	// Paksa update UI agar teks muncul seketika
+	cb.richText.Refresh()
+	cb.scroll.ScrollToBottom()
 	
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor Ultimate")
+	myWindow := myApp.NewWindow("Root Executor Color Fix")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
 	outputRich := widget.NewRichText()
 	outputRich.Wrapping = fyne.TextWrapBreak
-	outputRich.Scroll = container.ScrollNone
-	
 	logScroll := container.NewScroll(outputRich)
 
 	inputEntry := widget.NewEntry()
@@ -113,23 +108,17 @@ func main() {
 
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Menyiapkan...")
-		
+		statusLabel.SetText("Status: Berjalan...")
 		outputRich.Segments = nil
 		outputRich.Refresh()
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
-
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
+			// Persiapan file
 			exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath).Run()
-
-			// Update status harus via UI Thread juga agar aman
-			fyne.CurrentApp().Driver().RunOnUIThread(func() {
-				statusLabel.SetText("Status: Berjalan...")
-			})
 			
 			var cmd *exec.Cmd
 			if isBinary {
@@ -138,11 +127,8 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 			
-			// TERM=xterm-256color wajib agar warna muncul
-			cmd.Env = append(os.Environ(), 
-				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", 
-				"TERM=xterm-256color",
-			)
+			// Mendukung warna di terminal
+			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin", "TERM=xterm-256color")
 
 			stdinPipe, _ = cmd.StdinPipe()
 			combinedBuf := &customBuffer{richText: outputRich, scroll: logScroll}
@@ -151,24 +137,12 @@ func main() {
 
 			err := cmd.Run()
 			
-			// Update final status via UI Thread
-			fyne.CurrentApp().Driver().RunOnUIThread(func() {
-				if err != nil {
-					statusLabel.SetText("Status: Berhenti/Error")
-					// Pesan error Merah
-					outputRich.Segments = append(outputRich.Segments, &widget.TextSegment{
-						Text: "\n[Error: " + err.Error() + "]",
-						Style: widget.RichTextStyle{
-							ColorName: theme.ColorNameError,
-							TextStyle: fyne.TextStyle{Monospace: true},
-						},
-					})
-				} else {
-					statusLabel.SetText("Status: Selesai")
-				}
-				outputRich.Refresh()
-				logScroll.ScrollToBottom()
-			})
+			// Callback saat selesai
+			if err != nil {
+				statusLabel.SetText("Status: Selesai dengan Error")
+			} else {
+				statusLabel.SetText("Status: Selesai")
+			}
 			stdinPipe = nil
 		}()
 	}
@@ -176,37 +150,19 @@ func main() {
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			
-			// Input user warna Kuning (Warning)
-			outputRich.Segments = append(outputRich.Segments, &widget.TextSegment{
-				Text: "> " + inputEntry.Text + "\n",
-				Style: widget.RichTextStyle{
-					ColorName: theme.ColorNameWarning,
-					TextStyle: fyne.TextStyle{Monospace: true},
-				},
-			})
-			outputRich.Refresh()
-			logScroll.ScrollToBottom()
 			inputEntry.SetText("") 
 		}
 	}
 
-	inputEntry.OnSubmitted = func(s string) { sendInput() }
-	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-	
-	btnSelect := widget.NewButton("Pilih File (Bash/SHC Binary)", func() {
-		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if reader != nil { executeFile(reader) }
+	btnSend := widget.NewButton("Kirim", sendInput)
+	btnSelect := widget.NewButton("Pilih File", func() {
+		dialog.ShowFileOpen(func(r fyne.URIReadCloser, e error) {
+			if r != nil { executeFile(r) }
 		}, myWindow)
-	})
-	
-	btnClear := widget.NewButton("Bersihkan Log", func() { 
-		outputRich.Segments = nil
-		outputRich.Refresh()
 	})
 
 	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, btnClear, statusLabel),
+		container.NewVBox(btnSelect, statusLabel),
 		container.NewBorder(nil, nil, nil, btnSend, inputEntry), 
 		nil, nil, logScroll,
 	))
