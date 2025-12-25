@@ -13,91 +13,114 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 type customBuffer struct {
-	entry  *widget.Entry
-	scroll *container.Scroll
+	richText *widget.RichText
+	scroll   *container.Scroll
 }
 
-func cleanAnsi(str string) string {
-	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	return ansi.ReplaceAllString(str, "")
+// Map warna ANSI ke Nama Warna Tema (Agar tidak error build)
+var colorMap = map[string]fyne.ThemeColorName{
+	"31": theme.ColorNameError,   // Merah
+	"32": theme.ColorNameSuccess, // Hijau
+	"33": theme.ColorNameWarning, // Kuning
+	"34": theme.ColorNamePrimary, // Biru
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	cleanText := cleanAnsi(string(p))
+	text := string(p)
+	
+	// Regex untuk menangkap kode warna ANSI
+	re := regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+	parts := re.Split(text, -1)
+	codes := re.FindAllStringSubmatch(text, -1)
 
-	if strings.Contains(strings.ToLower(cleanText), "expires:") {
-		reExp := regexp.MustCompile(`(?i)Expires:.*`)
-		cleanText = reExp.ReplaceAllString(cleanText, "Expires: 99 days")
+	currentColor := theme.ColorNameForeground
+
+	for i, part := range parts {
+		if part != "" {
+			// Ganti teks Expires secara otomatis
+			if strings.Contains(strings.ToLower(part), "expires:") {
+				part = regexp.MustCompile(`(?i)Expires:.*`).ReplaceAllString(part, "Expires: 99 days")
+			}
+
+			// Tambahkan teks dengan warna yang sesuai ke segmen
+			cb.richText.Segments = append(cb.richText.Segments, &widget.TextSegment{
+				Text: part,
+				Style: widget.RichTextStyle{
+					ColorName: currentColor,
+					TextStyle: fyne.TextStyle{Monospace: true},
+				},
+			})
+		}
+
+		if i < len(codes) {
+			code := codes[i][1]
+			if val, ok := colorMap[code]; ok {
+				currentColor = val
+			} else if code == "0" || code == "" {
+				currentColor = theme.ColorNameForeground
+			}
+		}
 	}
 
-	// Gunakan Append untuk performa lebih baik dan pemicu refresh otomatis
-	cb.entry.SetText(cb.entry.Text + cleanText)
-	
-	// Paksa scroll ke bawah setiap ada data baru masuk
+	// Refresh UI agar teks muncul (Mencegah layar blank)
+	cb.richText.Refresh()
 	cb.scroll.ScrollToBottom()
-	cb.entry.Refresh() 
-	
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor v2")
+	myWindow := myApp.NewWindow("Root Executor Color Fix")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	logEntry := widget.NewMultiLineEntry()
-	// FIX ERROR 2139.jpg: Gunakan Disable() alih-alih ReadOnly
-	logEntry.Disable() 
-	logEntry.TextStyle = fyne.TextStyle{Monospace: true}
-	
-	logScroll := container.NewScroll(logEntry)
+	// Menggunakan RichText agar bisa berwarna
+	outputRich := widget.NewRichText()
+	outputRich.Wrapping = fyne.TextWrapBreak
+	logScroll := container.NewScroll(outputRich)
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input di sini...")
+	inputEntry.SetPlaceHolder("Ketik input...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
 
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Memulai Proses...")
-		logEntry.SetText("") 
+		statusLabel.SetText("Status: Menjalankan...")
+		outputRich.Segments = nil // Clear log
+		outputRich.Refresh()
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Langkah 1: Pindahkan file dengan root
-			setupCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
-			setupCmd.Stdin = bytes.NewReader(data)
-			setupCmd.Run()
+			// Copy file ke folder sistem agar bisa dieksekusi
+			exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath).Run()
 
-			// Langkah 2: Jalankan proses utama
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", targetPath)
 			} else {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
-			
-			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin", "TERM=xterm")
+
+			// TERM=xterm agar script mengeluarkan warna ANSI
+			cmd.Env = append(os.Environ(), "TERM=xterm")
 			stdinPipe, _ = cmd.StdinPipe()
 			
-			buf := &customBuffer{entry: logEntry, scroll: logScroll}
+			buf := &customBuffer{richText: outputRich, scroll: logScroll}
 			cmd.Stdout = buf
 			cmd.Stderr = buf
 
-			statusLabel.SetText("Status: Sedang Berjalan")
 			err := cmd.Run()
-			
 			if err != nil {
-				statusLabel.SetText("Status: Berhenti (Error)")
-				logEntry.SetText(logEntry.Text + "\n[Selesai dengan error: " + err.Error() + "]")
+				statusLabel.SetText("Status: Error")
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
@@ -105,15 +128,6 @@ func main() {
 		}()
 	}
 
-	sendInput := func() {
-		if stdinPipe != nil && inputEntry.Text != "" {
-			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			logEntry.SetText(logEntry.Text + "> " + inputEntry.Text + "\n")
-			inputEntry.SetText("") 
-		}
-	}
-
-	btnSend := widget.NewButton("Kirim", sendInput)
 	btnSelect := widget.NewButton("Pilih File", func() {
 		dialog.ShowFileOpen(func(r fyne.URIReadCloser, e error) {
 			if r != nil { executeFile(r) }
@@ -122,7 +136,12 @@ func main() {
 
 	myWindow.SetContent(container.NewBorder(
 		container.NewVBox(btnSelect, statusLabel),
-		container.NewBorder(nil, nil, nil, btnSend, inputEntry), 
+		container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", func() {
+			if stdinPipe != nil && inputEntry.Text != "" {
+				fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
+				inputEntry.SetText("")
+			}
+		}), inputEntry),
 		nil, nil, logScroll,
 	))
 
