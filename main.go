@@ -20,8 +20,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- KONFIGURASI WARNA ---
-
+// --- KONFIGURASI WARNA ANSI ---
+// Map warna manual agar tidak ketergantungan library luar
 var ansiColors = map[int]color.Color{
 	30: color.RGBA{128, 128, 128, 255}, // Black/Gray
 	31: color.RGBA{255, 80, 80, 255},   // Red
@@ -52,7 +52,8 @@ type VirtualTerminal struct {
 	row int
 	col int
 
-	// Current Color State (Disimpan terpisah agar aman dari error struct)
+	// Simpan warna sebagai variabel biasa (bukan struct TextGridStyle)
+	// Ini menghindari error "invalid composite literal"
 	currFg color.Color
 	currBg color.Color
 }
@@ -74,12 +75,12 @@ func NewVirtualTerminal() *VirtualTerminal {
 	}
 }
 
-// Fungsi reset layar (Clear Screen)
+// Fungsi Reset Layar (Clear Screen)
 func (vt *VirtualTerminal) Clear() {
 	vt.mutex.Lock()
 	defer vt.mutex.Unlock()
 	
-	// Reset Grid dengan membuat grid baru kosong (cara paling aman di Fyne)
+	// Reset Grid
 	vt.grid.SetText("")
 	vt.row = 0
 	vt.col = 0
@@ -107,6 +108,7 @@ func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 			endIdx := i + 1
 			for endIdx < lenRunes {
 				c := runes[endIdx]
+				// ANSI command biasanya huruf a-z atau A-Z
 				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
 					endIdx++
 					break
@@ -172,7 +174,8 @@ func (vt *VirtualTerminal) putChar(r rune) {
 		rowCells = append(rowCells, widget.TextGridCell{Rune: ' '})
 	}
 
-	// Set Style cell saat ini
+	// Buat Style baru saat ini juga (Local Scope)
+	// Ini trik untuk menghindari error "Composite Literal" di struct global
 	style := widget.TextGridStyle{
 		FGColor: vt.currFg,
 		BGColor: vt.currBg,
@@ -195,7 +198,7 @@ func (vt *VirtualTerminal) handleAnsi(seq string) {
 	
 	cmd := seq[len(seq)-1] // Huruf terakhir (m, J, dll)
 	
-	// Hapus '[' di awal dan huruf perintah di akhir
+	// Hapus '[' di awal dan huruf perintah di akhir untuk ambil angka
 	paramRaw := seq
 	if strings.HasPrefix(paramRaw, "[") {
 		paramRaw = paramRaw[1 : len(paramRaw)-1]
@@ -222,9 +225,7 @@ func (vt *VirtualTerminal) handleAnsi(seq string) {
 		}
 	case 'J': // Clear Screen
 		if strings.Contains(paramRaw, "2") {
-			// Kita lakukan clear di main thread via Write logic nanti, 
-			// atau simplenya reset row di sini jika logic mengizinkan.
-			// Untuk aman, kita biarkan logic scroll handle, atau reset manual:
+			// Clear logic
 			vt.grid.SetText("")
 			vt.row = 0
 			vt.col = 0
@@ -246,7 +247,7 @@ func main() {
 	// Kita gunakan Stack: Paling bawah Rectangle Hitam, Paling atas Terminal Scroll
 	bgRect := canvas.NewRectangle(color.RGBA{10, 10, 10, 255})
 	
-	// Layout Terminal Area
+	// Layout Terminal Area (Stack menumpuk objek)
 	termContainer := container.NewStack(bgRect, term.scroll)
 
 	// 3. Input & Controls
