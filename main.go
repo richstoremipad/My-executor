@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -14,14 +15,12 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// customBuffer menggunakan Label agar teks tajam dan tidak memicu keyboard
 type customBuffer struct {
 	label  *widget.Label
 	scroll *container.Scroll
 	window fyne.Window
 }
 
-// Menghapus kode ANSI agar log bersih di UI
 func cleanAnsi(str string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	return ansi.ReplaceAllString(str, "")
@@ -29,14 +28,10 @@ func cleanAnsi(str string) string {
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	cleanText := cleanAnsi(string(p))
-	
-	// Manipulasi visual untuk teks "Expires"
 	re := regexp.MustCompile(`(?i)Expires:.*`)
 	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
 
 	cb.label.SetText(cb.label.Text + modifiedText)
-	
-	// Otomatis scroll ke bawah saat log bertambah
 	cb.scroll.ScrollToBottom()
 	cb.window.Canvas().Refresh(cb.label)
 	return len(p), nil
@@ -44,18 +39,16 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor Pro")
+	myWindow := myApp.NewWindow("Universal Root Executor")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Output menggunakan Label (Anti-Keyboard & Sharp)
 	outputLabel := widget.NewLabel("")
 	outputLabel.TextStyle = fyne.TextStyle{Monospace: true}
 	outputLabel.Wrapping = fyne.TextWrapBreak
-
 	logScroll := container.NewScroll(outputLabel)
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input/jawaban di sini...")
+	inputEntry.SetPlaceHolder("Ketik input di sini...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
@@ -65,18 +58,14 @@ func main() {
 		statusLabel.SetText("Status: Menyiapkan file...")
 		outputLabel.SetText("") 
 
-		// Gunakan /data/local/tmp untuk menghindari masalah izin SELinux
-		targetPath := "/data/local/tmp/temp_script.sh"
-		
-		// Baca seluruh isi file script
-		data, err := io.ReadAll(reader)
-		if err != nil {
-			statusLabel.SetText("Status: Gagal membaca file")
-			return
-		}
+		targetPath := "/data/local/tmp/temp_exec"
+		data, _ := io.ReadAll(reader)
+
+		// Cek apakah file adalah binary (ELF) atau script teks
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Langkah 1: Kirim script ke sistem dengan Root
+			// Langkah 1: Kirim dan beri izin eksekusi penuh
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
 			go func() {
@@ -85,12 +74,18 @@ func main() {
 			}()
 			copyCmd.Run()
 
-			statusLabel.SetText("Status: Berjalan (Interaktif)...")
+			statusLabel.SetText("Status: Berjalan...")
+
+			// Langkah 2: Logika Eksekusi Otomatis
+			var cmd *exec.Cmd
+			if isBinary {
+				// Jika binary, jalankan langsung
+				cmd = exec.Command("su", "-c", targetPath)
+			} else {
+				// Jika script teks, jalankan dengan sh
+				cmd = exec.Command("su", "-c", "sh "+targetPath)
+			}
 			
-			// Langkah 2: Eksekusi menggunakan 'sh' agar kompatibel dengan Android
-			cmd := exec.Command("su", "-c", "sh "+targetPath)
-			
-			// Set PATH agar perintah seperti 'date' atau 'bc' bisa ditemukan
 			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", "TERM=dumb")
 
 			stdinPipe, _ = cmd.StdinPipe()
@@ -98,10 +93,10 @@ func main() {
 			cmd.Stdout = combinedBuf
 			cmd.Stderr = combinedBuf
 
-			runErr := cmd.Run()
-			if runErr != nil {
+			err := cmd.Run()
+			if err != nil {
 				statusLabel.SetText("Status: Berhenti/Error")
-				outputLabel.SetText(outputLabel.Text + "\n[Proses Berhenti: " + runErr.Error() + "]\n")
+				outputLabel.SetText(outputLabel.Text + "\n[Error: " + err.Error() + "]")
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
@@ -119,26 +114,18 @@ func main() {
 
 	inputEntry.OnSubmitted = func(s string) { sendInput() }
 	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-
-	btnSelect := widget.NewButton("Pilih File (Bash/SHC)", func() {
+	btnSelect := widget.NewButton("Pilih File (Bash/SHC Binary)", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if reader != nil { executeFile(reader) }
 		}, myWindow)
 		fd.Show()
 	})
-
-	btnClear := widget.NewButton("Bersihkan Log", func() {
-		outputLabel.SetText("")
-	})
-
-	inputContainer := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
-	controls := container.NewVBox(btnSelect, btnClear, statusLabel)
+	btnClear := widget.NewButton("Bersihkan Log", func() { outputLabel.SetText("") })
 
 	myWindow.SetContent(container.NewBorder(
-		controls,
-		inputContainer, 
-		nil, nil, 
-		logScroll,
+		container.NewVBox(btnSelect, btnClear, statusLabel),
+		container.NewBorder(nil, nil, nil, btnSend, inputEntry), 
+		nil, nil, logScroll,
 	))
 
 	myWindow.ShowAndRun()
