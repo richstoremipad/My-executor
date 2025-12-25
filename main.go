@@ -13,7 +13,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -21,50 +20,7 @@ import (
 )
 
 /* ==========================================
-   1. INTERACTION LAYER (SOLUSI FINAL BACK BUTTON)
-   Widget ini membungkus seluruh UI untuk menangkap Back Gesture
-========================================== */
-
-type InteractionLayer struct {
-	widget.BaseWidget
-	content fyne.CanvasObject
-	onBack  func()
-}
-
-func NewInteractionLayer(content fyne.CanvasObject, onBack func()) *InteractionLayer {
-	i := &InteractionLayer{content: content, onBack: onBack}
-	i.ExtendBaseWidget(i)
-	return i
-}
-
-func (i *InteractionLayer) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(i.content)
-}
-
-// Agar widget ini bisa menerima fokus dan event keyboard
-func (i *InteractionLayer) FocusGained() {}
-func (i *InteractionLayer) FocusLost()   {}
-func (i *InteractionLayer) TypedRune(_ rune) {}
-
-// Tangkap tombol Back (Escape) di sini
-func (i *InteractionLayer) TypedKey(e *fyne.KeyEvent) {
-	if e.Name == fyne.KeyEscape {
-		if i.onBack != nil {
-			i.onBack()
-		}
-	}
-}
-
-// Saat user tap area kosong (terminal/background), ambil fokus agar Back berfungsi
-func (i *InteractionLayer) Tapped(_ *fyne.PointEvent) {
-	// Ambil fokus ke diri sendiri
-	if c := fyne.CurrentApp().Driver().CanvasForObject(i); c != nil {
-		c.Focus(i)
-	}
-}
-
-/* ==========================================
-   2. CUSTOM INPUT (BACK SAAT MENGETIK)
+   1. CUSTOM INPUT (AGAR BACK KEY TERDETEKSI SAAT NGETIK)
 ========================================== */
 
 type BackButtonEntry struct {
@@ -79,17 +35,19 @@ func NewBackButtonEntry(onBack func()) *BackButtonEntry {
 }
 
 func (e *BackButtonEntry) TypedKey(key *fyne.KeyEvent) {
+	// Di Android, Back Button = KeyEscape
 	if key.Name == fyne.KeyEscape {
 		if e.onBack != nil {
 			e.onBack()
 		}
-		return // Jangan teruskan ke default handler (biar keyboard nutup tapi app gak exit)
+		// Return agar tidak lanjut ke default handler (menutup keyboard tanpa exit)
+		return 
 	}
 	e.Entry.TypedKey(key)
 }
 
 /* ==========================================
-   3. TERMINAL WIDGET
+   2. TERMINAL WIDGET
 ========================================== */
 
 type Terminal struct {
@@ -113,12 +71,9 @@ func NewTerminal() *Terminal {
 
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 
-	// TextGrid dimasukkan ke ScrollContainer
-	scroll := container.NewScroll(g)
-
 	return &Terminal{
 		grid:     g,
-		scroll:   scroll,
+		scroll:   container.NewScroll(g),
 		curRow:   0,
 		curCol:   0,
 		curStyle: defStyle,
@@ -241,22 +196,24 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 	
-	// Hapus SetMaster() karena bisa memicu auto-minimize di beberapa OS
-	// w.SetMaster() 
+	// [WAJIB UNTUK ANDROID] 
+	// Tanpa ini, Back Button dianggap "Minimize/Home" oleh OS, bukan "Close Window"
+	w.SetMaster() 
 
-	/* --- LOGIKA KELUAR --- */
+	/* --- LOGIKA KELUAR AMAN --- */
 	confirmExit := func() {
-		dialog.ShowConfirm("Konfirmasi Keluar", "Yakin ingin menutup aplikasi?", func(ok bool) {
+		// Gunakan dialog.ShowConfirm biasa
+		dialog.ShowConfirm("Konfirmasi Keluar", "Apakah Anda yakin ingin keluar?", func(ok bool) {
 			if ok {
 				a.Quit()
 			}
 		}, w)
 	}
 
-	// 1. Intercept Close Window (Desktop)
+	// 1. Intercept Close Request (Saat w.SetMaster aktif, Back akan memicu ini)
 	w.SetCloseIntercept(confirmExit)
 
-	// 2. Intercept Global Canvas Key (Fallback layer 1)
+	// 2. Global Key Listener (Backup jika fokus ada di canvas/background)
 	w.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
 		if k.Name == fyne.KeyEscape {
 			confirmExit()
@@ -266,11 +223,8 @@ func main() {
 	/* TERMINAL SETUP */
 	term := NewTerminal()
 
-	// Hack: Tambahkan background hitam transparan di scroll agar tappable area luas
-	// Namun TextGrid sudah cukup mengisi area.
-	
-	/* INPUT */
-	// Gunakan Custom Entry agar saat ngetik pun Back kedetect
+	/* INPUT SETUP */
+	// Gunakan Custom Entry agar saat mengetik pun Back bisa dicegat
 	input := NewBackButtonEntry(confirmExit)
 	input.SetPlaceHolder("Ketik perintah...")
 
@@ -306,6 +260,7 @@ func main() {
 			}
 
 			cmd := exec.Command("su", "-c", cmdStr)
+			// PENTING: Inject TERM agar warna keluar
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
@@ -349,27 +304,11 @@ func main() {
 
 	bottomControl := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
 
-	// ISI UTAMA
-	mainContent := container.NewBorder(
+	w.SetContent(container.NewBorder(
 		topControl,
 		bottomControl,
 		nil, nil,
 		term.scroll,
-	)
-
-	// WRAP UTAMA DALAM INTERACTION LAYER
-	// Ini kuncinya: Membungkus seluruh tampilan dengan widget yang bisa di-klik & fokus
-	rootLayer := NewInteractionLayer(mainContent, confirmExit)
-
-	w.SetContent(rootLayer)
-
-	// Paksa fokus ke rootLayer saat mulai agar tombol Back langsung aktif
-	w.Canvas().Focus(rootLayer)
-
-	// Pastikan background hitam (TextGrid transparan soalnya)
-	w.Canvas().SetContent(container.NewMax(
-		canvas.NewRectangle(theme.BackgroundColor()), // Background warna tema
-		rootLayer,
 	))
 
 	w.ShowAndRun()
