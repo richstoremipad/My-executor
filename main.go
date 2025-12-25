@@ -6,8 +6,9 @@ import (
 	"image/color"
 	"io"
 	"os/exec"
-	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -17,184 +18,139 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-/* ===============================
-      CUSTOM THEME (AGAR RAPAT)
-================================ */
+/* ==========================================
+   TERMINAL WIDGET (PENGGANTI RICHTEXT)
+   Menggunakan TextGrid agar 100% Rapat & Presisi
+========================================== */
 
-// myTheme digunakan untuk memaksa jarak antar baris (Padding) menjadi 0
-// dan mengecilkan font sedikit agar mirip terminal MT Manager.
-type myTheme struct{}
-
-func (m myTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	return theme.DefaultTheme().Color(name, variant)
+type Terminal struct {
+	grid       *widget.TextGrid
+	scroll     *container.Scroll
+	curRow     int
+	curCol     int
+	curStyle   *widget.CustomTextGridStyle
+	mutex      sync.Mutex
 }
 
-func (m myTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
-	return theme.DefaultTheme().Icon(name)
-}
-
-func (m myTheme) Font(style fyne.TextStyle) fyne.Resource {
-	// Pastikan font Monospace digunakan
-	if style.Monospace {
-		return theme.DefaultTheme().Font(style)
+func NewTerminal() *Terminal {
+	g := widget.NewTextGrid()
+	g.ShowLineNumbers = false // Hilangkan nomor baris biar murni terminal
+	
+	// Style default: Putih (Foreground), Background Transparan
+	defStyle := &widget.CustomTextGridStyle{
+		FGColor: theme.ForegroundColor(),
+		BGColor: color.Transparent,
 	}
-	return theme.DefaultTheme().Font(style)
-}
 
-func (m myTheme) Size(name fyne.ThemeSizeName) float32 {
-	switch name {
-	case theme.SizeNamePadding:
-		return 0 // PENTING: Menghilangkan jarak antar elemen/baris
-	case theme.SizeNameText:
-		return 12 // Ukuran font sedikit lebih kecil agar muat banyak (Compact)
-	case theme.SizeNameInnerPadding:
-		return 2
-	default:
-		return theme.DefaultTheme().Size(name)
+	return &Terminal{
+		grid:     g,
+		scroll:   container.NewScroll(g),
+		curRow:   0,
+		curCol:   0,
+		curStyle: defStyle,
 	}
 }
 
-var _ fyne.Theme = (*myTheme)(nil)
-
-/* ===============================
-          BUFFER OUTPUT
-================================ */
-
-type customBuffer struct {
-	rich   *widget.RichText
-	scroll *container.Scroll
-}
-
-/* --- HAPUS ANSI KONTROL --- */
-func stripCursorANSI(s string) string {
-	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
-	return re.ReplaceAllString(s, "")
-}
-
-/* --- MAP ANSI COLOR --- */
-func ansiColor(code string) fyne.ThemeColorName {
+// Map kode ANSI ke Warna Fyne
+func ansiToColor(code string) color.Color {
 	switch code {
-	case "31":
-		return theme.ColorNameError
-	case "32":
-		return theme.ColorNameSuccess
-	case "33":
-		return theme.ColorNameWarning
-	case "34":
-		return theme.ColorNamePrimary
-	case "36":
-		return theme.ColorNamePrimary
-	case "1":
-		return theme.ColorNameForeground
-	default:
-		return theme.ColorNameForeground
+	case "30", "90": return color.Gray{Y: 100} // Grey
+	case "31", "91": return theme.ErrorColor() // Red
+	case "32", "92": return theme.SuccessColor() // Green
+	case "33", "93": return theme.WarningColor() // Yellow/Orange
+	case "34", "94": return theme.PrimaryColor() // Blue
+	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Purple
+	case "36", "96": return theme.PrimaryColor() // Cyan (mirip Blue di tema gelap)
+	case "37", "97": return theme.ForegroundColor() // White
+	default: return theme.ForegroundColor()
 	}
 }
 
-/* --- ANSI → RichText --- */
-func ansiToRich(text string) []widget.RichTextSegment {
-	var segs []widget.RichTextSegment
-	colorNow := theme.ColorNameForeground
+// Fungsi utama untuk menulis ke terminal
+func (t *Terminal) Write(p []byte) (int, error) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 
-	re := regexp.MustCompile(`\x1b\[([0-9;]+)m`)
-	matches := re.FindAllStringSubmatchIndex(text, -1)
-
-	last := 0
-	for _, m := range matches {
-		if m[0] > last {
-			segs = append(segs, &widget.TextSegment{
-				Text: text[last:m[0]],
-				Style: widget.RichTextStyle{
-					ColorName: colorNow,
-					TextStyle: fyne.TextStyle{Monospace: true},
-				},
-			})
-		}
-
-		codes := strings.Split(text[m[2]:m[3]], ";")
-		for _, c := range codes {
-			if c == "0" {
-				colorNow = theme.ColorNameForeground
-			} else {
-				if col := ansiColor(c); col != theme.ColorNameForeground {
-					colorNow = col
-				}
-			}
-		}
-		last = m[1]
-	}
-
-	if last < len(text) {
-		segs = append(segs, &widget.TextSegment{
-			Text: text[last:],
-			Style: widget.RichTextStyle{
-				ColorName: colorNow,
-				TextStyle: fyne.TextStyle{Monospace: true},
-			},
-		})
-	}
-
-	return segs
-}
-
-/* --- WRITE OUTPUT (LOGIKA OVERWRITE) --- */
-func (cb *customBuffer) Write(p []byte) (int, error) {
 	raw := string(p)
-
-	// 1. Ubah CRLF jadi LF biasa
+	
+	// Normalisasi Newline
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 
-	// 2. [LOGIKA PENTING] Penanganan \r (Carriage Return)
-	// Script bash sering output: "Loading..." lalu "\rSelesai".
-	// Kita harus memecah berdasarkan baris (\n), lalu di setiap baris
-	// kita pecah berdasarkan \r dan hanya mengambil bagian TERAKHIR.
-	// Ini membuat tampilan jadi satu baris (seperti "✓ Checking...").
-	
-	var cleanLines []string
-	lines := strings.Split(raw, "\n")
-	
-	for _, line := range lines {
-		if strings.Contains(line, "\r") {
-			parts := strings.Split(line, "\r")
-			// Ambil bagian terakhir saja (simulasi overwrite)
-			cleanLines = append(cleanLines, parts[len(parts)-1])
-		} else {
-			cleanLines = append(cleanLines, line)
-		}
-	}
-	// Gabungkan kembali
-	raw = strings.Join(cleanLines, "\n")
+	// Split berdasarkan kode ESC ANSI
+	// Contoh: "Text \033[31m Merah" -> ["Text ", "[31m Merah"]
+	parts := strings.Split(raw, "\x1b")
 
-	// 3. Hapus ANSI cursor movement
-	raw = stripCursorANSI(raw)
+	for i, part := range parts {
+		content := part
+		
+		// Jika bukan bagian pertama, berarti ini diawali kode ANSI
+		if i > 0 {
+			if strings.HasPrefix(content, "[") {
+				// Cari akhir kode 'm'
+				if idx := strings.Index(content, "m"); idx != -1 {
+					codeStr := content[1:idx] // Ambil angka, misal "31;1"
+					textPart := content[idx+1:] // Ambil teks setelah kode
 
-	if raw == "" {
-		return len(p), nil
-	}
-
-	// 4. Konversi ke Segment
-	newSegments := ansiToRich(raw)
-
-	// Optimasi penggabungan text segment (biar makin rapat)
-	if len(cb.rich.Segments) > 0 {
-		lastIdx := len(cb.rich.Segments) - 1
-		if lastSeg, ok := cb.rich.Segments[lastIdx].(*widget.TextSegment); ok {
-			if len(newSegments) > 0 {
-				if firstNewSeg, ok2 := newSegments[0].(*widget.TextSegment); ok2 {
-					if lastSeg.Style == firstNewSeg.Style {
-						lastSeg.Text += firstNewSeg.Text
-						newSegments = newSegments[1:]
+					// Parse warna sederhana (ambil kode terakhir)
+					codes := strings.Split(codeStr, ";")
+					for _, c := range codes {
+						if c == "0" {
+							t.curStyle.FGColor = theme.ForegroundColor()
+						} else {
+							t.curStyle.FGColor = ansiToColor(c)
+						}
 					}
+					content = textPart
 				}
 			}
 		}
+
+		// Proses karakter per karakter untuk TextGrid
+		for _, char := range content {
+			if char == '\n' {
+				t.curRow++
+				t.curCol = 0
+				continue
+			}
+			if char == '\r' {
+				t.curCol = 0 // Overwrite baris yang sama (Fix Loading Bar)
+				continue
+			}
+
+			// Pastikan baris tersedia
+			for t.curRow >= len(t.grid.Rows) {
+				t.grid.SetRow(len(t.grid.Rows), []widget.TextGridCell{})
+			}
+			
+			// Pastikan baris cukup panjang
+			rowCells := t.grid.Rows[t.curRow].Cells
+			if t.curCol >= len(rowCells) {
+				// Extend row manual jika perlu (TextGrid biasanya auto, tapi aman manual)
+				newCells := make([]widget.TextGridCell, t.curCol+1)
+				copy(newCells, rowCells)
+				t.grid.SetRow(t.curRow, newCells)
+			}
+
+			// Set Cell
+			t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
+				Rune:  char,
+				Style: t.curStyle,
+			})
+			t.curCol++
+		}
 	}
 
-	cb.rich.Segments = append(cb.rich.Segments, newSegments...)
-	cb.rich.Refresh()
-	cb.scroll.ScrollToBottom()
-
+	t.grid.Refresh()
+	t.scroll.ScrollToBottom()
 	return len(p), nil
+}
+
+func (t *Terminal) Clear() {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.grid.SetContent("") // Reset Grid
+	t.curRow = 0
+	t.curCol = 0
 }
 
 /* ===============================
@@ -203,20 +159,14 @@ func (cb *customBuffer) Write(p []byte) (int, error) {
 
 func main() {
 	a := app.New()
-	
-	// SET THEME CUSTOM KITA DI SINI
-	a.Settings().SetTheme(&myTheme{})
+	a.Settings().SetTheme(theme.DarkTheme())
 
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
-	/* OUTPUT CONFIG */
-	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff 
-	output.Scroll = container.ScrollNone
+	/* --- GANTI RICHTEXT DENGAN TERMINAL CUSTOM --- */
+	term := NewTerminal()
 	
-	scroll := container.NewScroll(output)
-
 	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
@@ -226,12 +176,11 @@ func main() {
 
 	var stdin io.WriteCloser
 
-	/* FUNCTION RUN FILE */
+	/* EXEC FILE FUNCTION */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
-		output.Segments = nil
-		output.Refresh()
+		term.Clear()
 		status.SetText("Status: Menyiapkan...")
 
 		data, _ := io.ReadAll(reader)
@@ -239,6 +188,7 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
+			// Copy File
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -250,25 +200,27 @@ func main() {
 			status.SetText("Status: Berjalan")
 
 			var cmd *exec.Cmd
-			// Tambahkan stty -echo agar input tidak double, dan sh
-			cmdString := fmt.Sprintf("stty -echo; sh %s", target)
+			// Gunakan 'sh' agar script berjalan di shell env yang benar
+			// Tambahkan 'stty -echo' agar input user tidak muncul double
+			cmdStr := fmt.Sprintf("stty -echo; sh %s", target)
 			if isBinary {
-				cmdString = target
+				cmdStr = target
 			}
-			
-			cmd = exec.Command("su", "-c", cmdString)
+
+			cmd = exec.Command("su", "-c", cmdStr)
 
 			stdin, _ = cmd.StdinPipe()
-			buf := &customBuffer{rich: output, scroll: scroll}
-			cmd.Stdout = buf
-			cmd.Stderr = buf
+			
+			// Hubungkan Stdout/Stderr ke Terminal TextGrid kita
+			cmd.Stdout = term
+			cmd.Stderr = term
 
 			err := cmd.Run()
 			
 			if err != nil {
-				buf.Write([]byte(fmt.Sprintf("\n[EXIT: %v]", err)))
+				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
-				buf.Write([]byte("\n[Selesai]"))
+				term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
 			}
 			status.SetText("Status: Selesai")
 			stdin = nil
@@ -280,24 +232,16 @@ func main() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
 			
-			output.Segments = append(output.Segments, &widget.TextSegment{
-				Text: "> " + input.Text + "\n",
-				Style: widget.RichTextStyle{
-					ColorName: theme.ColorNamePrimary,
-					TextStyle: fyne.TextStyle{Monospace: true},
-				},
-			})
-			output.Refresh()
-			
-			cbScroll := &customBuffer{rich: output, scroll: scroll}
-			cbScroll.scroll.ScrollToBottom()
+			// Tulis input user ke log (Warna Biru)
+			// \x1b[36m adalah Cyan/Biru Terang
+			term.Write([]byte(fmt.Sprintf("\x1b[36m> %s\x1b[0m\n", input.Text)))
 			
 			input.SetText("")
 		}
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT (VERTIKAL TOMBOL DI ATAS) */
+	/* UI LAYOUT (TOMBOL DI ATAS) */
 	topControl := container.NewVBox(
 		widget.NewButton("Pilih File", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
@@ -307,8 +251,7 @@ func main() {
 			}, w).Show()
 		}),
 		widget.NewButton("Clear Log", func() {
-			output.Segments = nil
-			output.Refresh()
+			term.Clear()
 		}),
 		status,
 	)
@@ -319,7 +262,7 @@ func main() {
 		topControl,    
 		bottomControl, 
 		nil, nil,      
-		scroll,        
+		term.scroll,   // Widget TextGrid dalam Scroll
 	))
 
 	w.ShowAndRun()
