@@ -10,28 +10,32 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/canvas" // Import ini sudah dipindah ke atas
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
 
-// Struktur Buffer yang dimodifikasi untuk RichText
+// --- KONFIGURASI WARNA & PARSER ---
+
+// Struktur Buffer
 type customBuffer struct {
 	richText *widget.RichText
 	scroll   *container.Scroll
-	window   fyne.Window
-	// Menyimpan state warna terakhir agar nyambung antar chunk output
+	mutex    sync.Mutex // Mutex untuk mencegah crash saat refresh cepat
+	
+	// State
 	lastColor color.Color
 	lastBold  bool
 }
 
-// Map warna ANSI standar ke warna Go
+// Map warna ANSI (Foreground)
 var ansiColors = map[int]color.Color{
-	30: color.RGBA{100, 100, 100, 255}, // Black (Grayish for visibility)
+	30: color.RGBA{150, 150, 150, 255}, // Black/Gray
 	31: color.RGBA{255, 80, 80, 255},   // Red
 	32: color.RGBA{80, 200, 80, 255},   // Green
 	33: color.RGBA{255, 255, 80, 255},  // Yellow
@@ -49,7 +53,7 @@ var ansiColors = map[int]color.Color{
 	97: color.White,                    // Bright White
 }
 
-// Struct Custom Segment untuk menangani warna spesifik
+// Segment Teks Kustom (Agar warna lebih tajam & Monospace terjamin)
 type coloredText struct {
 	widget.TextSegment
 	Color color.Color
@@ -60,7 +64,7 @@ func (t *coloredText) Update(o fyne.CanvasObject) {
 		text.Text = t.Text
 		text.Color = t.Color
 		text.TextStyle = t.Style.TextStyle
-		text.TextSize = 12 // Ukuran font monospace
+		text.TextSize = 11 // Ukuran font sedikit lebih kecil agar muat banyak
 		text.Refresh()
 	}
 }
@@ -69,60 +73,87 @@ func (t *coloredText) Visual() fyne.CanvasObject {
 	text := canvas.NewText(t.Text, t.Color)
 	text.TextStyle = t.Style.TextStyle
 	text.TextStyle.Monospace = true
-	text.TextSize = 12
+	text.TextSize = 11
 	return text
 }
 
-// Fungsi utama parsing ANSI
+// --- LOGIKA PARSING UTAMA ---
+
 func (cb *customBuffer) appendAnsiText(text string) {
-	// Regex untuk memisahkan kode ANSI: \x1b[...m
-	re := regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	// Regex yang lebih kuat: Menangkap Warna (m), Clear Screen (J), Cursor (H), dll
+	// Format: \x1b [ param char
+	re := regexp.MustCompile(`\x1b\[([0-9;?]*)([a-zA-Z])`)
 
 	// Split teks berdasarkan kode ANSI
 	parts := re.Split(text, -1)
 	matches := re.FindAllStringSubmatch(text, -1)
 
-	// Proses bagian pertama (text sebelum kode warna pertama)
+	// Tambahkan teks awal sebelum kode pertama
 	if len(parts) > 0 && parts[0] != "" {
-		cb.addColoredSegment(parts[0])
+		cb.addSegmentLocked(parts[0])
 	}
 
 	for i, match := range matches {
-		codeStr := match[1]
+		paramStr := match[1] // Angka (misal: "1;31" atau "2")
+		cmdChar := match[2]  // Perintah (misal: "m", "J", "H")
 
-		// Parsing kode (misal "1;31" -> Bold, Red)
-		codes := strings.Split(codeStr, ";")
-		for _, c := range codes {
-			val, _ := strconv.Atoi(c)
-			if val == 0 {
-				// Reset
-				cb.lastColor = color.White
-				cb.lastBold = false
-			} else if val == 1 {
-				cb.lastBold = true
-			} else if col, ok := ansiColors[val]; ok {
-				cb.lastColor = col
+		switch cmdChar {
+		case "m": // --- PERINTAH WARNA ---
+			codes := strings.Split(paramStr, ";")
+			for _, c := range codes {
+				val, _ := strconv.Atoi(c)
+				if val == 0 {
+					cb.lastColor = color.White
+					cb.lastBold = false
+				} else if val == 1 {
+					cb.lastBold = true
+				} else if col, ok := ansiColors[val]; ok {
+					cb.lastColor = col
+				}
+				// Abaikan kode background (40-47) karena RichText Fyne sulit merender background warna per kata
 			}
+
+		case "J": // --- PERINTAH CLEAR SCREEN ---
+			// Jika script kirim "2J" (Clear Screen), kita hapus segmen teks!
+			if paramStr == "2" {
+				cb.richText.Segments = nil
+			}
+
+		case "H": // --- PERINTAH HOME CURSOR ---
+			// Biasanya [H dikirim bersamaan dengan [2J. 
+			// Jika berdiri sendiri, biasanya minta overwrite dari atas.
+			// Untuk simplifikasi Fyne, kita anggap ini refresh UI jika buffer sudah penuh.
+			// (Kita abaikan logic overwrite kompleks, tapi kita cegah print "[H")
+
+		case "l", "h": 
+			// Kode hide/show cursor (?25l), abaikan saja agar tidak jadi sampah.
 		}
 
-		// Tambahkan teks setelah kode warna ini (jika ada)
+		// Tambahkan teks actual setelah kode ini
 		if i+1 < len(parts) && parts[i+1] != "" {
-			cb.addColoredSegment(parts[i+1])
+			cb.addSegmentLocked(parts[i+1])
 		}
 	}
 
 	cb.richText.Refresh()
-	cb.scroll.ScrollToBottom()
+	// Hanya scroll ke bawah jika tidak baru saja di-clear
+	if len(cb.richText.Segments) > 0 {
+		cb.scroll.ScrollToBottom()
+	}
 }
 
-func (cb *customBuffer) addColoredSegment(text string) {
-	// Gunakan warna saat ini, atau fallback ke White
-	currentColor := cb.lastColor
-	if currentColor == nil {
-		currentColor = color.White
+func (cb *customBuffer) addSegmentLocked(text string) {
+	col := cb.lastColor
+	if col == nil {
+		col = color.White
 	}
 
-	// Buat segmen kustom
+	// Filter karakter aneh yang mungkin tersisa
+	text = strings.ReplaceAll(text, "\r", "") // Hapus carriage return agar tidak numpuk
+	
 	seg := &coloredText{
 		TextSegment: widget.TextSegment{
 			Text: text,
@@ -130,51 +161,50 @@ func (cb *customBuffer) addColoredSegment(text string) {
 				TextStyle: fyne.TextStyle{Monospace: true, Bold: cb.lastBold},
 			},
 		},
-		Color: currentColor,
+		Color: col,
 	}
-
 	cb.richText.Segments = append(cb.richText.Segments, seg)
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	rawText := string(p)
 
-	// Logika replace user (Expires hack)
-	re := regexp.MustCompile(`(?i)Expires:.*`)
-	modifiedText := re.ReplaceAllString(rawText, "Expires: 99 days")
-
-	// Panggil parser ANSI (harus di thread UI agar aman, atau panggil Refresh nanti)
-	// Karena Write dipanggil dari Goroutine exec, kita tidak boleh update UI langsung.
-	// Namun Fyne v2 seringkali handle refresh via Refresh().
-	// Untuk keamanan thread, lebih baik gunakan window.Canvas().Refresh di dalam append jika crash,
-	// tapi method .Refresh() pada widget biasanya thread-safe di versi baru.
-	cb.appendAnsiText(modifiedText)
+	// Hapus logic "Expires" jika mengganggu layout, atau biarkan
+	// re := regexp.MustCompile(`(?i)Expires:.*`)
+	// modifiedText := re.ReplaceAllString(rawText, "Expires: 99 days")
+	
+	// Kirim langsung ke parser (tanpa modifikasi expires agar layout asli terjaga)
+	cb.appendAnsiText(rawText)
 
 	return len(p), nil
 }
 
+// --- MAIN UI ---
+
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Universal Root Executor (Color Support)")
-	myWindow.Resize(fyne.NewSize(600, 500))
+	myWindow := myApp.NewWindow("Universal Root Executor (Clean UI)")
+	myWindow.Resize(fyne.NewSize(700, 600)) // Ukuran diperbesar sedikit
 
-	// Output menggunakan RichText untuk support warna
+	// Menggunakan background gelap custom (Workaround sederhana: Rect hitam di belakang)
+	// Tapi untuk RichText, kita biarkan default theme Fyne (biasanya mengikuti System Mode).
+	// Pastikan HP/Emulator dalam "Dark Mode" agar teks putih terlihat.
+
 	outputRich := widget.NewRichText()
 	outputRich.Scroll = container.ScrollNone
-
+	
+	// Wrapper scroll
 	logScroll := container.NewScroll(outputRich)
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input di sini...")
+	inputEntry.SetPlaceHolder("Ketik pilihan (1, 2, dll)...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
 
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Menyiapkan file...")
-
-		// Reset log
+		statusLabel.SetText("Status: Menyiapkan...")
 		outputRich.Segments = nil
 		outputRich.Refresh()
 
@@ -184,8 +214,9 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Langkah 1: Copy file
-			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
+			// Setup File
+			exec.Command("su", "-c", "rm "+targetPath).Run() // Bersihkan file lama
+			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 755 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
 			go func() {
 				defer copyStdin.Close()
@@ -193,9 +224,8 @@ func main() {
 			}()
 			copyCmd.Run()
 
-			statusLabel.SetText("Status: Berjalan...")
+			statusLabel.SetText("Status: Running...")
 
-			// Langkah 2: Eksekusi
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", targetPath)
@@ -203,13 +233,16 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 
-			// Inject TERM variable
+			// ENV PENTING: Set TERM ke xterm agar script tidak mengirim kode aneh-aneh
+			// COLUMNS dan LINES membantu script formatting layout
 			cmd.Env = append(os.Environ(),
 				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
-				"TERM=xterm-256color")
+				"TERM=xterm", 
+				"COLUMNS=80", 
+				"LINES=24",
+			)
 
 			stdinPipe, _ = cmd.StdinPipe()
-
 			combinedBuf := &customBuffer{
 				richText:  outputRich,
 				scroll:    logScroll,
@@ -222,12 +255,9 @@ func main() {
 
 			err := cmd.Run()
 			if err != nil {
-				statusLabel.SetText("Status: Berhenti/Error")
-				// Manual append error merah
-				combinedBuf.lastColor = ansiColors[31] // Merah
-				combinedBuf.appendAnsiText("\n[Error: " + err.Error() + "]")
+				statusLabel.SetText("Selesai (Exit Code)")
 			} else {
-				statusLabel.SetText("Status: Selesai")
+				statusLabel.SetText("Selesai (Sukses)")
 			}
 			stdinPipe = nil
 		}()
@@ -236,18 +266,13 @@ func main() {
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			
-			// Tampilkan input user dengan warna Cyan
-			tmpBuf := &customBuffer{richText: outputRich, scroll: logScroll, lastColor: ansiColors[36]}
-			tmpBuf.appendAnsiText("> " + inputEntry.Text + "\n")
-
 			inputEntry.SetText("")
 		}
 	}
 
 	inputEntry.OnSubmitted = func(s string) { sendInput() }
 	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-	btnSelect := widget.NewButton("Pilih File (Bash/SHC Binary)", func() {
+	btnSelect := widget.NewButton("Load Script (BASH/SHC)", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if reader != nil {
 				executeFile(reader)
@@ -255,17 +280,23 @@ func main() {
 		}, myWindow)
 		fd.Show()
 	})
-	btnClear := widget.NewButton("Bersihkan Log", func() {
-		outputRich.Segments = nil
-		outputRich.Refresh()
-	})
+	
+	// Layout
+	bottomBar := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
+	topBar := container.NewVBox(btnSelect, statusLabel)
+	
+	// Gunakan background Hitam pekat di belakang Log agar seperti terminal
+	bgRect := canvas.NewRectangle(color.RGBA{10, 10, 10, 255})
+	logContainer := container.NewStack(bgRect, logScroll)
 
-	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, btnClear, statusLabel),
-		container.NewBorder(nil, nil, nil, btnSend, inputEntry),
-		nil, nil, logScroll,
-	))
+	content := container.NewBorder(
+		topBar,
+		bottomBar,
+		nil, nil,
+		logContainer,
+	)
 
+	myWindow.SetContent(content)
 	myWindow.ShowAndRun()
 }
 
