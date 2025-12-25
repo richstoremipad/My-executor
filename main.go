@@ -20,7 +20,7 @@ import (
 )
 
 /* ==========================================
-   TERMINAL WIDGET (TEXTGRID + ANSI REGEX)
+   TERMINAL WIDGET
 ========================================== */
 
 type Terminal struct {
@@ -37,7 +37,6 @@ func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
 
-	// Default Style: Putih (Foreground)
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
@@ -107,7 +106,6 @@ func (t *Terminal) Write(p []byte) (int, error) {
 
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
-
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
 
@@ -158,7 +156,6 @@ func (t *Terminal) printText(text string) {
 		}
 
 		cellStyle := *t.curStyle
-
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
 			Style: &cellStyle,
@@ -178,26 +175,22 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
-	/* --- LOGIKA KONFIRMASI KELUAR (FIX ANDROID BACK) --- */
-	
-	// Fungsi wrapper agar bisa dipanggil dari tombol Back maupun Close Window
-	askToQuit := func() {
-		dialog.ShowConfirm("Konfirmasi Keluar", "Yakin ingin menutup aplikasi?", func(ok bool) {
+	// [PENTING] SetMaster memastikan tombol Back dikenali sebagai navigasi App
+	w.SetMaster()
+
+	/* --- FUNGSI KONFIRMASI KELUAR --- */
+	w.SetCloseIntercept(func() {
+		// Dialog Confirm
+		cnf := dialog.NewConfirm("Konfirmasi Keluar", "Apakah Anda yakin ingin keluar?", func(ok bool) {
 			if ok {
-				a.Quit() // Gunakan a.Quit() agar benar-benar mati
+				a.Quit()
 			}
 		}, w)
-	}
-
-	// 1. Intercept tombol Close (X) di Desktop
-	w.SetCloseIntercept(askToQuit)
-
-	// 2. Intercept tombol Hardware Back di Android (KeyEscape)
-	w.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
-		// Android Back Button biasanya dipetakan ke KeyEscape di Fyne
-		if k.Name == fyne.KeyEscape {
-			askToQuit()
-		}
+		
+		// Set teks tombol agar lebih jelas (Opsional, tergantung Fyne version)
+		cnf.SetDismissText("Batal")
+		cnf.SetConfirmText("Ya")
+		cnf.Show()
 	})
 
 	/* TERMINAL SETUP */
@@ -239,8 +232,7 @@ func main() {
 			}
 
 			cmd := exec.Command("su", "-c", cmdStr)
-			
-			// Inject variable TERM agar warna keluar
+			// Inject TERM variable
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
