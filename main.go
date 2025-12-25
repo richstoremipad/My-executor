@@ -15,8 +15,10 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// customBuffer menggunakan widget.Label untuk tampilan lebih tajam
 type customBuffer struct {
-	area   *widget.Entry
+	label  *widget.Label
+	scroll *container.Scroll
 	window fyne.Window
 }
 
@@ -30,38 +32,38 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	re := regexp.MustCompile(`(?i)Expires:.*`)
 	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
 
-	cb.area.Append(modifiedText)
-	cb.window.Canvas().Refresh(cb.area)
+	// Update teks pada Label
+	cb.label.SetText(cb.label.Text + modifiedText)
+	
+	// Otomatis scroll ke paling bawah setiap ada log baru
+	cb.scroll.ScrollToBottom()
+	cb.window.Canvas().Refresh(cb.label)
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Interactive Root Executor (SHC)")
+	myWindow := myApp.NewWindow("Root Executor (Sharp Text)")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Konfigurasi Output Area agar tidak memicu keyboard
-	outputArea := widget.NewMultiLineEntry()
-	outputArea.TextStyle = fyne.TextStyle{Monospace: true}
-	
-	// Fitur Baru: Membuat log tidak bisa diedit dan tidak memicu keyboard
-	outputArea.Disable() 
+	// MENGGUNAKAN LABEL: Teks tetap putih tajam dan TIDAK memicu keyboard
+	outputLabel := widget.NewLabel("")
+	outputLabel.TextStyle = fyne.TextStyle{Monospace: true}
+	outputLabel.Wrapping = fyne.TextWrapBreak
 
-	// Membungkus outputArea dalam scroll container agar bisa digeser jari
-	logScroll := container.NewScroll(outputArea)
-	logScroll.SetMinSize(fyne.NewSize(600, 300))
+	// Scroll container agar bisa digeser dengan jari
+	logScroll := container.NewScroll(outputLabel)
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input di sini lalu tekan Kirim/Enter...")
+	inputEntry.SetPlaceHolder("Ketik input di sini...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
-	
 	var stdinPipe io.WriteCloser
 
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		statusLabel.SetText("Status: Menyiapkan file...")
-		outputArea.SetText("")
+		outputLabel.SetText("") // Reset log
 
 		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "temp_bin")
 		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
@@ -76,17 +78,17 @@ func main() {
 			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin", "TERM=dumb")
 
 			stdinPipe, _ = cmd.StdinPipe()
-			combinedBuf := &customBuffer{area: outputArea, window: myWindow}
+			
+			// Hubungkan ke label dan scroll
+			combinedBuf := &customBuffer{label: outputLabel, scroll: logScroll, window: myWindow}
 			cmd.Stdout = combinedBuf
 			cmd.Stderr = combinedBuf
 
 			err := cmd.Run()
 			if err != nil {
 				statusLabel.SetText("Status: Berhenti/Error")
-				outputArea.Append("\n[Proses Keluar: " + err.Error() + "]\n")
 			} else {
 				statusLabel.SetText("Status: Selesai")
-				outputArea.Append("\n[Proses Selesai]\n")
 			}
 			stdinPipe = nil
 		}()
@@ -95,7 +97,7 @@ func main() {
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			outputArea.Append(fmt.Sprintf("> %s\n", inputEntry.Text)) 
+			outputLabel.SetText(outputLabel.Text + "> " + inputEntry.Text + "\n")
 			inputEntry.SetText("") 
 		}
 	}
@@ -111,13 +113,12 @@ func main() {
 	})
 
 	btnClear := widget.NewButton("Bersihkan Log", func() {
-		outputArea.SetText("")
+		outputLabel.SetText("")
 	})
 
 	inputContainer := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
 	controls := container.NewVBox(btnSelect, btnClear, statusLabel)
 
-	// Layouting dengan Scroll Container di bagian tengah
 	myWindow.SetContent(container.NewBorder(
 		controls,
 		inputContainer, 
