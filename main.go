@@ -24,10 +24,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG
+   CONFIG (HYBRID DETECTION)
 ========================================== */
-// Link RAW GitHub (Pastikan Public)
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
+
+// CARA 1: File Flag (Otomatis hilang saat reboot)
+const FlagFile = "/dev/status_driver_aktif"
+
+// CARA 2: Nama Folder Module (Sesuai temuan kamu)
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
@@ -170,43 +174,41 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   HELPER FUNCTIONS (UPDATED)
+   HELPER FUNCTIONS (HYBRID CHECK)
 ================================ */
 
 func CheckKernelDriver() bool {
+	// CEK 1: Apakah File Flag di /dev/ ada? (Prioritas Utama)
+	if _, err := os.Stat(FlagFile); err == nil {
+		return true // Ada Flag = DETECTED
+	}
+
+	// CEK 2: Apakah Folder Module Kernel ada? (Backup Plan)
+	// Kita cek manual ke /sys/module/5.10_A12
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
-	err := cmd.Run()
-	return err == nil 
+	if err := cmd.Run(); err == nil {
+		return true // Ada Folder Module = DETECTED
+	}
+
+	// Jika keduanya gagal
+	return false 
 }
 
-// [FIXED] FUNGSI DOWNLOAD dengan PATH ABSOLUT
+// DOWNLOADER
 func downloadFile(url string, filepath string) (error, string) {
-	// Hapus file lama agar tidak korup (pakai root biar pasti kehapus)
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 
-	// METODE 1: CURL (Recommended untuk Root)
-	// Kita pastikan curl menulis ke path absolut (/data/local/tmp/...)
-	// -k: Skip SSL
-	// -L: Follow Redirect
-	// -f: Fail silently on HTTP error (404)
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
 	
 	if err == nil {
-		// Cek apakah file benar-benar terisi
-		// Kita cek pakai 'ls' via root karena aplikasi biasa mungkin gak bisa baca stat di tmp
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil {
 			return nil, "Success via CURL"
 		}
 	}
 
-	// METODE 2: Go HTTP Client (Fallback)
-	// Jika CURL gagal, kita coba download pakai Go.
-	// TAPI: App biasa mungkin gak bisa tulis ke /data/local/tmp.
-	// Jadi kita harus pipe streamnya ke perintah 'su' agar bisa ditulis.
-	
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -226,8 +228,6 @@ func downloadFile(url string, filepath string) (error, string) {
 		return fmt.Errorf("HTTP %d", resp.StatusCode), fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 
-	// [TRICKY] Pipe isi download langsung ke file tujuan via Root
-	// Ini menghindari "File Create Err" karena permission denied
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
 	if err != nil {
@@ -253,6 +253,11 @@ func downloadFile(url string, filepath string) (error, string) {
 func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
+
+	// SAAT BUKA APLIKASI:
+	// Hapus flag lama (/dev/) agar refresh status,
+	// TAPI jangan hapus folder module (/sys/) karena itu driver asli.
+	exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 
 	w := a.NewWindow("Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
@@ -293,6 +298,10 @@ func main() {
 		status.SetText("Status: Auto Install Kernel")
 		
 		go func() {
+			// Hapus File Flag (Reset Status Visual jadi Merah)
+			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
+			updateKernelStatus() 
+			
 			term.Write([]byte("\x1b[36m[*] Detecting Device Kernel...\x1b[0m\n"))
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil {
@@ -303,7 +312,6 @@ func main() {
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
-			// [FIXED] Gunakan Absolute Path di /data/local/tmp
 			downloadPath := "/data/local/tmp/temp_kernel_dl" 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
 			
@@ -324,7 +332,7 @@ func main() {
 				failReason = reason
 			}
 
-			// 2. Cek Short Version (Sebelum tanda -)
+			// 2. Cek Short Version
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
@@ -343,7 +351,7 @@ func main() {
 				}
 			}
 
-			// 3. Cek Major Version (misal 4.19)
+			// 3. Cek Major Version
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
@@ -362,17 +370,14 @@ func main() {
 				}
 			}
 
-			// Eksekusi
 			if !found {
 				term.Write([]byte("\n\x1b[31m[X] Script Not Found / Download Failed.\x1b[0m\n"))
 				term.Write([]byte(fmt.Sprintf("\x1b[90m    Last Error: %s\x1b[0m\n", failReason)))
-				term.Write([]byte("\x1b[90m    Pastikan file: " + rawVersion + ".sh ada di GitHub.\x1b[0m\n"))
 				status.SetText("Status: Gagal")
 			} else {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
 				term.Write([]byte("[*] Installing...\n"))
 				
-				// Rename hasil download ke target file eksekusi
 				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
 				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
 
@@ -394,7 +399,7 @@ func main() {
 				pipeStdin.Close()
 				
 				time.Sleep(1 * time.Second)
-				updateKernelStatus()
+				updateKernelStatus() // Cek apakah script membuat flag baru / module baru
 				status.SetText("Status: Selesai")
 			}
 		}()
@@ -418,7 +423,7 @@ func main() {
 			}()
 			copyCmd.Run()
 			status.SetText("Status: Berjalan")
-			updateKernelStatus()
+			
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", target)
@@ -437,8 +442,6 @@ func main() {
 			}
 			status.SetText("Status: Selesai")
 			stdin = nil
-			time.Sleep(1 * time.Second)
-			updateKernelStatus()
 		}()
 	}
 
@@ -455,7 +458,6 @@ func main() {
 	   UI CONSTRUCTION
 	========================================== */
 
-	// Header
 	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
@@ -464,6 +466,24 @@ func main() {
 		titleText,
 		kernelLabel,
 	)
+
+	// Tombol Baru: Cek Module (Manual)
+	checkBtn := widget.NewButtonWithIcon("Cek Module", theme.SearchIcon(), func() {
+		term.Write([]byte("\n\x1b[36m[*] Memeriksa Kernel Module...\x1b[0m\n"))
+		go func() {
+			// Cek lsmod
+			cmd := exec.Command("su", "-c", "lsmod")
+			output, err := cmd.CombinedOutput()
+			
+			if err != nil || len(output) < 5 {
+				cmd = exec.Command("su", "-c", "ls /sys/module/")
+				output, _ = cmd.CombinedOutput()
+			}
+			
+			term.Write(output)
+			term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
+		}()
+	})
 
 	installBtn := widget.NewButtonWithIcon("Install Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Auto Install", "Download dan install driver sesuai kernel HP?", func(ok bool) {
@@ -477,7 +497,7 @@ func main() {
 		term.Clear()
 	})
 
-	headerRight := container.NewHBox(installBtn, clearBtn)
+	headerRight := container.NewHBox(installBtn, checkBtn, clearBtn)
 	headerBar := container.NewBorder(nil, nil, 
 		container.NewPadded(headerLeft), 
 		headerRight,
@@ -488,7 +508,6 @@ func main() {
 		widget.NewSeparator(),
 	)
 
-	// Footer
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10
 	copyright.Alignment = fyne.TextAlignCenter
@@ -503,7 +522,6 @@ func main() {
 		inputContainer,
 	)
 
-	// Main Layout
 	mainLayer := container.NewBorder(
 		topSection,
 		bottomSection,
@@ -511,7 +529,6 @@ func main() {
 		term.scroll,
 	)
 
-	// FAB
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
