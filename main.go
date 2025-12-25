@@ -27,6 +27,8 @@ type customBuffer struct {
 
 /* --- HAPUS ANSI KONTROL (CURSOR, CLEAR) --- */
 func stripCursorANSI(s string) string {
+	// Menghapus kode ANSI non-warna (seperti clear screen, cursor movement)
+	// Ini penting agar log tidak berantakan
 	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
 	return re.ReplaceAllString(s, "")
 }
@@ -67,7 +69,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 				Text: text[last:m[0]],
 				Style: widget.RichTextStyle{
 					ColorName: colorNow,
-					TextStyle: fyne.TextStyle{Monospace: true}, // Wajib Monospace
+					TextStyle: fyne.TextStyle{Monospace: true}, // Wajib Monospace agar ASCII lurus
 				},
 			})
 		}
@@ -98,33 +100,32 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	return segs
 }
 
-/* --- WRITE OUTPUT (FIX RAPAT / COMPACT) --- */
+/* --- WRITE OUTPUT --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
 	raw := string(p)
 
-	// 1. Normalisasi CRLF ke LF
+	// 1. Ubah CRLF (\r\n) menjadi \n (Standar Unix)
+	// Ini menghilangkan spasi ganda akibat format Windows/Network
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	
-	// 2. Hapus CR sisa
+
+	// 2. Hapus CR (\r) yang berdiri sendiri.
+	// Jika tidak dihapus, loading bar bisa membuat baris baru terus menerus.
 	raw = strings.ReplaceAll(raw, "\r", "")
 
-	// 3. [FIX UTAMA] Hapus Double Newline (\n\n jadi \n)
-	// Ulangi terus sampai tidak ada spasi ganda vertikal
-	for strings.Contains(raw, "\n\n") {
-		raw = strings.ReplaceAll(raw, "\n\n", "\n")
-	}
+	// CATATAN: Saya menghapus pembersihan "\n\n" yang ada di revisi sebelumnya
+	// karena itu yang menyebabkan ASCII Art "XFILES" menjadi rusak/penyet.
 
-	// 4. Bersihkan kode kursor
+	// 3. Hapus ANSI cursor movement
 	raw = stripCursorANSI(raw)
 
-	// Jika string kosong setelah dibersihkan, jangan append segment kosong
+	// Jangan proses jika kosong
 	if raw == "" {
 		return len(p), nil
 	}
 
 	segments := ansiToRich(raw)
 	
-	// Update UI di Main Thread (agar aman)
+	// Gunakan Refresh di main thread
 	cb.rich.Segments = append(cb.rich.Segments, segments...)
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
@@ -145,18 +146,16 @@ func main() {
 
 	/* OUTPUT CONFIG */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff // Mencegah teks turun otomatis jika layar sempit
-	output.Scroll = container.ScrollNone
+	output.Wrapping = fyne.TextWrapOff 
+	output.Scroll = container.ScrollNone // Kita handle scroll sendiri via container
 	
 	scroll := container.NewScroll(output)
 
 	/* INPUT */
 	input := widget.NewEntry()
-	input.SetPlaceHolder("Ketik perintah/pilihan menu...")
+	input.SetPlaceHolder("Ketik input lalu Enter...")
 
 	status := widget.NewLabel("Status: Siap")
-	status.TextStyle = fyne.TextStyle{Bold: true}
-	
 	var stdin io.WriteCloser
 
 	/* FUNCTION RUN FILE */
@@ -165,14 +164,14 @@ func main() {
 
 		output.Segments = nil
 		output.Refresh()
-		status.SetText("Status: Menyiapkan...")
+		status.SetText("Status: Menyiapkan")
 
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Copy file dan chmod
+			// Copy file
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -184,7 +183,7 @@ func main() {
 			status.SetText("Status: Berjalan")
 
 			var cmd *exec.Cmd
-			// Gunakan 'sh' agar environment variabel lebih stabil
+			// Gunakan 'sh' untuk script shell agar lebih kompatibel
 			if isBinary {
 				cmd = exec.Command("su", "-c", target)
 			} else {
@@ -198,12 +197,12 @@ func main() {
 
 			err := cmd.Run()
 			
-			// Tampilkan status akhir
 			if err != nil {
-				buf.Write([]byte(fmt.Sprintf("\n[EXIT: %v]", err)))
+				buf.Write([]byte(fmt.Sprintf("\n[EXIT ERROR: %v]\n", err)))
 			} else {
-				buf.Write([]byte("\n[Selesai]"))
+				buf.Write([]byte("\n[Selesai]\n"))
 			}
+			
 			status.SetText("Status: Selesai")
 			stdin = nil
 		}()
@@ -214,7 +213,6 @@ func main() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
 			
-			// Tampilkan input user dengan warna biru
 			output.Segments = append(output.Segments, &widget.TextSegment{
 				Text: "> " + input.Text + "\n",
 				Style: widget.RichTextStyle{
@@ -224,47 +222,41 @@ func main() {
 			})
 			output.Refresh()
 			
-			// Paksa scroll ke bawah
+			// Scroll ke bawah manual setelah kirim
 			cbScroll := &customBuffer{rich: output, scroll: scroll}
-			cbScroll.scroll.ScrollToBottom()
+			cbScroll.scroll.ScrollToBottom() 
 			
 			input.SetText("")
 		}
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* LAYOUT */
-	// Toolbar atas
-	topBar := container.NewVBox(
-		container.NewHBox(
-			widget.NewButtonWithIcon("Pilih File", theme.FileIcon(), func() {
-				dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
-					if r != nil {
-						runFile(r)
-					}
-				}, w).Show()
-			}),
-			widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() {
-				output.Segments = nil
-				output.Refresh()
-			}),
-		),
+	/* UI LAYOUT - KEMBALI KE ORIGINAL */
+	// Menggunakan Layout VBox untuk tombol di atas (seperti request awal)
+	topContainer := container.NewVBox(
+		widget.NewButton("Pilih File", func() {
+			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+				if r != nil {
+					runFile(r)
+				}
+			}, w).Show()
+		}),
+		widget.NewButton("Clear Log", func() {
+			output.Segments = nil
+			output.Refresh()
+		}),
 		status,
-		widget.NewSeparator(),
 	)
 
-	// Input area bawah
-	bottomBar := container.NewBorder(nil, nil, nil, 
-		widget.NewButtonWithIcon("Kirim", theme.ConfirmIcon(), send), 
-		input,
-	)
+	bottomContainer := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
 
 	w.SetContent(container.NewBorder(
-		topBar,
-		bottomBar,
+		topContainer,    // Tombol di Atas (Vertikal Stack)
+		bottomContainer, // Input di Bawah
 		nil, nil,
-		scroll,
+		scroll,          // Output di Tengah
 	))
 
 	w.ShowAndRun()
 }
+
