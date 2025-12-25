@@ -15,15 +15,22 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-/* =========================
-   ANSI → RichText (FYNE v2)
-========================= */
+/* ===============================
+   BUFFER OUTPUT (FIXED)
+================================ */
 
 type customBuffer struct {
 	rich   *widget.RichText
 	scroll *container.Scroll
 }
 
+/* --- Hapus ANSI CONTROL (cursor, clear, dll) --- */
+func stripControlANSI(s string) string {
+	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	return re.ReplaceAllString(s, "")
+}
+
+/* --- Map ANSI color → Fyne Theme --- */
 func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
@@ -34,18 +41,15 @@ func ansiColor(code string) fyne.ThemeColorName {
 		return theme.ColorNameWarning
 	case "34":
 		return theme.ColorNamePrimary
-	case "35":
-		return theme.ColorNameForeground
-	case "36":
-		return theme.ColorNameForeground
 	default:
 		return theme.ColorNameForeground
 	}
 }
 
+/* --- ANSI → RichText (COLOR ONLY) --- */
 func ansiToRich(text string) []widget.RichTextSegment {
-	var segments []widget.RichTextSegment
-	currentColor := theme.ColorNameForeground
+	var segs []widget.RichTextSegment
+	colorNow := theme.ColorNameForeground
 
 	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	matches := re.FindAllStringIndex(text, -1)
@@ -53,10 +57,10 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	last := 0
 	for _, m := range matches {
 		if m[0] > last {
-			segments = append(segments, &widget.TextSegment{
+			segs = append(segs, &widget.TextSegment{
 				Text: text[last:m[0]],
 				Style: widget.RichTextStyle{
-					ColorName: currentColor,
+					ColorName: colorNow,
 					TextStyle: fyne.TextStyle{Monospace: true},
 				},
 			})
@@ -64,57 +68,58 @@ func ansiToRich(text string) []widget.RichTextSegment {
 
 		code := text[m[0]+2 : m[1]-1]
 		if code == "0" {
-			currentColor = theme.ColorNameForeground
+			colorNow = theme.ColorNameForeground
 		} else {
-			currentColor = ansiColor(code)
+			colorNow = ansiColor(code)
 		}
 		last = m[1]
 	}
 
 	if last < len(text) {
-		segments = append(segments, &widget.TextSegment{
+		segs = append(segs, &widget.TextSegment{
 			Text: text[last:],
 			Style: widget.RichTextStyle{
-				ColorName: currentColor,
+				ColorName: colorNow,
 				TextStyle: fyne.TextStyle{Monospace: true},
 			},
 		})
 	}
-
-	return segments
+	return segs
 }
 
+/* --- WRITE OUTPUT --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
-	text := string(p)
-
-	re := regexp.MustCompile(`(?i)Expires:.*`)
-	text = re.ReplaceAllString(text, "Expires: 99 days")
+	text := stripControlANSI(string(p))
 
 	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(text)...)
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
+
 	return len(p), nil
 }
 
-/* =========================
-            MAIN
-========================= */
+/* ===============================
+              MAIN
+================================ */
 
 func main() {
 	a := app.New()
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
+	/* OUTPUT */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapBreak
+	output.Wrapping = fyne.TextWrapOff // <<< PENTING (BIAR ASCII TIDAK PECAH)
 	scroll := container.NewScroll(output)
 
+	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik input lalu Enter...")
 
 	status := widget.NewLabel("Status: Siap")
 	var stdin io.WriteCloser
 
+	/* EXEC FILE */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -155,6 +160,7 @@ func main() {
 		}()
 	}
 
+	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
@@ -165,15 +171,14 @@ func main() {
 						ColorName: theme.ColorNamePrimary,
 						TextStyle: fyne.TextStyle{Monospace: true},
 					},
-				},
-			)
+				})
 			output.Refresh()
 			input.SetText("")
 		}
 	}
-
 	input.OnSubmitted = func(string) { send() }
 
+	/* UI */
 	w.SetContent(container.NewBorder(
 		container.NewVBox(
 			widget.NewButton("Pilih File", func() {
