@@ -26,10 +26,8 @@ import (
 /* ==========================================
    CONFIG
 ========================================== */
-// Link RAW GitHub yang sudah BENAR (Public & Folder Driver)
+// Link RAW GitHub (Pastikan Public)
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
-
-// Nama folder module kernel untuk deteksi status (Ganti jika tahu nama aslinya)
 const TargetDriverName = "Driver" 
 
 /* ==========================================
@@ -172,7 +170,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   HELPER FUNCTIONS
+   HELPER FUNCTIONS (UPDATED)
 ================================ */
 
 func CheckKernelDriver() bool {
@@ -181,36 +179,61 @@ func CheckKernelDriver() bool {
 	return err == nil 
 }
 
-// [FIXED] Download File dengan User-Agent Chrome
-func downloadFile(url string, filepath string) error {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
+// [FIXED] FUNGSI DOWNLOAD "SENJATA PAMUNGKAS"
+// Mencoba CURL (Root) dulu, baru fallback ke Go HTTP
+func downloadFile(url string, filepath string) (error, string) {
+	// Hapus file lama agar tidak korup
+	os.Remove(filepath)
+
+	// METODE 1: CURL (Recommended untuk Root/Termux)
+	// -k: Skip SSL (Penting untuk Android lama/Root)
+	// -L: Follow Redirect
+	// -f: Fail silently on HTTP error (404)
+	// --connect-timeout 5: Biar gak nunggu lama kalau down
+	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
+	cmd := exec.Command("su", "-c", cmdStr)
+	err := cmd.Run()
+	
+	if err == nil {
+		// Cek apakah file benar-benar terisi
+		info, statErr := os.Stat(filepath)
+		if statErr == nil && info.Size() > 0 {
+			return nil, "Success via CURL"
+		}
 	}
 
-	// Menyamar sebagai Browser agar tidak diblokir GitHub (404/403)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	// METODE 2: Go HTTP Client (Fallback jika CURL gagal)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err, "HTTP Init Fail"
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
 	req.Header.Set("Cache-Control", "no-cache")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return err, fmt.Sprintf("Net Err: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("status code %d", resp.StatusCode)
+		return fmt.Errorf("HTTP %d", resp.StatusCode), fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 
 	out, err := os.Create(filepath)
 	if err != nil {
-		return err
+		return err, "File Create Err"
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
-	return err
+	if err != nil {
+		return err, "Save Err"
+	}
+	
+	return nil, "Success via HTTP"
 }
 
 /* ===============================
@@ -267,19 +290,26 @@ func main() {
 				return
 			}
 			
+			// [PENTING] Trim spasi/newline agar URL tidak rusak
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
 			var downloadUrl string
 			var found bool = false
+			var failReason string
 
 			// 1. Cek Full Name
 			url1 := GitHubRepo + rawVersion + ".sh"
 			term.Write([]byte(fmt.Sprintf("\x1b[90m[1] Checking: %s\x1b[0m\n", url1)))
-			if downloadFile(url1, "temp_kernel_dl") == nil {
+			err, reason := downloadFile(url1, "temp_kernel_dl")
+			if err == nil {
 				downloadUrl = url1
 				found = true
+				term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+			} else {
+				term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
+				failReason = reason
 			}
 
 			// 2. Cek Short Version (Sebelum tanda -)
@@ -289,9 +319,14 @@ func main() {
 					shortVersion := parts[0]
 					url2 := GitHubRepo + shortVersion + ".sh"
 					term.Write([]byte(fmt.Sprintf("\x1b[90m[2] Checking: %s\x1b[0m\n", url2)))
-					if downloadFile(url2, "temp_kernel_dl") == nil {
+					err, reason = downloadFile(url2, "temp_kernel_dl")
+					if err == nil {
 						downloadUrl = url2
 						found = true
+						term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+					} else {
+						term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
+						failReason = reason
 					}
 				}
 			}
@@ -303,17 +338,23 @@ func main() {
 					majorVersion := parts[0] + "." + parts[1]
 					url3 := GitHubRepo + majorVersion + ".sh"
 					term.Write([]byte(fmt.Sprintf("\x1b[90m[3] Checking: %s\x1b[0m\n", url3)))
-					if downloadFile(url3, "temp_kernel_dl") == nil {
+					err, reason = downloadFile(url3, "temp_kernel_dl")
+					if err == nil {
 						downloadUrl = url3
 						found = true
+						term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+					} else {
+						term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
+						failReason = reason
 					}
 				}
 			}
 
 			// Eksekusi
 			if !found {
-				term.Write([]byte("\n\x1b[31m[X] Kernel Not Supported / Script Not Found.\x1b[0m\n"))
-				term.Write([]byte("\x1b[90m    Pastikan file sudah di-PUSH ke GitHub: " + rawVersion + ".sh\x1b[0m\n"))
+				term.Write([]byte("\n\x1b[31m[X] Script Not Found / Download Failed.\x1b[0m\n"))
+				term.Write([]byte(fmt.Sprintf("\x1b[90m    Last Error: %s\x1b[0m\n", failReason)))
+				term.Write([]byte("\x1b[90m    Pastikan file: " + rawVersion + ".sh ada di GitHub.\x1b[0m\n"))
 				status.SetText("Status: Gagal")
 			} else {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
