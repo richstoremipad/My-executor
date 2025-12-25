@@ -15,12 +15,13 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 /* ==========================================
-   TERMINAL WIDGET (TextGrid + ANSI Color)
+   CORE TERMINAL LOGIC (TIDAK BERUBAH)
 ========================================== */
 
 type Terminal struct {
@@ -36,16 +37,11 @@ type Terminal struct {
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
-
-	// Default Style: Teks Putih/Abu, Background Transparan
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
-
-	// Regex untuk menangkap kode ANSI
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
-
 	return &Terminal{
 		grid:     g,
 		scroll:   container.NewScroll(g),
@@ -56,20 +52,16 @@ func NewTerminal() *Terminal {
 	}
 }
 
-// Map Kode Warna ANSI (Support Bright Colors 90-97)
 func ansiToColor(code string) color.Color {
 	switch code {
-	// Standard Colors (30-37)
 	case "30": return color.Gray{Y: 100}
 	case "31": return theme.ErrorColor()
 	case "32": return theme.SuccessColor()
 	case "33": return theme.WarningColor()
 	case "34": return theme.PrimaryColor()
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan XFILES
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-
-	// Bright Colors (90-97)
 	case "90": return color.Gray{Y: 150}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
@@ -78,7 +70,6 @@ func ansiToColor(code string) color.Color {
 	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
 	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
 	case "97": return color.White
-
 	default: return nil
 	}
 }
@@ -92,28 +83,21 @@ func (t *Terminal) Clear() {
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
-
 		if loc == nil {
 			t.printText(raw)
 			break
 		}
-
 		if loc[0] > 0 {
 			t.printText(raw[:loc[0]])
 		}
-
 		ansiCode := raw[loc[0]:loc[1]]
 		t.handleAnsiCode(ansiCode)
-
 		raw = raw[loc[1]:]
 	}
-
 	t.grid.Refresh()
 	t.scroll.ScrollToBottom()
 	return len(p), nil
@@ -123,7 +107,6 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
-
 	switch command {
 	case 'm':
 		parts := strings.Split(content, ";")
@@ -158,18 +141,15 @@ func (t *Terminal) printText(text string) {
 			t.curCol = 0
 			continue
 		}
-
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
-
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
-
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
@@ -180,7 +160,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-              MAIN
+              MAIN UI
 ================================ */
 
 func main() {
@@ -189,37 +169,24 @@ func main() {
 
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
-	
-	// SetMaster PENTING agar tombol Back Android menutup aplikasi
 	w.SetMaster()
 
-	/* TERMINAL SETUP */
 	term := NewTerminal()
-
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
-
 	status := widget.NewLabel("Status: Siap")
-	status.TextStyle = fyne.TextStyle{Bold: true}
-
 	var stdin io.WriteCloser
 
-	/* RUN FILE FUNCTION */
+	/* --- LOGIKA EKSEKUSI (TIDAK BERUBAH) --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
 		status.SetText("Status: Menyiapkan...")
-
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-
 		go func() {
-			// 1. FIX ERROR GANTI FILE: Hapus file lama dulu!
-			// Ini mencegah script .sh mencoba mengeksekusi binary lama
 			exec.Command("su", "-c", "rm -f "+target).Run()
-
-			// 2. Tulis file baru
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -227,27 +194,18 @@ func main() {
 				in.Write(data)
 			}()
 			copyCmd.Run()
-
 			status.SetText("Status: Berjalan")
-
-			// 3. FIX BACK BUTTON & ERROR LOG:
-			// Hapus "stty raw -echo" karena menyebabkan "Inappropriate ioctl"
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", target)
 			} else {
 				cmd = exec.Command("su", "-c", "sh "+target)
 			}
-			
-			// Inject TERM agar warna keluar
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term
 			cmd.Stderr = term
-
 			err := cmd.Run()
-			
 			if err != nil {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
@@ -267,30 +225,80 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT */
-	topControl := container.NewVBox(
-		widget.NewButton("Pilih File", func() {
-			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
-				if r != nil {
-					runFile(r)
-				}
-			}, w).Show()
-		}),
-		widget.NewButton("Clear Log", func() {
-			term.Clear()
-		}),
+	/* ==========================================
+	   UI BARU: HEADER & COPYRIGHT TANGSAN
+	========================================== */
+
+	// Judul Besar
+	titleLabel := widget.NewLabelWithStyle("Root Executor", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	// Copyright Kecil
+	copyrightLabel := widget.NewLabel("Made by TANGSAN")
+	
+	// Gabungkan Judul dan Copyright secara vertikal
+	headerText := container.NewVBox(titleLabel, copyrightLabel)
+
+	// Tombol Clear Log (Icon Sampah)
+	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
+		term.Clear()
+	})
+	// Agar tombol clear tidak terlalu lebar
+	clearBtnContainer := container.NewHBox(layout.NewSpacer(), clearBtn)
+
+	// Header Toolbar (Teks di kiri, Tombol Clear di kanan)
+	headerToolbar := container.NewBorder(nil, nil, nil, clearBtnContainer, headerText)
+
+	// Gabungkan Header Toolbar, Status Bar, dan Garis Pemisah
+	topContainer := container.NewVBox(
+		headerToolbar,
 		status,
+		widget.NewSeparator(),
 	)
 
-	bottomControl := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
+	/* ==========================================
+	   UI BARU: INPUT BAR BAWAH
+	========================================== */
+	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
+	bottomControl := container.NewBorder(nil, nil, nil, sendBtn, input)
 
-	w.SetContent(container.NewBorder(
-		topControl,
+	/* ==========================================
+	   UI BARU: TOMBOL MELAYANG (FAB)
+	========================================== */
+	
+	// Tombol Pilih File dengan Icon Folder
+	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+			if r != nil {
+				runFile(r)
+			}
+		}, w).Show()
+	})
+	// Jadikan tombol "Penting" agar warnanya menonjol (Primary Color)
+	fabBtn.Importance = widget.HighImportance 
+
+	/* ==========================================
+	   KOMPOSISI LAYOUT UTAMA (STACK)
+	========================================== */
+
+	// LAYER 1: Konten Utama (Belakang)
+	// Header di atas, Input di bawah, Terminal di tengah
+	mainContentLayer := container.NewBorder(
+		topContainer,
 		bottomControl,
 		nil, nil,
 		term.scroll,
-	))
+	)
 
+	// LAYER 2: Tombol Melayang (Depan)
+	// Gunakan Padded container agar ada jarak dari pinggir layar
+	// Gunakan Border layout dengan tombol di 'bottom' dan 'right' (ini triknya)
+	fabLayer := container.NewPadded(
+		container.NewBorder(nil, nil, nil, fabBtn, nil),
+	)
+
+	// Tumpuk Layer 2 di atas Layer 1 menggunakan Stack
+	finalLayout := container.NewStack(mainContentLayer, fabLayer)
+
+	w.SetContent(finalLayout)
 	w.ShowAndRun()
 }
 
