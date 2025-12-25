@@ -20,7 +20,7 @@ import (
 )
 
 /* ==========================================
-   TERMINAL WIDGET (TextGrid + ANSI Color Fix)
+   TERMINAL WIDGET (TextGrid + ANSI Color)
 ========================================== */
 
 type Terminal struct {
@@ -43,7 +43,7 @@ func NewTerminal() *Terminal {
 		BGColor: color.Transparent,
 	}
 
-	// Regex untuk menangkap kode ANSI (Warna & Kontrol)
+	// Regex untuk menangkap kode ANSI
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 
 	return &Terminal{
@@ -56,31 +56,30 @@ func NewTerminal() *Terminal {
 	}
 }
 
-// Map Kode Warna ANSI agar mirip MT Manager
+// Map Kode Warna ANSI (Support Bright Colors 90-97)
 func ansiToColor(code string) color.Color {
 	switch code {
 	// Standard Colors (30-37)
-	case "30": return color.Gray{Y: 100}                 // Black/Dark Grey
-	case "31": return theme.ErrorColor()                 // Red
-	case "32": return theme.SuccessColor()               // Green
-	case "33": return theme.WarningColor()               // Yellow/Orange
-	case "34": return theme.PrimaryColor()               // Blue
-	case "35": return color.RGBA{200, 0, 200, 255}       // Magenta
-	case "36": return color.RGBA{0, 255, 255, 255}       // Cyan (XFILES Blue)
-	case "37": return theme.ForegroundColor()            // White
+	case "30": return color.Gray{Y: 100}
+	case "31": return theme.ErrorColor()
+	case "32": return theme.SuccessColor()
+	case "33": return theme.WarningColor()
+	case "34": return theme.PrimaryColor()
+	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan XFILES
+	case "37": return theme.ForegroundColor()
 
-	// Bright/Bold Colors (90-97) - Sering dipakai MT Manager
-	case "90": return color.Gray{Y: 150}                 // Bright Grey
-	case "91": return color.RGBA{255, 100, 100, 255}     // Bright Red
-	case "92": return color.RGBA{100, 255, 100, 255}     // Bright Green
-	case "93": return color.RGBA{255, 255, 100, 255}     // Bright Yellow
-	case "94": return color.RGBA{100, 100, 255, 255}     // Bright Blue
-	case "95": return color.RGBA{255, 100, 255, 255}     // Bright Magenta
-	case "96": return color.RGBA{100, 255, 255, 255}     // Bright Cyan
-	case "97": return color.White                        // Bright White
+	// Bright Colors (90-97)
+	case "90": return color.Gray{Y: 150}
+	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
+	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
+	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "97": return color.White
 
-	// Kode "1" (Bold) kita return nil agar TIDAK mereset warna yang sudah ada
-	default: return nil 
+	default: return nil
 	}
 }
 
@@ -105,16 +104,13 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			break
 		}
 
-		// Cetak teks sebelum kode ANSI
 		if loc[0] > 0 {
 			t.printText(raw[:loc[0]])
 		}
 
-		// Proses kode ANSI
 		ansiCode := raw[loc[0]:loc[1]]
 		t.handleAnsiCode(ansiCode)
 
-		// Lanjut ke sisa string
 		raw = raw[loc[1]:]
 	}
 
@@ -129,27 +125,23 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	command := codeSeq[len(codeSeq)-1]
 
 	switch command {
-	case 'm': // Ganti Warna
+	case 'm':
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
-				// Reset ke default
 				t.curStyle.FGColor = theme.ForegroundColor()
 			} else {
-				// Cek warna
 				col := ansiToColor(part)
 				if col != nil {
-					// HANYA ganti jika col tidak nil.
-					// Ini mencegah kode "1" (Bold) mengubah warna jadi putih.
 					t.curStyle.FGColor = col
 				}
 			}
 		}
-	case 'J': // Clear Screen
+	case 'J':
 		if strings.Contains(content, "2") {
 			t.Clear()
 		}
-	case 'H': // Cursor Home
+	case 'H':
 		t.curRow = 0
 		t.curCol = 0
 	}
@@ -167,12 +159,10 @@ func (t *Terminal) printText(text string) {
 			continue
 		}
 
-		// Expand Rows
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
 
-		// Expand Cols
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
@@ -180,9 +170,7 @@ func (t *Terminal) printText(text string) {
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
 
-		// Copy style value agar warna "menempel" di karakter tersebut
 		cellStyle := *t.curStyle
-		
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
 			Style: &cellStyle,
@@ -201,6 +189,9 @@ func main() {
 
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
+	
+	// SetMaster PENTING agar tombol Back Android menutup aplikasi
+	w.SetMaster()
 
 	/* TERMINAL SETUP */
 	term := NewTerminal()
@@ -224,6 +215,11 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
+			// 1. FIX ERROR GANTI FILE: Hapus file lama dulu!
+			// Ini mencegah script .sh mencoba mengeksekusi binary lama
+			exec.Command("su", "-c", "rm -f "+target).Run()
+
+			// 2. Tulis file baru
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -234,14 +230,16 @@ func main() {
 
 			status.SetText("Status: Berjalan")
 
-			cmdStr := fmt.Sprintf("stty raw -echo; sh %s", target)
+			// 3. FIX BACK BUTTON & ERROR LOG:
+			// Hapus "stty raw -echo" karena menyebabkan "Inappropriate ioctl"
+			var cmd *exec.Cmd
 			if isBinary {
-				cmdStr = target
+				cmd = exec.Command("su", "-c", target)
+			} else {
+				cmd = exec.Command("su", "-c", "sh "+target)
 			}
-
-			cmd := exec.Command("su", "-c", cmdStr)
 			
-			// Inject TERM agar script mau mengeluarkan warna
+			// Inject TERM agar warna keluar
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
@@ -269,7 +267,7 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT (Original) */
+	/* UI LAYOUT */
 	topControl := container.NewVBox(
 		widget.NewButton("Pilih File", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
