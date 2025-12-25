@@ -28,10 +28,10 @@ import (
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 
-// CARA 1: File Flag (Otomatis hilang saat reboot)
+// DETEKSI 1: File Flag (Reset saat reboot)
 const FlagFile = "/dev/status_driver_aktif"
 
-// CARA 2: Nama Folder Module (Sesuai temuan kamu)
+// DETEKSI 2: Folder Module (Backup check)
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
@@ -55,6 +55,7 @@ func NewTerminal() *Terminal {
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
+	// Regex untuk mendeteksi ANSI codes
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	return &Terminal{
 		grid:     g,
@@ -74,15 +75,15 @@ func ansiToColor(code string) color.Color {
 	case "33": return theme.WarningColor()
 	case "34": return theme.PrimaryColor()
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 150}
+	case "90": return color.Gray{Y: 100} // Dark Gray
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
-	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255} // Bright Green
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
 	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
 	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
-	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255} // Bright Cyan
 	case "97": return color.White
 	default: return nil
 	}
@@ -98,7 +99,9 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	raw := string(p)
+	// Replace CRLF jadi LF
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil {
@@ -152,6 +155,7 @@ func (t *Terminal) printText(text string) {
 			continue
 		}
 		if char == '\r' {
+			// LOGIKA REFRESH BARIS (Untuk Progress Bar)
 			t.curCol = 0
 			continue
 		}
@@ -174,27 +178,33 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   HELPER FUNCTIONS (HYBRID CHECK)
+   ANIMATION & HELPERS
 ================================ */
 
+// FUNGSI BARU: Progress Bar Animation
+func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
+	barLength := 20
+	filledLength := (percent * barLength) / 100
+	bar := ""
+	for i := 0; i < barLength; i++ {
+		if i < filledLength {
+			bar += "█"
+		} else {
+			bar += "░"
+		}
+	}
+	// \r Mengembalikan kursor ke awal baris untuk animasi
+	msg := fmt.Sprintf("\r%s %s [%s] %d%%", colorCode, label, bar, percent)
+	term.Write([]byte(msg))
+}
+
 func CheckKernelDriver() bool {
-	// CEK 1: Apakah File Flag di /dev/ ada? (Prioritas Utama)
-	if _, err := os.Stat(FlagFile); err == nil {
-		return true // Ada Flag = DETECTED
-	}
-
-	// CEK 2: Apakah Folder Module Kernel ada? (Backup Plan)
-	// Kita cek manual ke /sys/module/5.10_A12
+	if _, err := os.Stat(FlagFile); err == nil { return true }
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
-	if err := cmd.Run(); err == nil {
-		return true // Ada Folder Module = DETECTED
-	}
-
-	// Jika keduanya gagal
+	if err := cmd.Run(); err == nil { return true }
 	return false 
 }
 
-// DOWNLOADER
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 
@@ -205,45 +215,28 @@ func downloadFile(url string, filepath string) (error, string) {
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil {
-			return nil, "Success via CURL"
+			return nil, "Success"
 		}
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err, "HTTP Init Fail"
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
-	req.Header.Set("Cache-Control", "no-cache")
-
+	if err != nil { return err, "Init Fail" }
+	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
+	
 	resp, err := client.Do(req)
-	if err != nil {
-		return err, fmt.Sprintf("Net Err: %v", err)
-	}
+	if err != nil { return err, "Net Err" }
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode), fmt.Sprintf("HTTP %d", resp.StatusCode)
-	}
+	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
 
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
-	if err != nil {
-		return err, "Pipe Err"
-	}
+	if err != nil { return err, "Pipe Err" }
+	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
 
-	go func() {
-		defer stdin.Close()
-		io.Copy(stdin, resp.Body)
-	}()
-
-	if err := writeCmd.Run(); err != nil {
-		return err, "Write Err (Root)"
-	}
-	
-	return nil, "Success via HTTP+Root"
+	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
+	return nil, "Success"
 }
 
 /* ===============================
@@ -254,9 +247,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	// SAAT BUKA APLIKASI:
-	// Hapus flag lama (/dev/) agar refresh status,
-	// TAPI jangan hapus folder module (/sys/) karena itu driver asli.
+	// Reset Flag saat start
 	exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 
 	w := a.NewWindow("Root Executor")
@@ -265,12 +256,11 @@ func main() {
 
 	term := NewTerminal()
 	input := widget.NewEntry()
-	input.SetPlaceHolder("Ketik perintah...")
-	status := widget.NewLabel("Status: Siap")
+	input.SetPlaceHolder("Terminal Command...")
+	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// Label Status Kernel
 	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
 	kernelLabel.TextSize = 10
 	kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -292,61 +282,77 @@ func main() {
 	}
 	updateKernelStatus()
 
-	/* --- LOGIKA AUTO INSTALL KERNEL --- */
+	/* --- LOGIKA AUTO INSTALL KEREN (PROFESSIONAL UI) --- */
 	autoInstallKernel := func() {
 		term.Clear()
-		status.SetText("Status: Auto Install Kernel")
+		status.SetText("System: Installing...")
 		
 		go func() {
-			// Hapus File Flag (Reset Status Visual jadi Merah)
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			updateKernelStatus() 
 			
-			term.Write([]byte("\x1b[36m[*] Detecting Device Kernel...\x1b[0m\n"))
+			// Header Keren
+			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
+			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
+			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
+			
+			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
+			time.Sleep(500 * time.Millisecond) // Efek delay biar kelihatan mikir
+
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil {
-				term.Write([]byte("\x1b[31m[!] Error detecting kernel.\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m[X] Critical Error: Cannot read kernel.\x1b[0m\n"))
 				return
 			}
-			
 			rawVersion := strings.TrimSpace(string(out))
-			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
+			term.Write([]byte(fmt.Sprintf(" -> Target: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
 			downloadPath := "/data/local/tmp/temp_kernel_dl" 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
 			
 			var downloadUrl string
 			var found bool = false
-			var failReason string
 
-			// 1. Cek Full Name
+			// Helper untuk animasi proses bar
+			simulateProcess := func(label string) {
+				for i := 0; i <= 100; i+=10 {
+					drawProgressBar(term, label, i, "\x1b[36m") // Cyan color
+					time.Sleep(50 * time.Millisecond)
+				}
+				term.Write([]byte("\n")) // Newline setelah selesai
+			}
+
+			// 1. Cek Full Version
+			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
+			// Animasi loading palsu (biar user lihat proses)
+			simulateProcess("Connecting...")
+			
 			url1 := GitHubRepo + rawVersion + ".sh"
-			term.Write([]byte(fmt.Sprintf("\x1b[90m[1] Checking: %s\x1b[0m\n", url1)))
-			err, reason := downloadFile(url1, downloadPath)
+			err, _ = downloadFile(url1, downloadPath)
 			if err == nil {
-				downloadUrl = url1
+				downloadUrl = "Variant 1 (Precise)"
 				found = true
-				term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+				term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
 			} else {
-				term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
-				failReason = reason
+				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 			}
 
 			// 2. Cek Short Version
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+					
 					shortVersion := parts[0]
 					url2 := GitHubRepo + shortVersion + ".sh"
-					term.Write([]byte(fmt.Sprintf("\x1b[90m[2] Checking: %s\x1b[0m\n", url2)))
-					err, reason = downloadFile(url2, downloadPath)
+					err, _ = downloadFile(url2, downloadPath)
 					if err == nil {
-						downloadUrl = url2
+						downloadUrl = "Variant 2 (Universal)"
 						found = true
-						term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
 					} else {
-						term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
-						failReason = reason
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 					}
 				}
 			}
@@ -355,29 +361,37 @@ func main() {
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 3)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+
 					majorVersion := parts[0] + "." + parts[1]
 					url3 := GitHubRepo + majorVersion + ".sh"
-					term.Write([]byte(fmt.Sprintf("\x1b[90m[3] Checking: %s\x1b[0m\n", url3)))
-					err, reason = downloadFile(url3, downloadPath)
+					err, _ = downloadFile(url3, downloadPath)
 					if err == nil {
-						downloadUrl = url3
+						downloadUrl = "Variant 3 (Legacy)"
 						found = true
-						term.Write([]byte(fmt.Sprintf("    -> \x1b[32mOK (%s)\x1b[0m\n", reason)))
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
 					} else {
-						term.Write([]byte(fmt.Sprintf("    -> \x1b[31mFail: %s\x1b[0m\n", reason)))
-						failReason = reason
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 					}
 				}
 			}
 
 			if !found {
-				term.Write([]byte("\n\x1b[31m[X] Script Not Found / Download Failed.\x1b[0m\n"))
-				term.Write([]byte(fmt.Sprintf("\x1b[90m    Last Error: %s\x1b[0m\n", failReason)))
-				status.SetText("Status: Gagal")
+				term.Write([]byte("\n\x1b[31m╔══════════════════════════════════╗\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m║     FATAL: DRIVER NOT FOUND      ║\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m╚══════════════════════════════════╝\x1b[0m\n"))
+				status.SetText("System: Failed")
 			} else {
-				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
-				term.Write([]byte("[*] Installing...\n"))
+				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + downloadUrl + "\x1b[0m\n"))
+				// Animasi Download yang lebih lama
+				for i := 0; i <= 100; i+=5 {
+					drawProgressBar(term, "Downloading Payload", i, "\x1b[92m")
+					time.Sleep(30 * time.Millisecond)
+				}
+				term.Write([]byte("\n\n\x1b[97m[*] Executing Root Installer...\x1b[0m\n"))
 				
+				// Eksekusi Real
 				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
 				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
 
@@ -394,22 +408,22 @@ func main() {
 				if err != nil {
 					term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 				} else {
-					term.Write([]byte("\n\x1b[32m[INSTALLATION COMPLETE]\x1b[0m\n"))
+					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
 				
 				time.Sleep(1 * time.Second)
-				updateKernelStatus() // Cek apakah script membuat flag baru / module baru
-				status.SetText("Status: Selesai")
+				updateKernelStatus()
+				status.SetText("System: Online")
 			}
 		}()
 	}
 
-	/* --- FUNGSI LOCAL FILE --- */
+	/* --- FUNGSI LAINNYA --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
-		status.SetText("Status: Menyiapkan...")
+		status.SetText("Status: Processing...")
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
@@ -417,30 +431,19 @@ func main() {
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
-			go func() {
-				defer in.Close()
-				in.Write(data)
-			}()
+			go func() { defer in.Close(); in.Write(data) }()
 			copyCmd.Run()
-			status.SetText("Status: Berjalan")
 			
 			var cmd *exec.Cmd
-			if isBinary {
-				cmd = exec.Command("su", "-c", target)
-			} else {
-				cmd = exec.Command("su", "-c", "sh "+target)
-			}
+			if isBinary { cmd = exec.Command("su", "-c", target)
+			} else { cmd = exec.Command("su", "-c", "sh "+target) }
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
-			cmd.Stdout = term
-			cmd.Stderr = term
-			err := cmd.Run()
-			if err != nil {
-				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
-			} else {
-				term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
-			}
-			status.SetText("Status: Selesai")
+			cmd.Stdout = term; cmd.Stderr = term
+			cmd.Run()
+			
+			term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
+			status.SetText("Status: Idle")
 			stdin = nil
 		}()
 	}
@@ -454,104 +457,55 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* ==========================================
-	   UI CONSTRUCTION
-	========================================== */
-
-	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
+	/* --- UI LAYOUT --- */
+	titleText := canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
 
-	headerLeft := container.NewVBox(
-		titleText,
-		kernelLabel,
-	)
+	headerLeft := container.NewVBox(titleText, kernelLabel)
 
-	// Tombol Baru: Cek Module (Manual)
-	checkBtn := widget.NewButtonWithIcon("Cek Module", theme.SearchIcon(), func() {
-		term.Write([]byte("\n\x1b[36m[*] Memeriksa Kernel Module...\x1b[0m\n"))
+	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
+		term.Write([]byte("\n\x1b[36m[*] Scanning Kernel Modules...\x1b[0m\n"))
 		go func() {
-			// Cek lsmod
 			cmd := exec.Command("su", "-c", "lsmod")
 			output, err := cmd.CombinedOutput()
-			
 			if err != nil || len(output) < 5 {
 				cmd = exec.Command("su", "-c", "ls /sys/module/")
 				output, _ = cmd.CombinedOutput()
 			}
-			
 			term.Write(output)
-			term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
+			term.Write([]byte("\n\x1b[32m[Scan Complete]\x1b[0m\n"))
 		}()
 	})
 
-	installBtn := widget.NewButtonWithIcon("Install Driver", theme.DownloadIcon(), func() {
-		dialog.ShowConfirm("Auto Install", "Download dan install driver sesuai kernel HP?", func(ok bool) {
-			if ok {
-				autoInstallKernel()
-			}
+	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
+		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
+			if ok { autoInstallKernel() }
 		}, w)
 	})
 	
-	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
-		term.Clear()
-	})
-
+	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
 	headerRight := container.NewHBox(installBtn, checkBtn, clearBtn)
-	headerBar := container.NewBorder(nil, nil, 
-		container.NewPadded(headerLeft), 
-		headerRight,
-	)
-	topSection := container.NewVBox(
-		headerBar,
-		container.NewPadded(status),
-		widget.NewSeparator(),
-	)
+	
+	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
+	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
+	
+	copyright := canvas.NewText("SYSTEM: ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
+	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Monospace: true}
+	sendBtn := widget.NewButtonWithIcon("Send", theme.MailSendIcon(), send)
+	inputContainer := container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input))
+	bottomSection := container.NewVBox(copyright, inputContainer)
 
-	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
-	copyright.TextSize = 10
-	copyright.Alignment = fyne.TextAlignCenter
-	copyright.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-
-	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	inputContainer := container.NewPadded(
-		container.NewBorder(nil, nil, nil, sendBtn, input),
-	)
-	bottomSection := container.NewVBox(
-		copyright,
-		inputContainer,
-	)
-
-	mainLayer := container.NewBorder(
-		topSection,
-		bottomSection,
-		nil, nil,
-		term.scroll,
-	)
-
+	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
+	
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
-		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
-			if r != nil {
-				runFile(r)
-			}
-		}, w).Show()
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	fabContainer := container.NewVBox(
-		layout.NewSpacer(), 
-		container.NewHBox(
-			layout.NewSpacer(),
-			fabBtn,
-			widget.NewLabel(" "), 
-		),
-		widget.NewLabel("      "), 
-		widget.NewLabel("      "), 
-	)
-
-	finalLayout := container.NewStack(mainLayer, fabContainer)
-
-	w.SetContent(finalLayout)
+	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), fabBtn, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
+	
+	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
 
