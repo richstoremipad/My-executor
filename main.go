@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 
@@ -17,7 +16,7 @@ import (
 )
 
 /* =========================
-   ANSI → RichText (SAFE)
+   ANSI → RichText (FYNE v2)
 ========================= */
 
 type customBuffer struct {
@@ -25,7 +24,7 @@ type customBuffer struct {
 	scroll *container.Scroll
 }
 
-func ansiToColorName(code string) fyne.ThemeColorName {
+func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
 		return theme.ColorNameError
@@ -58,7 +57,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 				Text: text[last:m[0]],
 				Style: widget.RichTextStyle{
 					ColorName: currentColor,
-					Monospace: true,
+					TextStyle: fyne.TextStyle{Monospace: true},
 				},
 			})
 		}
@@ -67,7 +66,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 		if code == "0" {
 			currentColor = theme.ColorNameForeground
 		} else {
-			currentColor = ansiToColorName(code)
+			currentColor = ansiColor(code)
 		}
 		last = m[1]
 	}
@@ -77,7 +76,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 			Text: text[last:],
 			Style: widget.RichTextStyle{
 				ColorName: currentColor,
-				Monospace: true,
+				TextStyle: fyne.TextStyle{Monospace: true},
 			},
 		})
 	}
@@ -85,7 +84,7 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	return segments
 }
 
-func (cb *customBuffer) Write(p []byte) (n int, err error) {
+func (cb *customBuffer) Write(p []byte) (int, error) {
 	text := string(p)
 
 	re := regexp.MustCompile(`(?i)Expires:.*`)
@@ -104,7 +103,7 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 func main() {
 	a := app.New()
 	w := a.NewWindow("Universal Root Executor")
-	w.Resize(fyne.NewSize(700, 520))
+	w.Resize(fyne.NewSize(720, 520))
 
 	output := widget.NewRichText()
 	output.Wrapping = fyne.TextWrapBreak
@@ -116,24 +115,25 @@ func main() {
 	status := widget.NewLabel("Status: Siap")
 	var stdin io.WriteCloser
 
-	execFile := func(reader fyne.URIReadCloser) {
+	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
+
 		output.Segments = nil
 		output.Refresh()
-		status.SetText("Status: Menyiapkan...")
+		status.SetText("Status: Menyiapkan")
 
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			cmdCopy := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
-			in, _ := cmdCopy.StdinPipe()
+			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
+			in, _ := copyCmd.StdinPipe()
 			go func() {
 				defer in.Close()
 				in.Write(data)
 			}()
-			cmdCopy.Run()
+			copyCmd.Run()
 
 			status.SetText("Status: Berjalan")
 
@@ -145,9 +145,9 @@ func main() {
 			}
 
 			stdin, _ = cmd.StdinPipe()
-			buffer := &customBuffer{rich: output, scroll: scroll}
-			cmd.Stdout = buffer
-			cmd.Stderr = buffer
+			buf := &customBuffer{rich: output, scroll: scroll}
+			cmd.Stdout = buf
+			cmd.Stderr = buf
 
 			cmd.Run()
 			status.SetText("Status: Selesai")
@@ -163,7 +163,7 @@ func main() {
 					Text: "> " + input.Text + "\n",
 					Style: widget.RichTextStyle{
 						ColorName: theme.ColorNamePrimary,
-						Monospace: true,
+						TextStyle: fyne.TextStyle{Monospace: true},
 					},
 				},
 			)
@@ -179,7 +179,7 @@ func main() {
 			widget.NewButton("Pilih File", func() {
 				dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 					if r != nil {
-						execFile(r)
+						runFile(r)
 					}
 				}, w).Show()
 			}),
