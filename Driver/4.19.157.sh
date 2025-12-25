@@ -3248,14 +3248,29 @@ TEMP_MODULE="/data/nh.ko"
 echo "$MODULE_BASE64" | base64 -d > "$TEMP_MODULE"
 
 
+# Eksekusi dan tangkap errornya
 ERROR_MSG=$(insmod "$TEMP_MODULE" 2>&1)
+
+# Cek apakah sukses (Kode 0 artinya sukses)
 if [ $? -eq 0 ]; then
-  echo -e "${COLOR_GREEN}操作成功:${NC} RT驱动已经成功加载。"
-  rm -f "$TEMP_MODULE"
+    echo -e "${COLOR_GREEN}Success: Driver Loaded.${NC}"
+    
+    # [SISIPAN 1] Buat Flag Sukses (Agar App Go jadi HIJAU)
+    touch /dev/status_driver_aktif
+    chmod 777 /dev/status_driver_aktif
+    
+    # Hapus file sampah
+    rm -f "$TEMP_MODULE"
+
 else
-  echo -e "${COLOR_RED}刷入失败，请重启手机后再试一次，确定不行再换其他脚本。${RESET_SEQ}"
-  echo "20 秒后自动重启设备..."
-  sleep 20
-  reboot
-  exit 1
+    echo -e "${COLOR_RED}Install Failed!${NC}"
+    echo "Error: $ERROR_MSG"
+    
+    # [SISIPAN 2] Hapus Flag (Agar App Go jadi MERAH)
+    rm -f /dev/status_driver_aktif
+    
+    # [PENTING] Saya menghapus perintah 'reboot' agar Anda bisa baca log errornya dulu.
+    # Jika ingin tetap reboot, tambahkan baris 'reboot' di bawah ini.
+    
+    exit 1
 fi
