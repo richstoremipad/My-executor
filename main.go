@@ -7,31 +7,34 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 /* ===============================
-          BUFFER OUTPUT
+        TERMINAL BUFFER
 ================================ */
 
 type customBuffer struct {
-	rich   *widget.RichText
-	scroll *container.Scroll
+	rich     *widget.RichText
+	scroll   *container.Scroll
+	lastLine []widget.RichTextSegment
+	mu       sync.Mutex
 }
 
-/* --- HAPUS ANSI KONTROL (CURSOR, CLEAR) --- */
+/* --- Hapus ANSI selain warna --- */
 func stripCursorANSI(s string) string {
 	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
 	return re.ReplaceAllString(s, "")
 }
 
-/* --- MAP ANSI COLOR → FYNE --- */
 func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
@@ -40,16 +43,13 @@ func ansiColor(code string) fyne.ThemeColorName {
 		return theme.ColorNameSuccess
 	case "33":
 		return theme.ColorNameWarning
-	case "34":
-		return theme.ColorNamePrimary
-	case "36":
+	case "34", "36":
 		return theme.ColorNamePrimary
 	default:
 		return theme.ColorNameForeground
 	}
 }
 
-/* --- ANSI → RichText (SUPPORT MULTI CODE) --- */
 func ansiToRich(text string) []widget.RichTextSegment {
 	var segs []widget.RichTextSegment
 	colorNow := theme.ColorNameForeground
@@ -72,13 +72,10 @@ func ansiToRich(text string) []widget.RichTextSegment {
 		codes := strings.Split(text[m[2]:m[3]], ";")
 		colorNow = theme.ColorNameForeground
 		for _, c := range codes {
-			if c == "0" {
-				colorNow = theme.ColorNameForeground
-			} else {
+			if c != "0" {
 				colorNow = ansiColor(c)
 			}
 		}
-
 		last = m[1]
 	}
 
@@ -95,20 +92,33 @@ func ansiToRich(text string) []widget.RichTextSegment {
 	return segs
 }
 
-/* --- WRITE OUTPUT (FIX FINAL) --- */
+/* --- TERMINAL WRITE (FIX \r) --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
-	raw := string(p)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
-	// FIX: carriage return bikin output turun → ubah ke newline
-	raw = strings.ReplaceAll(raw, "\r", "\n")
+	raw := stripCursorANSI(string(p))
 
-	// hapus ANSI cursor (bukan warna)
-	raw = stripCursorANSI(raw)
+	parts := strings.Split(raw, "\r")
 
-	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(raw)...)
+	for i, part := range parts {
+		segs := ansiToRich(part)
+
+		if i == 0 && !strings.HasPrefix(raw, "\r") {
+			cb.rich.Segments = append(cb.rich.Segments, segs...)
+		} else {
+			// overwrite last line
+			if len(cb.rich.Segments) > 0 {
+				cb.rich.Segments = cb.rich.Segments[:len(cb.rich.Segments)-len(cb.lastLine)]
+			}
+			cb.rich.Segments = append(cb.rich.Segments, segs...)
+		}
+
+		cb.lastLine = segs
+	}
+
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
-
 	return len(p), nil
 }
 
@@ -121,21 +131,18 @@ func main() {
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	w := a.NewWindow("Universal Root Executor")
-	w.Resize(fyne.NewSize(720, 520))
+	w.Resize(fyne.NewSize(740, 540))
 
-	/* OUTPUT */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff // PENTING: ASCII tidak pecah
+	output.Wrapping = fyne.TextWrapOff
 	scroll := container.NewScroll(output)
 
-	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik input lalu Enter...")
-
 	status := widget.NewLabel("Status: Siap")
+
 	var stdin io.WriteCloser
 
-	/* EXEC FILE */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -148,67 +155,53 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
-			in, _ := copyCmd.StdinPipe()
-			go func() {
-				defer in.Close()
-				in.Write(data)
-			}()
-			copyCmd.Run()
+			exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target).Run()
 
-			status.SetText("Status: Berjalan")
-
-			var cmd *exec.Cmd
-			if isBinary {
-				cmd = exec.Command("su", "-c", target)
-			} else {
-				cmd = exec.Command("su", "-c", "sh "+target)
-			}
+			cmd := exec.Command("su", "-c", func() string {
+				if isBinary {
+					return target
+				}
+				return "sh " + target
+			}())
 
 			stdin, _ = cmd.StdinPipe()
 			buf := &customBuffer{rich: output, scroll: scroll}
 			cmd.Stdout = buf
 			cmd.Stderr = buf
 
+			status.SetText("Status: Berjalan")
 			cmd.Run()
 			status.SetText("Status: Selesai")
 			stdin = nil
 		}()
 	}
 
-	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
-			output.Segments = append(output.Segments, &widget.TextSegment{
-				Text: "> " + input.Text + "\n",
-				Style: widget.RichTextStyle{
-					ColorName: theme.ColorNamePrimary,
-					TextStyle: fyne.TextStyle{Monospace: true},
-				},
-			})
-			output.Refresh()
 			input.SetText("")
 		}
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI */
+	top := container.NewHBox(
+		widget.NewButton("Pilih File", func() {
+			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+				if r != nil {
+					runFile(r)
+				}
+			}, w).Show()
+		}),
+		widget.NewButton("Clear Log", func() {
+			output.Segments = nil
+			output.Refresh()
+		}),
+		layout.NewSpacer(),
+		status,
+	)
+
 	w.SetContent(container.NewBorder(
-		container.NewVBox(
-			widget.NewButton("Pilih File", func() {
-				dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
-					if r != nil {
-						runFile(r)
-					}
-				}, w).Show()
-			}),
-			widget.NewButton("Clear Log", func() {
-				output.Segments = nil
-				output.Refresh()
-			}),
-			status,
-		),
+		top,
 		container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input),
 		nil, nil,
 		scroll,
