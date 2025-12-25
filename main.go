@@ -19,9 +19,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// Konfigurasi warna standar terminal
-var terminalColors = map[int]color.Color{
-	30: color.RGBA{128, 128, 128, 255}, // Hitam/Abu
+// ansiColors memetakan kode foreground ANSI standar ke warna Fyne.
+var ansiColors = map[int]color.Color{
+	30: color.RGBA{128, 128, 128, 255}, // Abu-abu
 	31: color.RGBA{255, 85, 85, 255},   // Merah
 	32: color.RGBA{85, 255, 85, 255},   // Hijau
 	33: color.RGBA{255, 255, 85, 255},  // Kuning
@@ -29,105 +29,73 @@ var terminalColors = map[int]color.Color{
 	35: color.RGBA{255, 85, 255, 255},  // Magenta
 	36: color.RGBA{85, 255, 255, 255},  // Cyan (Warna Logo XFILES)
 	37: color.White,                    // Putih
-	90: color.RGBA{170, 170, 170, 255}, // Abu Terang
-	91: color.RGBA{255, 128, 128, 255}, // Merah Terang
-	92: color.RGBA{128, 255, 128, 255}, // Hijau Terang
-	93: color.RGBA{255, 255, 128, 255}, // Kuning Terang
-	94: color.RGBA{128, 128, 255, 255}, // Biru Terang
-	95: color.RGBA{255, 128, 255, 255}, // Magenta Terang
-	96: color.RGBA{128, 255, 255, 255}, // Cyan Terang
-	97: color.White,                    // Putih Terang
 }
 
-// coloredSegment adalah segmen teks custom yang mendukung warna foreground/background
-type coloredSegment struct {
+// terminalSegment menangani perataan teks dan warna kustom dalam RichText.
+type terminalSegment struct {
 	widget.TextSegment
-	fgColor color.Color
-	bgColor color.Color
+	FgColor color.Color
 }
 
-func (s *coloredSegment) Visual() fyne.CanvasObject {
-	text := canvas.NewText(s.Text, s.fgColor)
-	text.TextStyle = fyne.TextStyle{Monospace: true}
-	text.TextSize = 12
-
-	if s.bgColor == nil || s.bgColor == color.Transparent {
-		return text
-	}
-
-	bg := canvas.NewRectangle(s.bgColor)
-	return container.NewStack(bg, text)
+func (s *terminalSegment) Visual() fyne.CanvasObject {
+	t := canvas.NewText(s.Text, s.FgColor)
+	t.TextStyle = fyne.TextStyle{Monospace: true}
+	t.TextSize = 12
+	return t
 }
 
-// terminalHandler menangani stream stdout dan stderr
-type terminalHandler struct {
+// terminalBuffer mengolah stream output shell dan status terminal.
+type terminalBuffer struct {
 	richText *widget.RichText
 	scroll   *container.Scroll
 	mutex    sync.Mutex
 	lastFg   color.Color
-	lastBg   color.Color
 }
 
-func (h *terminalHandler) Write(p []byte) (n int, err error) {
+func (h *terminalBuffer) Write(p []byte) (n int, err error) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
 	raw := string(p)
-	i := 0
 	runes := []rune(raw)
-
 	var currentText strings.Builder
 
-	for i < len(runes) {
+	for i := 0; i < len(runes); i++ {
+		// Deteksi Kode Escape ANSI
 		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
-			// Flush teks yang terkumpul sebelumnya
 			if currentText.Len() > 0 {
-				h.appendSegment(currentText.String())
+				h.appendSeg(currentText.String())
 				currentText.Reset()
 			}
-
-			// Cari akhir kode ANSI (huruf m, J, H, dll)
-			start := i + 2
-			j := start
+			j := i + 2
+			// Cari huruf perintah (m, J, H, dll.)
 			for j < len(runes) && !((runes[j] >= 'a' && runes[j] <= 'z') || (runes[j] >= 'A' && runes[j] <= 'Z')) {
 				j++
 			}
-
 			if j < len(runes) {
-				code := string(runes[start:j])
-				cmd := runes[j]
-
-				if cmd == 'm' {
-					// Handle Warna
-					codes := strings.Split(code, ";")
-					for _, c := range codes {
+				code := string(runes[i+2 : j])
+				switch runes[j] {
+				case 'm': // Kode warna
+					parts := strings.Split(code, ";")
+					for _, c := range parts {
 						val, _ := strconv.Atoi(c)
 						if val == 0 {
 							h.lastFg = color.White
-							h.lastBg = color.Transparent
-						} else if val >= 30 && val <= 37 {
-							h.lastFg = terminalColors[val]
-						} else if val >= 90 && val <= 97 {
-							h.lastFg = terminalColors[val]
-						} else if val >= 40 && val <= 47 {
-							h.lastBg = terminalColors[val-10]
+						} else if col, ok := ansiColors[val]; ok {
+							h.lastFg = col
 						}
 					}
-				} else if cmd == 'J' || cmd == 'H' {
-					// Clear Screen atau Home - Kita reset tampilan
-					h.richText.Segments = nil
+				case 'J', 'H': // Bersihkan Layar atau Cursor Home
+					h.richText.Segments = nil 
 				}
-				i = j + 1
+				i = j
 				continue
 			}
 		}
-
 		currentText.WriteRune(runes[i])
-		i++
 	}
-
 	if currentText.Len() > 0 {
-		h.appendSegment(currentText.String())
+		h.appendSeg(currentText.String())
 	}
 
 	h.richText.Refresh()
@@ -135,82 +103,66 @@ func (h *terminalHandler) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (h *terminalHandler) appendSegment(txt string) {
-	// Bersihkan karakter sampah yang sering muncul di Android
+func (h *terminalBuffer) appendSeg(txt string) {
 	txt = strings.ReplaceAll(txt, "\r", "")
 	if txt == "" {
 		return
 	}
-
-	seg := &coloredSegment{
-		fgColor: h.lastFg,
-		bgColor: h.lastBg,
-	}
+	seg := &terminalSegment{FgColor: h.lastFg}
 	seg.Text = txt
-	seg.Style = widget.RichTextStyleCodeInline // Memastikan font monospace
-
 	h.richText.Segments = append(h.richText.Segments, seg)
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("XFILES Executor")
+	myWindow := myApp.NewWindow("XFILES Terminal Executor")
 	myWindow.Resize(fyne.NewSize(800, 600))
 
-	// Setup Output Area (Terminal)
 	outputRich := widget.NewRichText()
-	outputRich.Wrapping = fyne.TextWrapOff // PENTING: Mencegah logo ASCII pecah
+	outputRich.Wrapping = fyne.TextWrapOff // Mencegah logo ASCII pecah atau melipat
 
 	logScroll := container.NewScroll(outputRich)
-	logScroll.Direction = container.ScrollBoth // Biarkan user geser jika teks lebar
+	logScroll.Direction = container.ScrollBoth // Memungkinkan scroll horizontal untuk logo lebar
 
-	// Background hitam solid agar logo terlihat bagus
-	bg := canvas.NewRectangle(color.Black)
-	terminalContainer := container.NewStack(bg, logScroll)
+	terminalBG := canvas.NewRectangle(color.Black)
+	terminalArea := container.NewStack(terminalBG, logScroll)
 
-	handler := &terminalHandler{
+	handler := &terminalBuffer{
 		richText: outputRich,
 		scroll:   logScroll,
 		lastFg:   color.White,
-		lastBg:   color.Transparent,
 	}
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input...")
-
+	inputEntry.SetPlaceHolder("Masukkan perintah di sini...")
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
 
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Menjalankan...")
 		outputRich.Segments = nil
 		outputRich.Refresh()
+		statusLabel.SetText("Status: Berjalan...")
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
-		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Pembersihan dan penyiapan file di /data/local/tmp
 			exec.Command("su", "-c", "rm "+targetPath).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
 			go func() {
 				defer copyStdin.Close()
 				copyStdin.Write(data)
-				copyStdin.Close()
 			}()
 			copyCmd.Run()
 
-			var cmd *exec.Cmd
-			if isBinary {
-				cmd = exec.Command("su", "-c", targetPath)
-			} else {
+			cmd := exec.Command("su", "-c", targetPath)
+			if !bytes.HasPrefix(data, []byte("\x7fELF")) {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 
-			// Mengatur environment agar skrip mengirimkan warna asli
+			// Environmental hints agar skrip mendeteksi mode terminal
 			cmd.Env = append(os.Environ(),
 				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
 				"TERM=xterm-256color",
@@ -221,13 +173,8 @@ func main() {
 			stdinPipe, _ = cmd.StdinPipe()
 			cmd.Stdout = handler
 			cmd.Stderr = handler
-
-			err := cmd.Run()
-			if err != nil {
-				statusLabel.SetText("Status: Berhenti/Error")
-			} else {
-				statusLabel.SetText("Status: Selesai")
-			}
+			_ = cmd.Run()
+			statusLabel.SetText("Status: Selesai")
 			stdinPipe = nil
 		}()
 	}
@@ -248,12 +195,9 @@ func main() {
 		}
 	})
 
-	// Layouting UI
-	topBox := container.NewVBox(btnSelect, statusLabel)
-	bottomBox := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
-	content := container.NewBorder(topBox, bottomBox, nil, nil, terminalContainer)
-
-	myWindow.SetContent(content)
+	top := container.NewVBox(btnSelect, statusLabel)
+	bottom := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
+	myWindow.SetContent(container.NewBorder(top, bottom, nil, nil, terminalArea))
 	myWindow.ShowAndRun()
 }
 
