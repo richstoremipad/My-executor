@@ -106,7 +106,7 @@ func (t *Terminal) printText(text string) {
 
 type WriteCounter struct {
 	Total         uint64
-	ContentLength int64 // Ubah ke int64 agar bisa deteksi -1
+	ContentLength int64
 	OnProgress    func(float64, string)
 }
 
@@ -119,35 +119,39 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 
 func (wc *WriteCounter) PrintProgress() {
 	currentMB := float64(wc.Total) / 1024 / 1024
-	
-	// FIX: Jika ContentLength tidak diketahui (-1) atau 0
+	var percent float64
+	var statusStr string
+
+	// LOGIKA ESTIMASI:
+	// Jika server tidak memberi tahu ukuran file (<= 0),
+	// kita anggap/estimasi file maksimal 5 MB agar bar tetap jalan.
 	if wc.ContentLength <= 0 {
-		statusStr := fmt.Sprintf("%.2f MB", currentMB)
-		if wc.OnProgress != nil { wc.OnProgress(-1, statusStr) } // Kirim -1 sebagai tanda unknown
-		return
+		estimatedTotalMB := 5.0 // Estimasi 5 MB
+		percent = (currentMB / estimatedTotalMB) * 100
+		
+		// Jangan biarkan lebih dari 99% sebelum selesai beneran
+		if percent > 99 { percent = 99 }
+		
+		// Tampilkan format: "0.50 MB" (Tanpa total karena tidak tahu)
+		statusStr = fmt.Sprintf("%.2f MB", currentMB)
+	} else {
+		// Logika Normal (Jika size diketahui)
+		percent = float64(wc.Total) / float64(wc.ContentLength) * 100
+		totalMB := float64(wc.ContentLength) / 1024 / 1024
+		statusStr = fmt.Sprintf("%.2f/%.2f MB", currentMB, totalMB)
 	}
 
-	// Normal Progress
-	percent := float64(wc.Total) / float64(wc.ContentLength) * 100
-	totalMB := float64(wc.ContentLength) / 1024 / 1024
-	statusStr := fmt.Sprintf("%.2f/%.2f MB", currentMB, totalMB)
 	if wc.OnProgress != nil { wc.OnProgress(percent, statusStr) }
 }
 
 func drawRealTimeBar(term *Terminal, percent float64, info string) {
-	// Jika percent -1, tampilkan mode "Indeterminate" (Unknown size)
-	if percent < 0 {
-		msg := fmt.Sprintf("\r\x1b[36mDownloading: [UNKNOWN SIZE] (%s)   \x1b[0m", info)
-		term.Write([]byte(msg))
-		return
-	}
-
 	barLength := 20
 	filledLength := int((percent * float64(barLength)) / 100)
 	bar := ""
 	for i := 0; i < barLength; i++ {
 		if i < filledLength { bar += "█" } else { bar += "░" }
 	}
+	// \r untuk animasi menimpa baris
 	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%% (%s)   \x1b[0m", bar, percent, info)
 	term.Write([]byte(msg))
 }
@@ -181,7 +185,7 @@ func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode) }
 
 	counter := &WriteCounter{
-		ContentLength: resp.ContentLength, // Pass int64 asli
+		ContentLength: resp.ContentLength, 
 		OnProgress: func(p float64, info string) { drawRealTimeBar(term, p, info) },
 	}
 
@@ -381,9 +385,8 @@ func main() {
 		}()
 	}
 
-	// --- LAYOUTING UI ---
+	// --- UI COMPOSITION ---
 	
-	// Tombol Header
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
@@ -402,31 +405,30 @@ func main() {
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	// 1. Header (Kiri: Info, Kanan: Tombol)
+	// Header: Title + Kernel Status + Root Status (Vertical)
 	headerLeft := container.NewVBox(
 		canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), 
 		kernelLabel,
-		rootLabel, // Ditambahkan di sini
+		rootLabel,
 	)
 	header := container.NewBorder(nil, nil, headerLeft, container.NewHBox(installBtn, checkBtn, clearBtn))
 
-	// 2. Footer (Credit di tengah atas Input)
+	// Credit & Input
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Bold: true}
 	
-	// inputContainer berisi tombol kirim dan input
 	inputBar := container.NewBorder(nil, nil, nil, sendBtn, input)
 	
-	// Menggabungkan Credit + Input (Credit di atas Input)
+	// Layout Bawah: Credit di atas Input
 	bottomSection := container.NewVBox(
 		copyright, 
 		container.NewPadded(inputBar),
 	)
 
-	// Layout Utama
+	// Gabung Semua
 	mainContent := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()), 
-		bottomSection, // Footer baru
+		bottomSection,
 		nil, nil, 
 		term.scroll,
 	)
