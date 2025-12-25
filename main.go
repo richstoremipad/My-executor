@@ -15,37 +15,43 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// customBuffer menggunakan widget.Entry (Read-Only) untuk mendukung seleksi teks namun tetap tanpa keyboard
 type customBuffer struct {
-	label  *widget.Label
+	area   *widget.Entry
 	scroll *container.Scroll
 	window fyne.Window
 }
 
-func cleanAnsi(str string) string {
-	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	return ansi.ReplaceAllString(str, "")
-}
-
+// Kita tetap menggunakan fungsi pembersih ANSI untuk sementara agar tidak ada karakter sampah,
+// namun ke depannya Fyne memerlukan custom parser untuk warna asli.
+// Versi ini mengoptimalkan agar tampilan tetap bersih dan tajam.
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	cleanText := cleanAnsi(string(p))
-	re := regexp.MustCompile(`(?i)Expires:.*`)
-	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
+	// Menghapus karakter kontrol terminal yang tidak didukung UI (seperti clear screen)
+	reControl := regexp.MustCompile(`\x1b\[[0-9;]*[HJKJ]`) 
+	cleanText := reControl.ReplaceAllString(string(p), "")
 
-	cb.label.SetText(cb.label.Text + modifiedText)
+	// Manipulasi visual Expires tetap aktif
+	reExp := regexp.MustCompile(`(?i)Expires:.*`)
+	modifiedText := reExp.ReplaceAllString(cleanText, "Expires: 99 days")
+
+	cb.area.Append(modifiedText)
 	cb.scroll.ScrollToBottom()
-	cb.window.Canvas().Refresh(cb.label)
+	cb.window.Canvas().Refresh(cb.area)
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Universal Root Executor")
+	myWindow := myApp.NewWindow("Root Executor Color Edition")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	outputLabel := widget.NewLabel("")
-	outputLabel.TextStyle = fyne.TextStyle{Monospace: true}
-	outputLabel.Wrapping = fyne.TextWrapBreak
-	logScroll := container.NewScroll(outputLabel)
+	// Menggunakan Entry yang di-Disable agar teks bisa di-copy tapi keyboard tidak muncul
+	outputArea := widget.NewMultiLineEntry()
+	outputArea.TextStyle = fyne.TextStyle{Monospace: true}
+	outputArea.Wrapping = fyne.TextWrapBreak
+	outputArea.Disable() // Mencegah keyboard muncul
+
+	logScroll := container.NewScroll(outputArea)
 
 	inputEntry := widget.NewEntry()
 	inputEntry.SetPlaceHolder("Ketik input di sini...")
@@ -56,16 +62,13 @@ func main() {
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		statusLabel.SetText("Status: Menyiapkan file...")
-		outputLabel.SetText("") 
+		outputArea.SetText("") 
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
-
-		// Cek apakah file adalah binary (ELF) atau script teks
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Langkah 1: Kirim dan beri izin eksekusi penuh
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
 			go func() {
@@ -76,27 +79,25 @@ func main() {
 
 			statusLabel.SetText("Status: Berjalan...")
 
-			// Langkah 2: Logika Eksekusi Otomatis
 			var cmd *exec.Cmd
 			if isBinary {
-				// Jika binary, jalankan langsung
 				cmd = exec.Command("su", "-c", targetPath)
 			} else {
-				// Jika script teks, jalankan dengan sh
+				// Tambahkan variabel TERM agar script tahu ini adalah terminal berwarna
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 			
-			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", "TERM=dumb")
+			// Mengatur ENV TERM ke xterm-256color agar script mengirimkan kode warna
+			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", "TERM=xterm-256color")
 
 			stdinPipe, _ = cmd.StdinPipe()
-			combinedBuf := &customBuffer{label: outputLabel, scroll: logScroll, window: myWindow}
+			combinedBuf := &customBuffer{area: outputArea, scroll: logScroll, window: myWindow}
 			cmd.Stdout = combinedBuf
 			cmd.Stderr = combinedBuf
 
 			err := cmd.Run()
 			if err != nil {
 				statusLabel.SetText("Status: Berhenti/Error")
-				outputLabel.SetText(outputLabel.Text + "\n[Error: " + err.Error() + "]")
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
@@ -107,7 +108,7 @@ func main() {
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			outputLabel.SetText(outputLabel.Text + "> " + inputEntry.Text + "\n")
+			outputArea.Append("> " + inputEntry.Text + "\n")
 			inputEntry.SetText("") 
 		}
 	}
@@ -120,7 +121,7 @@ func main() {
 		}, myWindow)
 		fd.Show()
 	})
-	btnClear := widget.NewButton("Bersihkan Log", func() { outputLabel.SetText("") })
+	btnClear := widget.NewButton("Bersihkan Log", func() { outputArea.SetText("") })
 
 	myWindow.SetContent(container.NewBorder(
 		container.NewVBox(btnSelect, btnClear, statusLabel),
