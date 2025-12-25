@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"image/color"
 	"io"
 	"os"
 	"os/exec"
@@ -13,22 +12,41 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 /* =========================
-   ANSI → RichText SUPPORT
+   ANSI → RichText (SAFE)
 ========================= */
 
 type customBuffer struct {
 	rich   *widget.RichText
 	scroll *container.Scroll
-	window fyne.Window
+}
+
+func ansiToColorName(code string) fyne.ThemeColorName {
+	switch code {
+	case "31":
+		return theme.ColorNameError
+	case "32":
+		return theme.ColorNameSuccess
+	case "33":
+		return theme.ColorNameWarning
+	case "34":
+		return theme.ColorNamePrimary
+	case "35":
+		return theme.ColorNameForeground
+	case "36":
+		return theme.ColorNameForeground
+	default:
+		return theme.ColorNameForeground
+	}
 }
 
 func ansiToRich(text string) []widget.RichTextSegment {
-	segments := []widget.RichTextSegment{}
-	currentColor := color.White
+	var segments []widget.RichTextSegment
+	currentColor := theme.ColorNameForeground
 
 	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	matches := re.FindAllStringIndex(text, -1)
@@ -39,33 +57,18 @@ func ansiToRich(text string) []widget.RichTextSegment {
 			segments = append(segments, &widget.TextSegment{
 				Text: text[last:m[0]],
 				Style: widget.RichTextStyle{
-					Color: currentColor,
+					ColorName: currentColor,
+					Monospace: true,
 				},
 			})
 		}
 
 		code := text[m[0]+2 : m[1]-1]
-		switch code {
-		case "0":
-			currentColor = color.White
-		case "30":
-			currentColor = color.Black
-		case "31":
-			currentColor = color.RGBA{255, 0, 0, 255}
-		case "32":
-			currentColor = color.RGBA{0, 255, 0, 255}
-		case "33":
-			currentColor = color.RGBA{255, 255, 0, 255}
-		case "34":
-			currentColor = color.RGBA{0, 128, 255, 255}
-		case "35":
-			currentColor = color.RGBA{255, 0, 255, 255}
-		case "36":
-			currentColor = color.RGBA{0, 255, 255, 255}
-		case "37":
-			currentColor = color.White
+		if code == "0" {
+			currentColor = theme.ColorNameForeground
+		} else {
+			currentColor = ansiToColorName(code)
 		}
-
 		last = m[1]
 	}
 
@@ -73,7 +76,8 @@ func ansiToRich(text string) []widget.RichTextSegment {
 		segments = append(segments, &widget.TextSegment{
 			Text: text[last:],
 			Style: widget.RichTextStyle{
-				Color: currentColor,
+				ColorName: currentColor,
+				Monospace: true,
 			},
 		})
 	}
@@ -84,15 +88,12 @@ func ansiToRich(text string) []widget.RichTextSegment {
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	text := string(p)
 
-	// Modifikasi teks jika perlu
 	re := regexp.MustCompile(`(?i)Expires:.*`)
 	text = re.ReplaceAllString(text, "Expires: 99 days")
 
-	segments := ansiToRich(text)
-	cb.rich.Segments = append(cb.rich.Segments, segments...)
+	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(text)...)
 	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
-
 	return len(p), nil
 }
 
@@ -101,128 +102,97 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 ========================= */
 
 func main() {
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Universal Root Executor")
-	myWindow.Resize(fyne.NewSize(700, 520))
+	a := app.New()
+	w := a.NewWindow("Universal Root Executor")
+	w.Resize(fyne.NewSize(700, 520))
 
-	/* OUTPUT */
-	outputRich := widget.NewRichText()
-	outputRich.Wrapping = fyne.TextWrapBreak
-	logScroll := container.NewScroll(outputRich)
+	output := widget.NewRichText()
+	output.Wrapping = fyne.TextWrapBreak
+	scroll := container.NewScroll(output)
 
-	/* INPUT */
-	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input lalu Enter...")
+	input := widget.NewEntry()
+	input.SetPlaceHolder("Ketik input lalu Enter...")
 
-	statusLabel := widget.NewLabel("Status: Siap")
-	var stdinPipe io.WriteCloser
+	status := widget.NewLabel("Status: Siap")
+	var stdin io.WriteCloser
 
-	/* EXECUTOR */
-	executeFile := func(reader fyne.URIReadCloser) {
+	execFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-
-		statusLabel.SetText("Status: Menyiapkan file...")
-		outputRich.Segments = nil
-		outputRich.Refresh()
+		output.Segments = nil
+		output.Refresh()
+		status.SetText("Status: Menyiapkan...")
 
 		data, _ := io.ReadAll(reader)
-		targetPath := "/data/local/tmp/temp_exec"
-
+		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Copy file sebagai root
-			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
-			copyStdin, _ := copyCmd.StdinPipe()
+			cmdCopy := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
+			in, _ := cmdCopy.StdinPipe()
 			go func() {
-				defer copyStdin.Close()
-				copyStdin.Write(data)
+				defer in.Close()
+				in.Write(data)
 			}()
-			copyCmd.Run()
+			cmdCopy.Run()
 
-			statusLabel.SetText("Status: Berjalan...")
+			status.SetText("Status: Berjalan")
 
 			var cmd *exec.Cmd
 			if isBinary {
-				cmd = exec.Command("su", "-c", targetPath)
+				cmd = exec.Command("su", "-c", target)
 			} else {
-				cmd = exec.Command("su", "-c", "sh "+targetPath)
+				cmd = exec.Command("su", "-c", "sh "+target)
 			}
 
-			cmd.Env = append(os.Environ(),
-				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
-				"TERM=xterm-256color",
-			)
-
-			stdinPipe, _ = cmd.StdinPipe()
-			buffer := &customBuffer{
-				rich:   outputRich,
-				scroll: logScroll,
-				window: myWindow,
-			}
-
+			stdin, _ = cmd.StdinPipe()
+			buffer := &customBuffer{rich: output, scroll: scroll}
 			cmd.Stdout = buffer
 			cmd.Stderr = buffer
 
-			err := cmd.Run()
-			if err != nil {
-				statusLabel.SetText("Status: Error")
-				outputRich.Segments = append(outputRich.Segments,
-					&widget.TextSegment{
-						Text: "\n[ERROR] " + err.Error() + "\n",
-						Style: widget.RichTextStyle{
-							Color: color.RGBA{255, 0, 0, 255},
-						},
-					})
-				outputRich.Refresh()
-			} else {
-				statusLabel.SetText("Status: Selesai")
-			}
-			stdinPipe = nil
+			cmd.Run()
+			status.SetText("Status: Selesai")
+			stdin = nil
 		}()
 	}
 
-	/* INPUT SEND */
-	sendInput := func() {
-		if stdinPipe != nil && inputEntry.Text != "" {
-			fmt.Fprintln(stdinPipe, inputEntry.Text)
-
-			outputRich.Segments = append(outputRich.Segments,
+	send := func() {
+		if stdin != nil && input.Text != "" {
+			fmt.Fprintln(stdin, input.Text)
+			output.Segments = append(output.Segments,
 				&widget.TextSegment{
-					Text: "> " + inputEntry.Text + "\n",
+					Text: "> " + input.Text + "\n",
 					Style: widget.RichTextStyle{
-						Color: color.RGBA{0, 255, 255, 255},
+						ColorName: theme.ColorNamePrimary,
+						Monospace: true,
 					},
 				},
 			)
-			outputRich.Refresh()
-			inputEntry.SetText("")
+			output.Refresh()
+			input.SetText("")
 		}
 	}
 
-	inputEntry.OnSubmitted = func(_ string) { sendInput() }
+	input.OnSubmitted = func(string) { send() }
 
-	/* BUTTON */
-	btnSend := widget.NewButton("Kirim", sendInput)
-	btnClear := widget.NewButton("Bersihkan Log", func() {
-		outputRich.Segments = nil
-		outputRich.Refresh()
-	})
-	btnSelect := widget.NewButton("Pilih File (Shell / Binary)", func() {
-		dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if reader != nil {
-				executeFile(reader)
-			}
-		}, myWindow).Show()
-	})
-
-	/* LAYOUT */
-	myWindow.SetContent(container.NewBorder(
-		container.NewVBox(btnSelect, btnClear, statusLabel),
-		container.NewBorder(nil, nil, nil, btnSend, inputEntry),
+	w.SetContent(container.NewBorder(
+		container.NewVBox(
+			widget.NewButton("Pilih File", func() {
+				dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+					if r != nil {
+						execFile(r)
+					}
+				}, w).Show()
+			}),
+			widget.NewButton("Clear Log", func() {
+				output.Segments = nil
+				output.Refresh()
+			}),
+			status,
+		),
+		container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input),
 		nil, nil,
-		logScroll,
+		scroll,
 	))
 
-	myWindow.ShowAndRun()
+	w.ShowAndRun()
 }
