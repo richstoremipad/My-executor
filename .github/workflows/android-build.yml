@@ -24,7 +24,6 @@ jobs:
             -app-id com.exe.rich \
             -name "my executor" \
             -arch arm64 \
-         #   -icon icon.png \
             -silent
 
       - name: Upload Artifact
