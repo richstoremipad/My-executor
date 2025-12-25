@@ -24,8 +24,8 @@ import (
 
 /* ==========================================
    CONFIG: NAMA DRIVER KERNEL KAMU
-   Ganti string di bawah ini sesuai nama module kernel (.ko)
-   Contoh: "wifi_driver", "my_cheat_driver", dll.
+   Ganti string ini sesuai nama module kernel (.ko)
+   Contoh: "wifi_driver", "kprobes", dll.
 ========================================== */
 const TargetDriverName = "nama_driver_kamu" // <--- GANTI INI
 
@@ -172,11 +172,9 @@ func (t *Terminal) printText(text string) {
    FUNGSI CEK DRIVER KERNEL
 ================================ */
 func CheckKernelDriver() bool {
-	// Mengecek apakah folder /sys/module/[NamaDriver] ada.
-	// Ini cara standar Linux untuk mengetahui apakah module ter-load.
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	err := cmd.Run()
-	return err == nil // Jika tidak error, berarti ada (Detected)
+	return err == nil 
 }
 
 /* ===============================
@@ -199,30 +197,28 @@ func main() {
 	var stdin io.WriteCloser
 
 	/* --- LABEL STATUS KERNEL --- */
-	// Default: Checking...
 	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
 	kernelLabel.TextSize = 10
 	kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
-	kernelLabel.Alignment = fyne.TextAlignTrailing
+	// Ubah alignment ke KIRI agar rata dengan Judul
+	kernelLabel.Alignment = fyne.TextAlignLeading
 
-	// Fungsi Update Status Kernel
+	// Fungsi Update Status
 	updateKernelStatus := func() {
 		go func() {
 			isLoaded := CheckKernelDriver()
-			// Update UI di thread utama
 			w.Canvas().Refresh(kernelLabel)
 			if isLoaded {
 				kernelLabel.Text = "KERNEL: DETECTED"
-				kernelLabel.Color = color.RGBA{0, 255, 0, 255} // Hijau
+				kernelLabel.Color = color.RGBA{0, 255, 0, 255} 
 			} else {
 				kernelLabel.Text = "KERNEL: NOT FOUND"
-				kernelLabel.Color = color.RGBA{255, 50, 50, 255} // Merah
+				kernelLabel.Color = color.RGBA{255, 50, 50, 255} 
 			}
 			kernelLabel.Refresh()
 		}()
 	}
 
-	// Cek driver saat aplikasi mulai
 	updateKernelStatus()
 
 	/* --- FUNGSI EKSEKUSI --- */
@@ -244,7 +240,6 @@ func main() {
 			copyCmd.Run()
 			status.SetText("Status: Berjalan")
 			
-			// Cek ulang driver sebelum menjalankan script (opsional)
 			updateKernelStatus()
 
 			var cmd *exec.Cmd
@@ -266,7 +261,6 @@ func main() {
 			status.SetText("Status: Selesai")
 			stdin = nil
 			
-			// Cek lagi setelah selesai (siapa tau script load/unload driver)
 			time.Sleep(1 * time.Second)
 			updateKernelStatus()
 		}()
@@ -282,37 +276,39 @@ func main() {
 	input.OnSubmitted = func(string) { send() }
 
 	/* ==========================================
-	   UI CONSTRUCTION
+	   UI CONSTRUCTION (PERBAIKAN POSISI)
 	========================================== */
 
-	// 1. HEADER
+	// 1. HEADER KIRI: JUDUL + KERNEL STATUS (STACK VERTICAL)
 	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
 
+	// Gabungkan Judul dan Status Kernel di Kiri
+	headerLeft := container.NewVBox(
+		titleText,
+		kernelLabel, // Posisi di bawah judul
+	)
+
+	// Tombol Hapus (Kanan)
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
 		term.Clear()
 	})
 
-	// Layout Header Kiri: Judul
-	// Layout Header Kanan: Status Kernel + Tombol Clear
-	headerRight := container.NewHBox(
-		container.NewCenter(kernelLabel), // Status Kernel di sebelah tombol hapus
-		clearBtn,
-	)
-
+	// Layout Header Bar
 	headerBar := container.NewBorder(nil, nil, 
-		container.NewPadded(titleText), 
-		headerRight,
+		container.NewPadded(headerLeft), // Kiri: VBox(Judul, Kernel)
+		clearBtn,                        // Kanan: Tombol Hapus
 	)
 
+	// Gabungkan Bagian Atas
 	topSection := container.NewVBox(
-		container.NewPadded(headerBar),
+		headerBar,
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
 
-	// 2. FOOTER (Copyright & Input)
+	// 2. FOOTER (COPYRIGHT & INPUT)
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10
 	copyright.Alignment = fyne.TextAlignCenter
