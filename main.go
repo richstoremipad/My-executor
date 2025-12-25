@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"image/color"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -16,75 +15,39 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// customBuffer untuk menangani output berwarna secara real-time
+// customBuffer menggunakan RichText agar tajam dan mendukung segmen teks
 type customBuffer struct {
 	richText *widget.RichText
 	scroll   *container.Scroll
 	window   fyne.Window
 }
 
-// Fungsi sederhana untuk mengubah beberapa kode ANSI menjadi warna Fyne
-func parseAnsiToRich(input string) []fyne.RichTextSegment {
-	// Menghapus karakter kontrol terminal yang tidak perlu
-	reControl := regexp.MustCompile(`\x1b\[[0-9;]*[HJKJ]`)
-	input = reControl.ReplaceAllString(input, "")
-
-	// Logika penggantian Expires visual tetap dipertahankan
-	reExp := regexp.MustCompile(`(?i)Expires:.*`)
-	input = reExp.ReplaceAllString(input, "Expires: 99 days")
-
-	// Parser ANSI sederhana untuk warna dasar
-	segments := []fyne.RichTextSegment{}
-	
-	// Default warna putih tajam agar tidak buram
-	currentStyle := fyne.TextStyle{Monospace: true}
-	currentColor := color.White
-
-	// Pecah teks berdasarkan kode warna
-	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	parts := re.Split(input, -1)
-	codes := re.FindAllString(input, -1)
-
-	for i, part := range parts {
-		if part != "" {
-			segments = append(segments, &widget.TextSegment{
-				Text: part,
-				Style: widget.RichTextStyle{
-					TextStyle: currentStyle,
-					ColorName: fyne.CurrentApp().Settings().Theme().Color(fyne.ThemeColorForeground, fyne.ThemeVariantDark),
-				},
-			})
-		}
-		if i < len(codes) {
-			// Deteksi warna (contoh sederhana: 32=hijau, 36=cyan)
-			code := codes[i]
-			if code == "\x1b[0m" { currentColor = color.White }
-		}
-	}
-
-	// Jika parser terlalu berat, gunakan segmen teks biasa yang tajam
-	if len(segments) == 0 {
-		segments = append(segments, &widget.TextSegment{Text: input, Style: widget.RichTextStyleInline})
-	}
-	
-	return segments
-}
-
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	newSegments := parseAnsiToRich(string(p))
-	cb.richText.Segments = append(cb.richText.Segments, newSegments...)
+	// Menghapus kode ANSI agar tidak muncul teks mentah seperti [1;36m
+	reControl := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	cleanText := reControl.ReplaceAllString(string(p), "")
+
+	// Manipulasi visual Expires
+	reExp := regexp.MustCompile(`(?i)Expires:.*`)
+	finalText := reExp.ReplaceAllString(cleanText, "Expires: 99 days")
+
+	// Menambahkan teks ke RichText secara tajam
+	cb.richText.Segments = append(cb.richText.Segments, &widget.TextSegment{
+		Text: finalText,
+		Style: widget.RichTextStyleInline,
+	})
 	
 	cb.richText.Refresh()
-	cb.scroll.ScrollToBottom()
+	cb.scroll.ScrollToBottom() // Otomatis scroll ke bawah
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor Sharp Color")
+	myWindow := myApp.NewWindow("Root Executor Final")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Menggunakan RichText: Teks tajam, mendukung warna, dan TIDAK memicu keyboard
+	// Menggunakan RichText: Tajam, Anti-Keyboard, dan Ringan
 	outputRich := widget.NewRichText()
 	outputRich.Wrapping = fyne.TextWrapBreak
 	logScroll := container.NewScroll(outputRich)
@@ -98,16 +61,16 @@ func main() {
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		statusLabel.SetText("Status: Menyiapkan...")
-		outputRich.Segments = nil // Reset log
+		outputRich.Segments = nil // Bersihkan log lama
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
-		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF")) // Cek jika file SHC Binary
 
 		go func() {
+			// Salin file ke folder internal yang aman
 			exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath).Run()
-			statusLabel.SetText("Status: Berjalan...")
-
+			
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", targetPath)
@@ -115,14 +78,14 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 			
-			// Kirimkan xterm-256color agar script memberikan kode warna
-			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin", "TERM=xterm-256color")
+			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin", "TERM=dumb")
 
 			stdinPipe, _ = cmd.StdinPipe()
 			combinedBuf := &customBuffer{richText: outputRich, scroll: logScroll, window: myWindow}
 			cmd.Stdout = combinedBuf
 			cmd.Stderr = combinedBuf
 
+			statusLabel.SetText("Status: Berjalan...")
 			cmd.Run()
 			statusLabel.SetText("Status: Selesai")
 			stdinPipe = nil
@@ -145,7 +108,7 @@ func main() {
 
 	myWindow.SetContent(container.NewBorder(
 		container.NewVBox(btnSelect, statusLabel),
-		container.NewBorder(nil, nil, nil, btnSend, inputEntry),
+		container.NewBorder(nil, nil, nil, btnSend, inputEntry), 
 		nil, nil, logScroll,
 	))
 
