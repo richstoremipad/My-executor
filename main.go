@@ -243,7 +243,7 @@ func main() {
 	}
 	updateKernelStatus()
 
-	/* --- LOGIKA AUTO INSTALL KERNEL --- */
+		/* --- LOGIKA AUTO INSTALL KERNEL (UPDATED) --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("Status: Auto Install Kernel")
@@ -257,51 +257,66 @@ func main() {
 				return
 			}
 			
+			// Bersihkan newline/spasi agar tidak error saat jadi URL
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
-			// 2. Tentukan Nama File Script
-			// Strategi: Coba download nama file persis dulu (misal: 4.14.117-perf.sh)
-			// Jika gagal, coba versi pendek (misal: 4.14.117.sh)
-			
 			targetFile := "/data/local/tmp/kernel_installer.sh"
-			
-			// Coba Full Name
-			url := GitHubRepo + rawVersion + ".sh"
-			term.Write([]byte(fmt.Sprintf("\x1b[90m[*] Checking: %s\x1b[0m\n", url)))
-			
-			err = downloadFile(url, "temp_kernel_dl") // Simpan di local app storage dulu
-			
-			if err != nil {
-				// Jika gagal, coba Short Name (Split sebelum tanda -)
+			var downloadUrl string
+			var found bool = false
+
+			// --- PERCOBAAN 1: Full Version (misal: 4.19.157-perf-...) ---
+			url1 := GitHubRepo + rawVersion + ".sh"
+			term.Write([]byte(fmt.Sprintf("\x1b[90m[1] Checking: %s\x1b[0m\n", url1)))
+			if downloadFile(url1, "temp_kernel_dl") == nil {
+				downloadUrl = url1
+				found = true
+			}
+
+			// --- PERCOBAAN 2: Short Version (misal: 4.19.157) ---
+			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
 					shortVersion := parts[0]
-					url = GitHubRepo + shortVersion + ".sh"
-					term.Write([]byte(fmt.Sprintf("\x1b[90m[*] Checking: %s\x1b[0m\n", url)))
-					err = downloadFile(url, "temp_kernel_dl")
+					url2 := GitHubRepo + shortVersion + ".sh"
+					term.Write([]byte(fmt.Sprintf("\x1b[90m[2] Checking: %s\x1b[0m\n", url2)))
+					if downloadFile(url2, "temp_kernel_dl") == nil {
+						downloadUrl = url2
+						found = true
+					}
 				}
 			}
 
-			// 3. Eksekusi atau Error
-			if err != nil {
-				// Gagal total
-				term.Write([]byte("\n\x1b[31m[X] Kernel Not Supported (Script not found in repo).\x1b[0m\n"))
-				term.Write([]byte("\x1b[90m    Silakan upload script: " + rawVersion + ".sh ke GitHub.\x1b[0m\n"))
+			// --- PERCOBAAN 3: Major Version (misal: 4.19) ---
+			// Fitur baru: Berguna jika kamu punya script universal untuk semua 4.19
+			if !found {
+				parts := strings.Split(rawVersion, ".")
+				if len(parts) >= 2 {
+					majorVersion := parts[0] + "." + parts[1] // Ambil "4.19"
+					url3 := GitHubRepo + majorVersion + ".sh"
+					term.Write([]byte(fmt.Sprintf("\x1b[90m[3] Checking: %s\x1b[0m\n", url3)))
+					if downloadFile(url3, "temp_kernel_dl") == nil {
+						downloadUrl = url3
+						found = true
+					}
+				}
+			}
+
+			// --- EKSEKUSI JIKA KETEMU ---
+			if !found {
+				term.Write([]byte("\n\x1b[31m[X] Kernel Not Supported / Script Not Found.\x1b[0m\n"))
+				term.Write([]byte("\x1b[90m    Pastikan file sudah di-PUSH ke GitHub: " + rawVersion + ".sh\x1b[0m\n"))
+				term.Write([]byte("\x1b[90m    Cek via browser apakah file ada di folder Driver repo kamu.\x1b[0m\n"))
 				status.SetText("Status: Gagal")
 			} else {
-				// Berhasil Download
-				term.Write([]byte("\n\x1b[32m[V] Kernel Supported! Downloading script...\x1b[0m\n"))
+				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
+				term.Write([]byte("[*] Installing...\n"))
 				
 				// Baca file download
 				data, _ := os.ReadFile("temp_kernel_dl")
-				
-				// Hapus file temp
 				os.Remove("temp_kernel_dl")
 
-				// Tulis ke /data/local/tmp (Root area)
-				term.Write([]byte("[*] Executing installer...\n"))
-				
+				// Tulis ke target & Jalankan
 				exec.Command("su", "-c", "rm -f "+targetFile).Run()
 				copyCmd := exec.Command("su", "-c", "cat > "+targetFile+" && chmod 777 "+targetFile)
 				in, _ := copyCmd.StdinPipe()
@@ -311,11 +326,9 @@ func main() {
 				}()
 				copyCmd.Run()
 
-				// Jalankan Script
 				cmd := exec.Command("su", "-c", "sh "+targetFile)
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 				
-				// Pipe output ke terminal
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
 				cmd.Stdout = term
@@ -328,10 +341,8 @@ func main() {
 				} else {
 					term.Write([]byte("\n\x1b[32m[INSTALLATION COMPLETE]\x1b[0m\n"))
 				}
+				pipeStdin.Close()
 				
-				pipeStdin.Close() // Close pipe
-				
-				// Update status di UI
 				time.Sleep(1 * time.Second)
 				updateKernelStatus()
 				status.SetText("Status: Selesai")
