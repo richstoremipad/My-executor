@@ -17,25 +17,29 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
 
+// --- CONFIG ---
+const TerminalFontSize = 10 // Ukuran font diperkecil agar muat banyak (mirip Termux)
+
 // --- STRUKTUR DATA ---
 
-// customBuffer tidak lagi membutuhkan 'window'
 type customBuffer struct {
 	richText *widget.RichText
 	scroll   *container.Scroll
 	mutex    sync.Mutex 
 	
-	// State warna dan style
-	lastColor color.Color
-	lastBold  bool
+	// State ANSI
+	lastFgColor color.Color // Warna Teks
+	lastBgColor color.Color // Warna Latar (PENTING untuk Logo Blok)
+	lastBold    bool
 }
 
-// Map warna ANSI
+// Map warna ANSI Standar
 var ansiColors = map[int]color.Color{
-	30: color.RGBA{150, 150, 150, 255}, // Black/Gray
+	30: color.RGBA{180, 180, 180, 255}, // Black/Gray
 	31: color.RGBA{255, 80, 80, 255},   // Red
 	32: color.RGBA{80, 200, 80, 255},   // Green
 	33: color.RGBA{255, 255, 80, 255},  // Yellow
@@ -53,42 +57,65 @@ var ansiColors = map[int]color.Color{
 	97: color.White,                    // Bright White
 }
 
-// Custom Segment untuk render teks warna yang lebih presisi
+// --- CUSTOM RENDERER (Agar support Background Color) ---
+
 type coloredText struct {
 	widget.TextSegment
-	Color color.Color
-}
-
-func (t *coloredText) Update(o fyne.CanvasObject) {
-	if text, ok := o.(*canvas.Text); ok {
-		text.Text = t.Text
-		text.Color = t.Color
-		text.TextStyle = t.Style.TextStyle
-		// Ukuran 11 cukup pas untuk simulasi terminal di mobile
-		text.TextSize = 11 
-		text.Refresh()
-	}
+	FgColor color.Color
+	BgColor color.Color
 }
 
 func (t *coloredText) Visual() fyne.CanvasObject {
-	text := canvas.NewText(t.Text, t.Color)
+	// Objek Teks
+	text := canvas.NewText(t.Text, t.FgColor)
 	text.TextStyle = t.Style.TextStyle
 	text.TextStyle.Monospace = true
-	text.TextSize = 11
-	return text
+	text.TextSize = TerminalFontSize
+
+	// Jika tidak ada background, kembalikan teks saja (lebih ringan)
+	if t.BgColor == nil || t.BgColor == color.Transparent {
+		return text
+	}
+
+	// Jika ada background, buat kotak di belakang teks
+	bg := canvas.NewRectangle(t.BgColor)
+	
+	// Gunakan Container Stack (Tumpuk: Bawah=Rect, Atas=Text)
+	// Kita bungkus dalam container khusus agar ukurannya pas
+	return container.New(layout.NewCustomPaddedLayout(0), bg, text)
 }
 
-// --- LOGIC PARSER (PENANGANI ARTEFAK) ---
+func (t *coloredText) Update(o fyne.CanvasObject) {
+	// Update logic (skip for static segments simplicity)
+}
+
+// Layout helper untuk background text agar pas
+type customPaddedLayout struct {
+	padding float32
+}
+func (l *customPaddedLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	for _, child := range objects {
+		child.Resize(size)
+		child.Move(fyne.NewPos(0, 0))
+	}
+}
+func (l *customPaddedLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) > 1 {
+		return objects[1].MinSize() // Ukuran mengikuti Teks (objek ke-2)
+	}
+	return fyne.NewSize(0, 0)
+}
+
+// --- LOGIC PARSER ---
 
 func (cb *customBuffer) appendAnsiText(text string) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	// Regex ini menangkap Escape Sequence ANSI:
-	// \x1b  : Escape char
-	// \[    : Bracket buka
-	// [...] : Parameter (angka/titik koma/tanda tanya)
-	// [a-zA-Z] : Perintah (m=Warna, J=Clear, H=Home, l=HideCursor, dll)
+	// 1. Ganti Tab dengan Spasi (Fyne kadang error render tab di RichText)
+	text = strings.ReplaceAll(text, "\t", "    ")
+
+	// Regex ANSI yang menangkap FG (30-37) dan BG (40-47)
 	re := regexp.MustCompile(`\x1b\[([0-9;?]*)([a-zA-Z])`)
 
 	parts := re.Split(text, -1)
@@ -103,59 +130,53 @@ func (cb *customBuffer) appendAnsiText(text string) {
 		cmdChar := match[2]
 
 		switch cmdChar {
-		case "m": // --- Ganti Warna ---
+		case "m": // --- WARNA ---
 			codes := strings.Split(paramStr, ";")
 			for _, c := range codes {
 				val, _ := strconv.Atoi(c)
 				if val == 0 {
-					cb.lastColor = color.White
+					// Reset
+					cb.lastFgColor = color.White
+					cb.lastBgColor = nil // Reset background transparant
 					cb.lastBold = false
 				} else if val == 1 {
 					cb.lastBold = true
-				} else if col, ok := ansiColors[val]; ok {
-					cb.lastColor = col
+				} else if val >= 30 && val <= 37 { // Foreground Standard
+					cb.lastFgColor = ansiColors[val]
+				} else if val >= 90 && val <= 97 { // Foreground Bright
+					cb.lastFgColor = ansiColors[val]
+				} else if val >= 40 && val <= 47 { // Background Standard
+					// Mapping 40-47 ke warna 30-37 untuk diambil warnanya
+					cb.lastBgColor = ansiColors[val-10] 
 				}
 			}
 
-		case "J": // --- Clear Screen ---
-			// Script biasanya mengirim "2J" untuk clear screen
-			// Kita hapus semua segment agar layar bersih (seperti pindah halaman)
+		case "J": // Clear Screen
 			if strings.Contains(paramStr, "2") {
 				cb.richText.Segments = nil
 			}
-
-		case "H": // --- Cursor Home ---
-			// Menggerakkan kursor ke atas kiri.
-			// Di Fyne log, kita abaikan saja agar tidak muncul simbol aneh,
-			// atau jika dikombinasikan dengan Clear (J), segments sudah dihapus.
-
-		case "l", "h": 
-			// Menangani kode ?25l (Hide Cursor) dan ?25h (Show Cursor)
-			// Kita abaikan agar tidak muncul sebagai sampah teks di layar.
+		case "H", "l", "h": 
+			// Abaikan cursor movement
 		}
 
-		// Tambahkan teks setelah kode (jika ada)
 		if i+1 < len(parts) && parts[i+1] != "" {
 			cb.addSegmentLocked(parts[i+1])
 		}
 	}
 
 	cb.richText.Refresh()
-	// Scroll ke bawah otomatis hanya jika layar tidak baru saja dibersihkan
 	if len(cb.richText.Segments) > 0 {
 		cb.scroll.ScrollToBottom()
 	}
 }
 
 func (cb *customBuffer) addSegmentLocked(text string) {
-	col := cb.lastColor
-	if col == nil {
-		col = color.White
-	}
-
-	// Bersihkan karakter Carriage Return (\r) agar baris tidak menumpuk aneh
-	text = strings.ReplaceAll(text, "\r", "")
+	fg := cb.lastFgColor
+	if fg == nil { fg = color.White }
 	
+	// Hapus Carriage Return agar baris rapi
+	text = strings.ReplaceAll(text, "\r", "")
+
 	seg := &coloredText{
 		TextSegment: widget.TextSegment{
 			Text: text,
@@ -163,46 +184,50 @@ func (cb *customBuffer) addSegmentLocked(text string) {
 				TextStyle: fyne.TextStyle{Monospace: true, Bold: cb.lastBold},
 			},
 		},
-		Color: col,
+		FgColor: fg,
+		BgColor: cb.lastBgColor,
 	}
 	cb.richText.Segments = append(cb.richText.Segments, seg)
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	// Langsung kirim ke parser
 	cb.appendAnsiText(string(p))
 	return len(p), nil
 }
 
-// --- MAIN PROGRAM ---
+// --- MAIN ---
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Universal Executor")
-	myWindow.Resize(fyne.NewSize(700, 600))
+	myWindow := myApp.NewWindow("Universal Terminal")
+	myWindow.Resize(fyne.NewSize(800, 600)) // Lebar diperbesar untuk ASCII art
 
-	// 1. Setup Output Area
+	// 1. OUTPUT AREA
 	outputRich := widget.NewRichText()
 	outputRich.Scroll = container.ScrollNone
+	
+	// PENTING: Matikan Wrapping agar ASCII art tidak turun ke bawah
+	outputRich.Wrapping = fyne.TextWrapOff 
+	
+	// Gunakan ScrollBoth agar jika teks kepanjangan bisa digeser ke samping (seperti terminal asli)
 	logScroll := container.NewScroll(outputRich)
+	logScroll.Direction = container.ScrollBoth 
 
-	// 2. Setup Background Hitam (Agar terlihat seperti Terminal asli)
-	// Kita gunakan Stack container: Background di bawah, Teks di atas
-	bgRect := canvas.NewRectangle(color.RGBA{15, 15, 15, 255}) // Hitam pekat
+	// Background Hitam Pekat
+	bgRect := canvas.NewRectangle(color.RGBA{10, 10, 10, 255})
 	logArea := container.NewStack(bgRect, logScroll)
 
-	// 3. Setup Input & Controls
+	// 2. INPUT AREA
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input menu disini...")
-	statusLabel := widget.NewLabel("Status: Menunggu File...")
+	inputEntry.SetPlaceHolder("Ketik perintah...")
 	
+	statusLabel := widget.NewLabel("Status: Idle")
 	var stdinPipe io.WriteCloser
 
+	// 3. LOGIC EXECUTE
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-		statusLabel.SetText("Status: Menyiapkan...")
-		
-		// Reset layar sebelum mulai
+		statusLabel.SetText("Loading...")
 		outputRich.Segments = nil
 		outputRich.Refresh()
 
@@ -211,7 +236,6 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Hapus file lama jika ada, lalu copy file baru
 			exec.Command("su", "-c", "rm "+targetPath).Run()
 			
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 755 "+targetPath)
@@ -222,32 +246,31 @@ func main() {
 			}()
 			copyCmd.Run()
 
-			statusLabel.SetText("Status: Script Berjalan")
+			statusLabel.SetText("Running...")
 
 			var cmd *exec.Cmd
+			// Gunakan 'setsid' agar script punya session terminal sendiri jika memungkinkan
+			// Tapi untuk simpel kita gunakan sh/binary langsung
 			if isBinary {
 				cmd = exec.Command("su", "-c", targetPath)
 			} else {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 
-			// PENTING: Setting ENV agar script mengenali terminal
-			// 'xterm-256color' mengaktifkan warna
-			// 'COLUMNS' & 'LINES' menjaga layout ASCII art tetap rapi
+			// SETUP ENV AGAR TAMPILAN BAGUS
 			cmd.Env = append(os.Environ(),
 				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
-				"TERM=xterm-256color",
-				"COLUMNS=80",
-				"LINES=25",
+				"TERM=xterm-256color", // Support warna penuh
+				"COLUMNS=120",         // Paksa lebar virtual terminal lebar
+				"LINES=40",
 			)
 
 			stdinPipe, _ = cmd.StdinPipe()
 
-			// Inisialisasi Buffer (SUDAH DIPERBAIKI: field 'window' dihapus)
 			combinedBuf := &customBuffer{
-				richText:  outputRich,
-				scroll:    logScroll,
-				lastColor: color.White,
+				richText:    outputRich,
+				scroll:      logScroll,
+				lastFgColor: color.White,
 			}
 
 			cmd.Stdout = combinedBuf
@@ -255,9 +278,9 @@ func main() {
 
 			err := cmd.Run()
 			if err != nil {
-				statusLabel.SetText("Script Berhenti (Error/Exit)")
+				statusLabel.SetText("Exit (Code)")
 			} else {
-				statusLabel.SetText("Script Selesai")
+				statusLabel.SetText("Done")
 			}
 			stdinPipe = nil
 		}()
@@ -272,27 +295,20 @@ func main() {
 
 	inputEntry.OnSubmitted = func(s string) { sendInput() }
 	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-	btnSelect := widget.NewButton("Pilih File (Bash/SHC)", func() {
+	btnSelect := widget.NewButton("Load File", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if reader != nil {
-				executeFile(reader)
-			}
+			if reader != nil { executeFile(reader) }
 		}, myWindow)
 		fd.Show()
 	})
 
-	// Layout UI
+	// Layout Akhir
 	controls := container.NewVBox(btnSelect, statusLabel)
-	inputBar := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
+	bottomBar := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
+	
+	content := container.NewBorder(controls, bottomBar, nil, nil, logArea)
 
-	finalLayout := container.NewBorder(
-		controls, // Top
-		inputBar, // Bottom
-		nil, nil,
-		logArea,  // Center (Hitam + Teks)
-	)
-
-	myWindow.SetContent(finalLayout)
+	myWindow.SetContent(content)
 	myWindow.ShowAndRun()
 }
 
