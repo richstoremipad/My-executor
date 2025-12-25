@@ -5,21 +5,33 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 /* ==========================================
-   TERMINAL WIDGET (TEXTGRID + ANSI REGEX)
+   CONFIG: GITHUB & DRIVER
+   GANTI LINK INI DENGAN LINK RAW GITHUB KAMU!
+========================================== */
+const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/" // <--- GANTI INI (Harus RAW link)
+const TargetDriverName = "Driver" // Nama folder di /sys/module/ untuk deteksi
+
+/* ==========================================
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -29,23 +41,17 @@ type Terminal struct {
 	curCol   int
 	curStyle *widget.CustomTextGridStyle
 	mutex    sync.Mutex
-	reAnsi   *regexp.Regexp // Regex untuk menangkap semua kode ANSI
+	reAnsi   *regexp.Regexp
 }
 
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
-	
-	// Default Style: Putih di atas Transparan
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
-
-	// Regex ini menangkap ESC + [ + angka + huruf perintah
-	// Contoh: \x1b[31m (Merah), \x1b[2J (Clear Screen)
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
-
 	return &Terminal{
 		grid:     g,
 		scroll:   container.NewScroll(g),
@@ -56,93 +62,84 @@ func NewTerminal() *Terminal {
 	}
 }
 
-// Konversi Kode ANSI ke Warna Fyne
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30", "90": return color.Gray{Y: 100}
-	case "31", "91": return theme.ErrorColor()   // Merah
-	case "32", "92": return theme.SuccessColor() // Hijau
-	case "33", "93": return theme.WarningColor() // Kuning
-	case "34", "94": return theme.PrimaryColor() // Biru
-	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Ungu
-	case "36", "96": return theme.PrimaryColor() // Cyan
-	case "37", "97": return theme.ForegroundColor() // Putih
-	default: return theme.ForegroundColor()
+	case "30": return color.Gray{Y: 100}
+	case "31": return theme.ErrorColor()
+	case "32": return theme.SuccessColor()
+	case "33": return theme.WarningColor()
+	case "34": return theme.PrimaryColor()
+	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
+	case "37": return theme.ForegroundColor()
+	case "90": return color.Gray{Y: 150}
+	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
+	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
+	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "97": return color.White
+	default: return nil
 	}
 }
 
 func (t *Terminal) Clear() {
-	t.grid.SetText("") // Kosongkan grid
+	t.grid.SetText("")
 	t.curRow = 0
 	t.curCol = 0
 }
 
-// Fungsi Write dengan Parser Regex yang Kuat
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-
 	raw := string(p)
-	raw = strings.ReplaceAll(raw, "\r\n", "\n") // Normalisasi enter
-
-	// Loop untuk memproses string dan mencari kode ANSI
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	for len(raw) > 0 {
-		// Cari posisi kode ANSI berikutnya
 		loc := t.reAnsi.FindStringIndex(raw)
-
 		if loc == nil {
-			// Tidak ada kode ANSI lagi, cetak sisa teks
 			t.printText(raw)
 			break
 		}
-
-		// Ada kode ANSI. 
-		// 1. Cetak teks sebelum kode ANSI (jika ada)
 		if loc[0] > 0 {
 			t.printText(raw[:loc[0]])
 		}
-
-		// 2. Proses Kode ANSI
-		ansiCode := raw[loc[0]:loc[1]] // Contoh: \x1b[31m atau \x1b[2J
+		ansiCode := raw[loc[0]:loc[1]]
 		t.handleAnsiCode(ansiCode)
-
-		// 3. Lanjut ke teks setelah kode ANSI
 		raw = raw[loc[1]:]
 	}
-
 	t.grid.Refresh()
 	t.scroll.ScrollToBottom()
 	return len(p), nil
 }
 
-// Menangani logika kode ANSI
 func (t *Terminal) handleAnsiCode(codeSeq string) {
-	// Hapus prefix \x1b[ dan suffix huruf
+	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
-	command := codeSeq[len(codeSeq)-1] // Huruf terakhir (m, J, H, K)
-
+	command := codeSeq[len(codeSeq)-1]
 	switch command {
-	case 'm': // Ganti Warna (Graphics Mode)
+	case 'm':
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
-				t.curStyle.FGColor = theme.ForegroundColor() // Reset
+				t.curStyle.FGColor = theme.ForegroundColor()
 			} else {
-				t.curStyle.FGColor = ansiToColor(part)
+				col := ansiToColor(part)
+				if col != nil {
+					t.curStyle.FGColor = col
+				}
 			}
 		}
-	case 'J': // Clear Screen commands
-		if content == "2" || content == "3" {
-			t.Clear() // \x1b[2J = Clear Screen
+	case 'J':
+		if strings.Contains(content, "2") {
+			t.Clear()
 		}
-	case 'H': // Cursor Home
+	case 'H':
 		t.curRow = 0
 		t.curCol = 0
-	// Abaikan kode lain (K, A, B, dll) agar tidak jadi simbol aneh
 	}
 }
 
-// Fungsi internal mencetak karakter ke Grid
 func (t *Terminal) printText(text string) {
 	for _, char := range text {
 		if char == '\n' {
@@ -154,64 +151,204 @@ func (t *Terminal) printText(text string) {
 			t.curCol = 0
 			continue
 		}
-
-		// Extend baris jika perlu
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
-
-		// Extend kolom jika perlu
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
-
-		// Set cell dengan warna saat ini
+		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
-			Style: t.curStyle,
+			Style: &cellStyle,
 		})
 		t.curCol++
 	}
 }
 
 /* ===============================
-              MAIN
+   HELPER FUNCTIONS
+================================ */
+
+// Cek Folder Module
+func CheckKernelDriver() bool {
+	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
+	err := cmd.Run()
+	return err == nil 
+}
+
+// Download File dari Internet
+func downloadFile(url string, filepath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("status code %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+/* ===============================
+              MAIN UI
 ================================ */
 
 func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Universal Root Executor")
+	w := a.NewWindow("Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
+	w.SetMaster()
 
-	/* TERMINAL */
 	term := NewTerminal()
-
-	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
-
 	status := widget.NewLabel("Status: Siap")
 	status.TextStyle = fyne.TextStyle{Bold: true}
-
 	var stdin io.WriteCloser
 
-	/* RUN FILE */
+	// Label Status Kernel
+	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
+	kernelLabel.TextSize = 10
+	kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
+	kernelLabel.Alignment = fyne.TextAlignLeading
+
+	updateKernelStatus := func() {
+		go func() {
+			isLoaded := CheckKernelDriver()
+			w.Canvas().Refresh(kernelLabel)
+			if isLoaded {
+				kernelLabel.Text = "KERNEL: DETECTED"
+				kernelLabel.Color = color.RGBA{0, 255, 0, 255} 
+			} else {
+				kernelLabel.Text = "KERNEL: NOT FOUND"
+				kernelLabel.Color = color.RGBA{255, 50, 50, 255} 
+			}
+			kernelLabel.Refresh()
+		}()
+	}
+	updateKernelStatus()
+
+	/* --- LOGIKA AUTO INSTALL KERNEL --- */
+	autoInstallKernel := func() {
+		term.Clear()
+		status.SetText("Status: Auto Install Kernel")
+		
+		go func() {
+			// 1. Deteksi Versi Kernel
+			term.Write([]byte("\x1b[36m[*] Detecting Device Kernel...\x1b[0m\n"))
+			out, err := exec.Command("uname", "-r").Output()
+			if err != nil {
+				term.Write([]byte("\x1b[31m[!] Error detecting kernel.\x1b[0m\n"))
+				return
+			}
+			
+			rawVersion := strings.TrimSpace(string(out))
+			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
+
+			// 2. Tentukan Nama File Script
+			// Strategi: Coba download nama file persis dulu (misal: 4.14.117-perf.sh)
+			// Jika gagal, coba versi pendek (misal: 4.14.117.sh)
+			
+			targetFile := "/data/local/tmp/kernel_installer.sh"
+			
+			// Coba Full Name
+			url := GitHubRepo + rawVersion + ".sh"
+			term.Write([]byte(fmt.Sprintf("\x1b[90m[*] Checking: %s\x1b[0m\n", url)))
+			
+			err = downloadFile(url, "temp_kernel_dl") // Simpan di local app storage dulu
+			
+			if err != nil {
+				// Jika gagal, coba Short Name (Split sebelum tanda -)
+				parts := strings.Split(rawVersion, "-")
+				if len(parts) > 0 {
+					shortVersion := parts[0]
+					url = GitHubRepo + shortVersion + ".sh"
+					term.Write([]byte(fmt.Sprintf("\x1b[90m[*] Checking: %s\x1b[0m\n", url)))
+					err = downloadFile(url, "temp_kernel_dl")
+				}
+			}
+
+			// 3. Eksekusi atau Error
+			if err != nil {
+				// Gagal total
+				term.Write([]byte("\n\x1b[31m[X] Kernel Not Supported (Script not found in repo).\x1b[0m\n"))
+				term.Write([]byte("\x1b[90m    Silakan upload script: " + rawVersion + ".sh ke GitHub.\x1b[0m\n"))
+				status.SetText("Status: Gagal")
+			} else {
+				// Berhasil Download
+				term.Write([]byte("\n\x1b[32m[V] Kernel Supported! Downloading script...\x1b[0m\n"))
+				
+				// Baca file download
+				data, _ := os.ReadFile("temp_kernel_dl")
+				
+				// Hapus file temp
+				os.Remove("temp_kernel_dl")
+
+				// Tulis ke /data/local/tmp (Root area)
+				term.Write([]byte("[*] Executing installer...\n"))
+				
+				exec.Command("su", "-c", "rm -f "+targetFile).Run()
+				copyCmd := exec.Command("su", "-c", "cat > "+targetFile+" && chmod 777 "+targetFile)
+				in, _ := copyCmd.StdinPipe()
+				go func() {
+					defer in.Close()
+					in.Write(data)
+				}()
+				copyCmd.Run()
+
+				// Jalankan Script
+				cmd := exec.Command("su", "-c", "sh "+targetFile)
+				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+				
+				// Pipe output ke terminal
+				var pipeStdin io.WriteCloser
+				pipeStdin, _ = cmd.StdinPipe()
+				cmd.Stdout = term
+				cmd.Stderr = term
+				
+				err = cmd.Run()
+				
+				if err != nil {
+					term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
+				} else {
+					term.Write([]byte("\n\x1b[32m[INSTALLATION COMPLETE]\x1b[0m\n"))
+				}
+				
+				pipeStdin.Close() // Close pipe
+				
+				// Update status di UI
+				time.Sleep(1 * time.Second)
+				updateKernelStatus()
+				status.SetText("Status: Selesai")
+			}
+		}()
+	}
+
+	/* --- FUNGSI EKSEKUSI FILE LOKAL --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
-
 		term.Clear()
 		status.SetText("Status: Menyiapkan...")
-
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-
 		go func() {
+			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -219,70 +356,129 @@ func main() {
 				in.Write(data)
 			}()
 			copyCmd.Run()
-
 			status.SetText("Status: Berjalan")
-
+			updateKernelStatus()
 			var cmd *exec.Cmd
-			// stty raw -echo mencegah input user muncul ganda dan mengacaukan layout
-			cmdStr := fmt.Sprintf("stty raw -echo; sh %s", target)
 			if isBinary {
-				cmdStr = target
+				cmd = exec.Command("su", "-c", target)
+			} else {
+				cmd = exec.Command("su", "-c", "sh "+target)
 			}
-
-			cmd = exec.Command("su", "-c", cmdStr)
-
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term
 			cmd.Stderr = term
-
 			err := cmd.Run()
-			
 			if err != nil {
-				// Tulis error dengan warna Merah manual (\x1b[31m)
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
-				// Tulis sukses dengan warna Hijau manual (\x1b[32m)
 				term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
 			}
 			status.SetText("Status: Selesai")
 			stdin = nil
+			time.Sleep(1 * time.Second)
+			updateKernelStatus()
 		}()
 	}
 
-	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
-			// Tampilkan input user (Cyan)
 			term.Write([]byte(fmt.Sprintf("\x1b[36m> %s\x1b[0m\n", input.Text)))
 			input.SetText("")
 		}
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* UI LAYOUT */
-	topControl := container.NewVBox(
-		widget.NewButton("Pilih File", func() {
-			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
-				if r != nil {
-					runFile(r)
-				}
-			}, w).Show()
-		}),
-		widget.NewButton("Clear Log", func() {
-			term.Clear()
-		}),
-		status,
+	/* ==========================================
+	   UI CONSTRUCTION
+	========================================== */
+
+	// 1. HEADER
+	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
+	titleText.TextSize = 16
+	titleText.TextStyle = fyne.TextStyle{Bold: true}
+
+	headerLeft := container.NewVBox(
+		titleText,
+		kernelLabel,
 	)
 
-	bottomControl := container.NewBorder(nil, nil, nil, widget.NewButton("Kirim", send), input)
+	// Tombol Auto Install (Baru!)
+	installBtn := widget.NewButtonWithIcon("Install Driver", theme.DownloadIcon(), func() {
+		dialog.ShowConfirm("Auto Install", "Download dan install driver sesuai kernel HP?", func(ok bool) {
+			if ok {
+				autoInstallKernel()
+			}
+		}, w)
+	})
+	
+	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
+		term.Clear()
+	})
 
-	w.SetContent(container.NewBorder(
-		topControl,    
-		bottomControl, 
-		nil, nil,      
-		term.scroll,   
-	))
+	// Layout Header Kanan: Install Btn + Clear Btn
+	headerRight := container.NewHBox(installBtn, clearBtn)
 
+	headerBar := container.NewBorder(nil, nil, 
+		container.NewPadded(headerLeft), 
+		headerRight,
+	)
+
+	topSection := container.NewVBox(
+		headerBar,
+		container.NewPadded(status),
+		widget.NewSeparator(),
+	)
+
+	// 2. FOOTER
+	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
+	copyright.TextSize = 10
+	copyright.Alignment = fyne.TextAlignCenter
+	copyright.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+
+	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
+	inputContainer := container.NewPadded(
+		container.NewBorder(nil, nil, nil, sendBtn, input),
+	)
+
+	bottomSection := container.NewVBox(
+		copyright,
+		inputContainer,
+	)
+
+	// 3. MAIN LAYOUT
+	mainLayer := container.NewBorder(
+		topSection,
+		bottomSection,
+		nil, nil,
+		term.scroll,
+	)
+
+	// 4. FAB
+	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+			if r != nil {
+				runFile(r)
+			}
+		}, w).Show()
+	})
+	fabBtn.Importance = widget.HighImportance
+
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewHBox(
+			layout.NewSpacer(),
+			fabBtn,
+			widget.NewLabel(" "), 
+		),
+		widget.NewLabel("      "), 
+		widget.NewLabel("      "), 
+	)
+
+	finalLayout := container.NewStack(mainLayer, fabContainer)
+
+	w.SetContent(finalLayout)
 	w.ShowAndRun()
 }
+
