@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +33,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL UI LOGIC (FIXED COLORS & CLEAR)
+   TERMINAL UI LOGIC (FULL COLOR SUPPORT)
 ========================================== */
 type Terminal struct {
 	grid     *widget.TextGrid
@@ -48,7 +49,7 @@ func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
 	defStyle := &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent}
-	// Regex yang lebih lengkap untuk menangkap Clear Screen [2J dan Warna [m
+	// Regex Paling Kompatibel untuk ANSI Code
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	return &Terminal{grid: g, scroll: container.NewScroll(g), curStyle: defStyle, reAnsi: re}
 }
@@ -61,13 +62,12 @@ func (t *Terminal) Clear() {
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock(); defer t.mutex.Unlock()
 	
-	// Handle Carriage Return (\r) manual agar progress bar bisa menimpa teks
 	raw := string(p)
+	
+	// Khusus Progress Bar (Pakai \r tanpa \n) -> Timpa baris ini
 	if strings.Contains(raw, "\r") && !strings.Contains(raw, "\n") {
-		// Ini mode progress bar: Reset kolom ke 0 tapi jangan ganti baris
 		t.curCol = 0
-		// Hapus sisa baris (opsional, biar bersih)
-		t.cleanCurrentLine() 
+		t.cleanCurrentLine()
 	}
 	
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
@@ -82,21 +82,18 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			t.printText(raw[:loc[0]]) 
 		}
 		
-		// Proses Kode ANSI (Warna / Clear)
-		ansiCode := raw[loc[0]:loc[1]]
-		t.handleAnsiCode(ansiCode)
-		
+		// Parsing ANSI Code
+		t.handleAnsiCode(raw[loc[0]:loc[1]])
 		raw = raw[loc[1]:]
 	}
 	t.grid.Refresh(); t.scroll.ScrollToBottom()
 	return len(p), nil
 }
 
-// Membersihkan sisa baris (agar animasi bar tidak meninggalkan jejak)
 func (t *Terminal) cleanCurrentLine() {
 	if t.curRow < len(t.grid.Rows) {
 		row := t.grid.Rows[t.curRow]
-		for i := t.curCol; i < len(row.Cells); i++ {
+		for i := 0; i < len(row.Cells); i++ {
 			t.grid.SetCell(t.curRow, i, widget.TextGridCell{Rune: ' '})
 		}
 	}
@@ -108,24 +105,27 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	command := codeSeq[len(codeSeq)-1]
 
 	switch command {
-	case 'm': // Ganti Warna
+	case 'm': // Warna
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
-			if part == "" || part == "0" { t.curStyle.FGColor = theme.ForegroundColor() }
-			if part == "31" || part == "91" { t.curStyle.FGColor = theme.ErrorColor() } // Merah
-			if part == "32" || part == "92" { t.curStyle.FGColor = theme.SuccessColor() } // Hijau
-			if part == "33" || part == "93" { t.curStyle.FGColor = theme.WarningColor() } // Kuning
-			if part == "34" || part == "94" { t.curStyle.FGColor = theme.PrimaryColor() } // Biru
-			if part == "36" || part == "96" { t.curStyle.FGColor = color.RGBA{0, 255, 255, 255} } // Cyan
-			if part == "37" || part == "97" { t.curStyle.FGColor = color.White }
-			if part == "90" { t.curStyle.FGColor = color.Gray{Y: 100} }
+			val, _ := strconv.Atoi(part)
+			// Reset
+			if val == 0 { t.curStyle.FGColor = theme.ForegroundColor(); t.curStyle.Style = fyne.TextStyle{} }
+			// Bold
+			if val == 1 { t.curStyle.Style = fyne.TextStyle{Bold: true} }
+			// Colors
+			if val == 30 || val == 90 { t.curStyle.FGColor = color.Gray{Y: 100} }
+			if val == 31 || val == 91 { t.curStyle.FGColor = theme.ErrorColor() } // Merah
+			if val == 32 || val == 92 { t.curStyle.FGColor = theme.SuccessColor() } // Hijau
+			if val == 33 || val == 93 { t.curStyle.FGColor = theme.WarningColor() } // Kuning
+			if val == 34 || val == 94 { t.curStyle.FGColor = theme.PrimaryColor() } // Biru
+			if val == 35 || val == 95 { t.curStyle.FGColor = color.RGBA{255, 0, 255, 255} } // Ungu
+			if val == 36 || val == 96 { t.curStyle.FGColor = color.RGBA{0, 255, 255, 255} } // Cyan
+			if val == 37 || val == 97 { t.curStyle.FGColor = color.White }
 		}
 	case 'J': // Clear Screen
-		// \033[2J atau \033[J
-		if strings.Contains(content, "2") || content == "" {
-			t.Clear()
-		}
-	case 'H': // Cursor Home (Kadang dipakai bareng clear)
+		if strings.Contains(content, "2") || content == "" { t.Clear() }
+	case 'H': // Cursor Home
 		t.curRow = 0; t.curCol = 0
 	}
 }
@@ -135,12 +135,7 @@ func (t *Terminal) printText(text string) {
 		if char == '\n' { t.curRow++; t.curCol = 0; continue }
 		if char == '\r' { t.curCol = 0; continue }
 		
-		// Auto expand rows
-		for t.curRow >= len(t.grid.Rows) { 
-			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{}) 
-		}
-		
-		// Auto expand cols logic
+		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{}) }
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
@@ -155,7 +150,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   TURBO ANIMATION LOGIC (PING-PONG)
+   TURBO OVAL ANIMATION
 ========================================== */
 
 type WriteCounter struct {
@@ -172,9 +167,9 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 }
 
 func drawProgressBar(term *Terminal, current uint64, total int64) {
-	barLength := 30 // Lebih panjang biar puas
+	barLength := 25
 	
-	// MODE 1: UKURAN PASTI (Persentase Normal)
+	// MODE 1: UKURAN PASTI (Persentase)
 	if total > 0 {
 		percent := float64(current) / float64(total) * 100
 		filledLength := int((percent * float64(barLength)) / 100)
@@ -187,39 +182,40 @@ func drawProgressBar(term *Terminal, current uint64, total int64) {
 		return
 	}
 
-	// MODE 2: UNKNOWN SIZE (TURBO BOUNCE ANIMATION)
-	// Kita gunakan Waktu (UnixMilli) agar kecepatannya tidak tergantung internet.
-	// Semakin kecil pembaginya (/40), semakin cepat gerakannya.
-	speed := int64(40) 
+	// MODE 2: UNKNOWN SIZE (TURBO OVAL PING-PONG)
+	// Speed: Semakin kecil angkanya, semakin ngebut (15 sangat cepat)
+	speed := int64(15) 
 	t := time.Now().UnixMilli() / speed
 	
-	// Logika Ping-Pong (Bolak Balik)
-	// Posisi bergerak dari 0 ke (barLength-1) lalu kembali ke 0
-	maxPos := barLength - 4 // -4 adalah lebar kotak yang bergerak
+	// Logika Ping-Pong
+	blockSize := 4 // Lebar Oval
+	maxPos := barLength - blockSize
 	cycle := maxPos * 2
 	pos := int(t % int64(cycle))
-	
 	if pos >= maxPos {
-		pos = cycle - pos // Gerak mundur (Kanan ke Kiri)
+		pos = cycle - pos 
 	}
 
-	// Gambar Bar
-	bar := ""
+	// Konstruksi Bar Oval
+	var barBuilder strings.Builder
 	for i := 0; i < barLength; i++ {
-		// Buat kotak bergerak (lebar 4 blok)
-		if i >= pos && i < pos+4 {
-			bar += "█"
+		if i == pos {
+			barBuilder.WriteString("▐") // Ujung Kiri Bulat
+		} else if i == pos+blockSize-1 {
+			barBuilder.WriteString("▌") // Ujung Kanan Bulat
+		} else if i > pos && i < pos+blockSize-1 {
+			barBuilder.WriteString("█") // Badan Oval
 		} else {
-			bar += "░"
+			barBuilder.WriteString("░") // Background
 		}
 	}
 	
-	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] Active   \x1b[0m", bar)
+	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] Active   \x1b[0m", barBuilder.String())
 	term.Write([]byte(msg))
 }
 
 /* ==========================================
-   NETWORK & SYSTEM LOGIC
+   SYSTEM LOGIC
 ========================================== */
 
 func CheckKernelDriver() bool {
@@ -269,7 +265,7 @@ func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 }
 
 /* ==========================================
-   MAIN APP
+   MAIN UI
 ========================================== */
 
 func main() {
@@ -286,17 +282,15 @@ func main() {
 	input.SetPlaceHolder("Terminal Command...")
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
-
 	var stdin io.WriteCloser
 
-	// --- LABEL STATUS HEADER ---
+	// HEADER STATUS
 	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
 	kernelLabel.TextSize = 10; kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
-	
 	rootLabel := canvas.NewText("ROOT: CHECKING...", color.RGBA{150, 150, 150, 255})
 	rootLabel.TextSize = 10; rootLabel.TextStyle = fyne.TextStyle{Bold: true}
 
-	updateKernelStatus := func() {
+	updateStatus := func() {
 		go func() {
 			if CheckKernelDriver() {
 				kernelLabel.Text = "KERNEL: DETECTED"
@@ -307,20 +301,20 @@ func main() {
 			}
 			kernelLabel.Refresh()
 		}()
+		go func() {
+			if CheckRootAccess() {
+				rootLabel.Text = "ROOT: GRANTED"
+				rootLabel.Color = color.RGBA{0, 255, 0, 255}
+			} else {
+				rootLabel.Text = "ROOT: DENIED"
+				rootLabel.Color = color.RGBA{255, 0, 0, 255}
+			}
+			rootLabel.Refresh()
+		}()
 	}
-	updateKernelStatus()
+	updateStatus()
 
-	go func() {
-		if CheckRootAccess() {
-			rootLabel.Text = "ROOT: GRANTED"
-			rootLabel.Color = color.RGBA{0, 255, 0, 255}
-		} else {
-			rootLabel.Text = "ROOT: DENIED"
-			rootLabel.Color = color.RGBA{255, 0, 0, 255}
-		}
-		rootLabel.Refresh()
-	}()
-
+	// LOGIKA RUN FILE
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -364,14 +358,14 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- AUTO INSTALLER --- */
+	// LOGIKA AUTO INSTALL
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Analyzing...")
 		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
-			updateKernelStatus() 
+			updateStatus() 
 			
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║   REAL-TIME KERNEL DRIVER INSTALLER  ║\x1b[0m\n"))
@@ -439,12 +433,13 @@ func main() {
 				}
 				
 				time.Sleep(1 * time.Second)
-				updateKernelStatus()
+				updateStatus()
 				status.SetText("System: Online")
 			}
 		}()
 	}
 
+	// UI COMPONENTS
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
@@ -457,41 +452,29 @@ func main() {
 		}()
 	})
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
 
+	// LAYOUT
 	headerLeft := container.NewVBox(
 		canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), 
-		kernelLabel,
-		rootLabel,
+		kernelLabel, rootLabel,
 	)
 	header := container.NewBorder(nil, nil, headerLeft, container.NewHBox(installBtn, checkBtn, clearBtn))
-
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Bold: true}
-	
 	inputBar := container.NewBorder(nil, nil, nil, sendBtn, input)
+	bottomSection := container.NewVBox(copyright, container.NewPadded(inputBar))
 	
-	bottomSection := container.NewVBox(
-		copyright, 
-		container.NewPadded(inputBar),
-	)
-
 	mainContent := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()), 
-		bottomSection,
-		nil, nil, 
-		term.scroll,
+		bottomSection, nil, nil, term.scroll,
 	)
-	
 	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), fabBtn, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
 	
-	finalLayout := container.NewStack(mainContent, fabContainer)
-
-	w.SetContent(finalLayout)
+	w.SetContent(container.NewStack(mainContent, fabContainer))
 	w.ShowAndRun()
 }
 
