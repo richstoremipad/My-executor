@@ -25,13 +25,13 @@ type customBuffer struct {
 	scroll *container.Scroll
 }
 
-/* --- HAPUS ANSI KONTROL SAJA (BUKAN WARNA) --- */
+/* --- HAPUS ANSI KONTROL (CURSOR, CLEAR) --- */
 func stripCursorANSI(s string) string {
 	re := regexp.MustCompile(`\x1b\[[0-9;]*[A-HJKSTf]`)
 	return re.ReplaceAllString(s, "")
 }
 
-/* --- ANSI COLOR MAP --- */
+/* --- MAP ANSI COLOR → FYNE --- */
 func ansiColor(code string) fyne.ThemeColorName {
 	switch code {
 	case "31":
@@ -91,12 +91,18 @@ func ansiToRich(text string) []widget.RichTextSegment {
 			},
 		})
 	}
+
 	return segs
 }
 
-/* --- WRITE OUTPUT (URUTAN BENAR) --- */
+/* --- WRITE OUTPUT (FIX FINAL) --- */
 func (cb *customBuffer) Write(p []byte) (int, error) {
 	raw := string(p)
+
+	// FIX: carriage return bikin output turun → ubah ke newline
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+
+	// hapus ANSI cursor (bukan warna)
 	raw = stripCursorANSI(raw)
 
 	cb.rich.Segments = append(cb.rich.Segments, ansiToRich(raw)...)
@@ -117,16 +123,19 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
+	/* OUTPUT */
 	output := widget.NewRichText()
-	output.Wrapping = fyne.TextWrapOff
+	output.Wrapping = fyne.TextWrapOff // PENTING: ASCII tidak pecah
 	scroll := container.NewScroll(output)
 
+	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik input lalu Enter...")
 
 	status := widget.NewLabel("Status: Siap")
 	var stdin io.WriteCloser
 
+	/* EXEC FILE */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -167,6 +176,7 @@ func main() {
 		}()
 	}
 
+	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
@@ -183,6 +193,7 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
+	/* UI */
 	w.SetContent(container.NewBorder(
 		container.NewVBox(
 			widget.NewButton("Pilih File", func() {
