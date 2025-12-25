@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"os/exec"
@@ -15,57 +16,122 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+/* =========================
+   ANSI → RichText SUPPORT
+========================= */
+
 type customBuffer struct {
-	label  *widget.Label
+	rich   *widget.RichText
 	scroll *container.Scroll
 	window fyne.Window
 }
 
-func cleanAnsi(str string) string {
-	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	return ansi.ReplaceAllString(str, "")
+func ansiToRich(text string) []widget.RichTextSegment {
+	segments := []widget.RichTextSegment{}
+	currentColor := color.White
+
+	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	matches := re.FindAllStringIndex(text, -1)
+
+	last := 0
+	for _, m := range matches {
+		if m[0] > last {
+			segments = append(segments, &widget.TextSegment{
+				Text: text[last:m[0]],
+				Style: widget.RichTextStyle{
+					Color: currentColor,
+				},
+			})
+		}
+
+		code := text[m[0]+2 : m[1]-1]
+		switch code {
+		case "0":
+			currentColor = color.White
+		case "30":
+			currentColor = color.Black
+		case "31":
+			currentColor = color.RGBA{255, 0, 0, 255}
+		case "32":
+			currentColor = color.RGBA{0, 255, 0, 255}
+		case "33":
+			currentColor = color.RGBA{255, 255, 0, 255}
+		case "34":
+			currentColor = color.RGBA{0, 128, 255, 255}
+		case "35":
+			currentColor = color.RGBA{255, 0, 255, 255}
+		case "36":
+			currentColor = color.RGBA{0, 255, 255, 255}
+		case "37":
+			currentColor = color.White
+		}
+
+		last = m[1]
+	}
+
+	if last < len(text) {
+		segments = append(segments, &widget.TextSegment{
+			Text: text[last:],
+			Style: widget.RichTextStyle{
+				Color: currentColor,
+			},
+		})
+	}
+
+	return segments
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
-	cleanText := cleanAnsi(string(p))
-	re := regexp.MustCompile(`(?i)Expires:.*`)
-	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
+	text := string(p)
 
-	cb.label.SetText(cb.label.Text + modifiedText)
+	// Modifikasi teks jika perlu
+	re := regexp.MustCompile(`(?i)Expires:.*`)
+	text = re.ReplaceAllString(text, "Expires: 99 days")
+
+	segments := ansiToRich(text)
+	cb.rich.Segments = append(cb.rich.Segments, segments...)
+	cb.rich.Refresh()
 	cb.scroll.ScrollToBottom()
-	cb.window.Canvas().Refresh(cb.label)
+
 	return len(p), nil
 }
+
+/* =========================
+            MAIN
+========================= */
 
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("Universal Root Executor")
-	myWindow.Resize(fyne.NewSize(600, 500))
+	myWindow.Resize(fyne.NewSize(700, 520))
 
-	outputLabel := widget.NewLabel("")
-	outputLabel.TextStyle = fyne.TextStyle{Monospace: true}
-	outputLabel.Wrapping = fyne.TextWrapBreak
-	logScroll := container.NewScroll(outputLabel)
+	/* OUTPUT */
+	outputRich := widget.NewRichText()
+	outputRich.Wrapping = fyne.TextWrapBreak
+	logScroll := container.NewScroll(outputRich)
 
+	/* INPUT */
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input di sini...")
+	inputEntry.SetPlaceHolder("Ketik input lalu Enter...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
 
+	/* EXECUTOR */
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
+
 		statusLabel.SetText("Status: Menyiapkan file...")
-		outputLabel.SetText("") 
+		outputRich.Segments = nil
+		outputRich.Refresh()
 
-		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
+		targetPath := "/data/local/tmp/temp_exec"
 
-		// Cek apakah file adalah binary (ELF) atau script teks
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Langkah 1: Kirim dan beri izin eksekusi penuh
+			// Copy file sebagai root
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
 			go func() {
@@ -76,27 +142,39 @@ func main() {
 
 			statusLabel.SetText("Status: Berjalan...")
 
-			// Langkah 2: Logika Eksekusi Otomatis
 			var cmd *exec.Cmd
 			if isBinary {
-				// Jika binary, jalankan langsung
 				cmd = exec.Command("su", "-c", targetPath)
 			} else {
-				// Jika script teks, jalankan dengan sh
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
-			
-			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", "TERM=dumb")
+
+			cmd.Env = append(os.Environ(),
+				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
+				"TERM=xterm-256color",
+			)
 
 			stdinPipe, _ = cmd.StdinPipe()
-			combinedBuf := &customBuffer{label: outputLabel, scroll: logScroll, window: myWindow}
-			cmd.Stdout = combinedBuf
-			cmd.Stderr = combinedBuf
+			buffer := &customBuffer{
+				rich:   outputRich,
+				scroll: logScroll,
+				window: myWindow,
+			}
+
+			cmd.Stdout = buffer
+			cmd.Stderr = buffer
 
 			err := cmd.Run()
 			if err != nil {
-				statusLabel.SetText("Status: Berhenti/Error")
-				outputLabel.SetText(outputLabel.Text + "\n[Error: " + err.Error() + "]")
+				statusLabel.SetText("Status: Error")
+				outputRich.Segments = append(outputRich.Segments,
+					&widget.TextSegment{
+						Text: "\n[ERROR] " + err.Error() + "\n",
+						Style: widget.RichTextStyle{
+							Color: color.RGBA{255, 0, 0, 255},
+						},
+					})
+				outputRich.Refresh()
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
@@ -104,30 +182,47 @@ func main() {
 		}()
 	}
 
+	/* INPUT SEND */
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
-			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
-			outputLabel.SetText(outputLabel.Text + "> " + inputEntry.Text + "\n")
-			inputEntry.SetText("") 
+			fmt.Fprintln(stdinPipe, inputEntry.Text)
+
+			outputRich.Segments = append(outputRich.Segments,
+				&widget.TextSegment{
+					Text: "> " + inputEntry.Text + "\n",
+					Style: widget.RichTextStyle{
+						Color: color.RGBA{0, 255, 255, 255},
+					},
+				},
+			)
+			outputRich.Refresh()
+			inputEntry.SetText("")
 		}
 	}
 
-	inputEntry.OnSubmitted = func(s string) { sendInput() }
-	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-	btnSelect := widget.NewButton("Pilih File (Bash/SHC Binary)", func() {
-		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if reader != nil { executeFile(reader) }
-		}, myWindow)
-		fd.Show()
-	})
-	btnClear := widget.NewButton("Bersihkan Log", func() { outputLabel.SetText("") })
+	inputEntry.OnSubmitted = func(_ string) { sendInput() }
 
+	/* BUTTON */
+	btnSend := widget.NewButton("Kirim", sendInput)
+	btnClear := widget.NewButton("Bersihkan Log", func() {
+		outputRich.Segments = nil
+		outputRich.Refresh()
+	})
+	btnSelect := widget.NewButton("Pilih File (Shell / Binary)", func() {
+		dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+			if reader != nil {
+				executeFile(reader)
+			}
+		}, myWindow).Show()
+	})
+
+	/* LAYOUT */
 	myWindow.SetContent(container.NewBorder(
 		container.NewVBox(btnSelect, btnClear, statusLabel),
-		container.NewBorder(nil, nil, nil, btnSend, inputEntry), 
-		nil, nil, logScroll,
+		container.NewBorder(nil, nil, nil, btnSend, inputEntry),
+		nil, nil,
+		logScroll,
 	))
 
 	myWindow.ShowAndRun()
 }
-
