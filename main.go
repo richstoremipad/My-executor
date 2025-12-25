@@ -101,53 +101,58 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   REAL-TIME PROGRESS LOGIC (CLEAN VERSION)
+   SMART PROGRESS BAR LOGIC (ANIMATED)
 ========================================== */
 
 type WriteCounter struct {
 	Total         uint64
 	ContentLength int64
-	OnProgress    func(float64)
+	OnProgress    func(uint64, int64) // Kirim TotalBytes dan TotalSize
 }
 
 func (wc *WriteCounter) Write(p []byte) (int, error) {
 	n := len(p)
 	wc.Total += uint64(n)
-	wc.PrintProgress()
+	if wc.OnProgress != nil { wc.OnProgress(wc.Total, wc.ContentLength) }
 	return n, nil
 }
 
-func (wc *WriteCounter) PrintProgress() {
-	var percent float64
-
-	// LOGIKA ESTIMASI VISUAL
-	// Jika server tidak mengirim ukuran (-1), kita estimasi file 5MB (5 * 1024 * 1024 bytes)
-	// agar bar tetap jalan dan terlihat hidup.
-	if wc.ContentLength <= 0 {
-		estimatedTotal := 5.0 * 1024 * 1024 
-		percent = (float64(wc.Total) / estimatedTotal) * 100
-		
-		// Kunci di 99% jika file aslinya ternyata lebih besar dari 5MB
-		// Bar hanya akan 100% jika fungsi download selesai.
-		if percent > 99 { percent = 99 }
-	} else {
-		// Jika ukuran asli ada, hitung persen real
-		percent = float64(wc.Total) / float64(wc.ContentLength) * 100
+// Fungsi menggambar bar
+func drawProgressBar(term *Terminal, current uint64, total int64) {
+	barLength := 25
+	
+	// MODE 1: UKURAN DIKETAHUI (PERCENTAGE BAR)
+	if total > 0 {
+		percent := float64(current) / float64(total) * 100
+		filledLength := int((percent * float64(barLength)) / 100)
+		bar := ""
+		for i := 0; i < barLength; i++ {
+			if i < filledLength { bar += "█" } else { bar += "░" }
+		}
+		msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%%   \x1b[0m", bar, percent)
+		term.Write([]byte(msg))
+		return
 	}
 
-	if wc.OnProgress != nil { wc.OnProgress(percent) }
-}
-
-func drawRealTimeBar(term *Terminal, percent float64) {
-	barLength := 25 // Bar lebih panjang biar gagah
-	filledLength := int((percent * float64(barLength)) / 100)
+	// MODE 2: UKURAN TIDAK DIKETAHUI (ANIMASI BERGERAK / RUNNING LED)
+	// Bar akan bergerak loop dari kiri ke kanan berdasarkan jumlah byte yang masuk
+	// Ini menjamin bar terlihat "Hidup" walau file kecil atau besar.
+	
+	animationStep := int((current / 1024) % uint64(barLength)) // Bergerak setiap 1KB
 	bar := ""
+	blockSize := 5 // Panjang balok yang bergerak
+	
 	for i := 0; i < barLength; i++ {
-		if i < filledLength { bar += "█" } else { bar += "░" }
+		// Logika balok bergerak (Wrapping)
+		if i >= animationStep && i < animationStep+blockSize {
+			bar += "█"
+		} else {
+			bar += "░"
+		}
 	}
 	
-	// TAMPILAN BERSIH: Cuma Bar dan Persen (Tanpa MB)
-	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%%   \x1b[0m", bar, percent)
+	// Tampilkan status "Active" tanpa persen palsu
+	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] Active   \x1b[0m", bar)
 	term.Write([]byte(msg))
 }
 
@@ -181,7 +186,7 @@ func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 
 	counter := &WriteCounter{
 		ContentLength: resp.ContentLength, 
-		OnProgress: func(p float64) { drawRealTimeBar(term, p) },
+		OnProgress: func(curr uint64, tot int64) { drawProgressBar(term, curr, tot) },
 	}
 
 	localTemp := os.TempDir() + "/kernel_temp.sh"
