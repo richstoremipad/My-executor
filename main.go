@@ -27,15 +27,11 @@ import (
    CONFIG (HYBRID DETECTION)
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
-
-// DETEKSI 1: File Flag (Otomatis hilang saat reboot)
 const FlagFile = "/dev/status_driver_aktif"
-
-// DETEKSI 2: Folder Module (Backup check)
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC (BASE CODE)
 ========================================== */
 
 type Terminal struct {
@@ -193,14 +189,20 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 }
 
 func CheckKernelDriver() bool {
-	// Cek Flag (Prioritas)
 	if _, err := os.Stat(FlagFile); err == nil { return true }
-	
-	// Cek Module (Backup)
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil { return true }
-	
 	return false 
+}
+
+// [BARU] Fungsi Cek SELinux
+func CheckSELinux() string {
+	cmd := exec.Command("su", "-c", "getenforce")
+	out, err := cmd.Output()
+	if err != nil {
+		return "UNKNOWN"
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func downloadFile(url string, filepath string) (error, string) {
@@ -245,10 +247,8 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	// Reset Flag saat start
 	exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 
-	// [UBAH JUDUL SESUAI PERMINTAAN]
 	w := a.NewWindow("Simple Exec by TANGSAN")
 	w.Resize(fyne.NewSize(720, 520))
 	w.SetMaster()
@@ -256,30 +256,58 @@ func main() {
 	term := NewTerminal()
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
+	
+	// Definisi Warna Kuning Cerah
+	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
+	
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
-	kernelLabel.TextSize = 10
-	kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
-	kernelLabel.Alignment = fyne.TextAlignLeading
+	// --- SETUP LABEL DETEKTOR (KUNING DI JUDUL) ---
 
-	updateKernelStatus := func() {
+	// 1. Kernel Label (Dipisah agar "KERNEL:" kuning)
+	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
+	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
+	
+	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
+	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
+
+	// 2. SELinux Label (Dipisah agar "SELINUX:" kuning) [BARU]
+	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
+	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
+	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
+
+	// FUNGSI UPDATE STATUS GABUNGAN
+	updateAllStatus := func() {
 		go func() {
+			// Cek Kernel
 			isLoaded := CheckKernelDriver()
-			w.Canvas().Refresh(kernelLabel)
 			if isLoaded {
-				kernelLabel.Text = "KERNEL: DETECTED"
-				kernelLabel.Color = color.RGBA{0, 255, 0, 255} 
+				lblKernelValue.Text = "DETECTED"
+				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
 			} else {
-				kernelLabel.Text = "KERNEL: NOT FOUND"
-				kernelLabel.Color = color.RGBA{255, 50, 50, 255} 
+				lblKernelValue.Text = "NOT FOUND"
+				lblKernelValue.Color = color.RGBA{255, 50, 50, 255} 
 			}
-			kernelLabel.Refresh()
+			lblKernelValue.Refresh()
+
+			// Cek SELinux [BARU]
+			selinuxStatus := CheckSELinux()
+			lblSELinuxValue.Text = selinuxStatus
+			if selinuxStatus == "Enforcing" {
+				lblSELinuxValue.Color = color.RGBA{255, 100, 100, 255} // Merah jika Enforcing
+			} else if selinuxStatus == "Permissive" {
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // Hijau jika Permissive
+			} else {
+				lblSELinuxValue.Color = color.Gray{Y: 150}
+			}
+			lblSELinuxValue.Refresh()
 		}()
 	}
-	updateKernelStatus()
+	updateAllStatus()
 
 	/* --- LOGIKA AUTO INSTALL --- */
 	autoInstallKernel := func() {
@@ -288,9 +316,8 @@ func main() {
 		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
-			updateKernelStatus() 
+			updateAllStatus() 
 			
-			// Header
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
@@ -387,7 +414,6 @@ func main() {
 				}
 				term.Write([]byte("\n\n\x1b[97m[*] Executing Root Installer...\x1b[0m\n"))
 				
-				// Eksekusi Real
 				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
 				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
 
@@ -404,7 +430,6 @@ func main() {
 				if err != nil {
 					term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 				} else {
-					// [FIX] PAKSA BUAT FLAG JIKA INSTALL SUKSES
 					exec.Command("su", "-c", "touch "+FlagFile).Run()
 					exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
 
@@ -413,7 +438,7 @@ func main() {
 				pipeStdin.Close()
 				
 				time.Sleep(1 * time.Second)
-				updateKernelStatus()
+				updateAllStatus()
 				status.SetText("System: Online")
 			}
 		}()
@@ -442,7 +467,6 @@ func main() {
 			cmd.Stdout = term; cmd.Stderr = term
 			err := cmd.Run()
 
-			// [FIX] PAKSA BUAT FLAG JIKA EKSEKUSI SUKSES
 			if err == nil {
 				exec.Command("su", "-c", "touch "+FlagFile).Run()
 				exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
@@ -452,9 +476,8 @@ func main() {
 			status.SetText("Status: Idle")
 			stdin = nil
 			
-			// Refresh status
 			time.Sleep(500 * time.Millisecond)
-			updateKernelStatus()
+			updateAllStatus()
 		}()
 	}
 
@@ -467,13 +490,18 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- UI LAYOUT --- */
-	// [UBAH JUDUL SESUAI PERMINTAAN]
+	/* --- UI LAYOUT CONSTRUCTION --- */
+	
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
 
-	headerLeft := container.NewVBox(titleText, kernelLabel)
+	// Header Kiri: Judul + Kernel Check + SELinux Check
+	headerLeft := container.NewVBox(
+		titleText,
+		container.NewHBox(lblKernelTitle, lblKernelValue),
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux ditambahkan disini
+	)
 
 	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
 		term.Write([]byte("\n\x1b[36m[*] Scanning Kernel Modules...\x1b[0m\n"))
@@ -501,21 +529,50 @@ func main() {
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
-	copyright := canvas.NewText("SYSTEM: ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
-	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Monospace: true}
-	sendBtn := widget.NewButtonWithIcon("Send", theme.MailSendIcon(), send)
-	inputContainer := container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input))
-	bottomSection := container.NewVBox(copyright, inputContainer)
+	// FOOTER: ROOT STATUS (DIPISAH AGAR "SYSTEM:" KUNING)
+	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
+	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	
+	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
+	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+
+	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
+	
+	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
+
+	// [PERBESAR UI & JARAK] INPUT & TOMBOL KIRIM
+	// Menggunakan Padded untuk memperbesar area, dan HBox dengan Spacer untuk jarak.
+	bigInput := container.NewPadded(input)
+	bigSendBtn := container.NewPadded(sendBtn)
+	
+	inputArea := container.NewBorder(nil, nil, nil, 
+		container.NewHBox(widget.NewLabel("  "), bigSendBtn), // Spacer di kiri tombol kirim
+		bigInput,
+	)
+	inputContainer := container.NewPadded(inputArea)
+
+	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
+	// [PERBESAR UI] TOMBOL FILE (FAB)
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
+	bigFabBtn := container.NewPadded(fabBtn) // Perbesar FAB dengan padding
 
-	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), fabBtn, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
-	
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewHBox(
+			layout.NewSpacer(),
+			bigFabBtn,
+			widget.NewLabel(" "), 
+		),
+		widget.NewLabel("      "), 
+		widget.NewLabel("      "), 
+	)
+
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
