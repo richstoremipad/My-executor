@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
-	"runtime"
+	"path/filepath"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -14,56 +16,61 @@ import (
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Executor SH/Bin")
+	myWindow := myApp.NewWindow("Executor ARM64")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
 	outputArea := widget.NewMultiLineEntry()
-	outputArea.SetPlaceHolder("Output log akan muncul di sini...")
-	
 	statusLabel := widget.NewLabel("Status: Ready")
 
-	executeFile := func(path string) {
-		statusLabel.SetText("Status: Menjalankan " + path)
-		
-		var cmd *exec.Cmd
-		// Cek OS, jika Windows butuh penanganan berbeda, 
-		// tapi asumsikan Linux/macOS untuk .sh dan bin
-		if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd", "/C", path)
-		} else {
-			// Memberikan izin eksekusi (chmod +x) secara otomatis
-			exec.Command("chmod", "+x", path).Run()
-			cmd = exec.Command(path)
-		}
+	executeFile := func(reader fyne.URIReadCloser) {
+		defer reader.Close()
+		statusLabel.SetText("Status: Menyiapkan file...")
 
-		output, err := cmd.CombinedOutput()
+		// 1. Buat path di folder internal aplikasi
+		// Ini adalah area 'Sandbox' yang diizinkan untuk eksekusi
+		tmpPath := filepath.Join(myApp.Storage().RootURI().Path(), "run_script.sh")
+
+		// 2. Salin isi file dari picker ke folder internal
+		out, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 		if err != nil {
-			outputArea.SetText(fmt.Sprintf("Error: %v\n\nOutput:\n%s", err, string(output)))
-			statusLabel.SetText("Status: Gagal")
+			outputArea.SetText("Gagal membuat file internal: " + err.Error())
+			return
+		}
+		_, err = io.Copy(out, reader)
+		out.Close()
+
+		if err != nil {
+			outputArea.SetText("Gagal menyalin file: " + err.Error())
 			return
 		}
 
-		outputArea.SetText(string(output))
-		statusLabel.SetText("Status: Selesai")
+		// 3. Eksekusi
+		statusLabel.SetText("Status: Menjalankan...")
+		cmd := exec.Command("sh", tmpPath)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			outputArea.SetText(fmt.Sprintf("Error: %v\n\nLog:\n%s", err, string(output)))
+			statusLabel.SetText("Status: Gagal")
+		} else {
+			outputArea.SetText(string(output))
+			statusLabel.SetText("Status: Sukses")
+		}
 	}
 
-	btnSelect := widget.NewButton("Pilih dan Jalankan File", func() {
+	btnSelect := widget.NewButton("Pilih dan Jalankan Script", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil || reader == nil {
-				return
+			if err == nil && reader != nil {
+				executeFile(reader)
 			}
-			executeFile(reader.URI().Path())
 		}, myWindow)
 		fd.Show()
 	})
 
-	content := container.NewBorder(
-		container.NewVBox(btnSelect, statusLabel), 
-		nil, nil, nil, 
-		outputArea,
-	)
-
-	myWindow.SetContent(content)
+	myWindow.SetContent(container.NewBorder(
+		container.NewVBox(btnSelect, statusLabel),
+		nil, nil, nil, outputArea,
+	))
 	myWindow.ShowAndRun()
 }
 
