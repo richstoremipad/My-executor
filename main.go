@@ -7,36 +7,21 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- KONFIGURASI ---
-// TextGrid otomatis menggunakan font Monospace bawaan Fyne.
+// --- KONFIGURASI WARNA ---
 
-// --- STRUKTUR TERMINAL ---
-type VirtualTerminal struct {
-	grid       *widget.TextGrid
-	scroll     *container.Scroll
-	mutex      sync.Mutex
-	
-	// Posisi Kursor
-	row int
-	col int
-	
-	// Style Saat Ini
-	currentStyle widget.TextGridStyle
-}
-
-// Map Warna ANSI Standar
 var ansiColors = map[int]color.Color{
 	30: color.RGBA{128, 128, 128, 255}, // Black/Gray
 	31: color.RGBA{255, 80, 80, 255},   // Red
@@ -56,75 +41,72 @@ var ansiColors = map[int]color.Color{
 	97: color.White,                    // Bright White
 }
 
-// --- FUNGSI PARSING & RENDER ---
+// --- TERMINAL SYSTEM ---
+
+type VirtualTerminal struct {
+	grid   *widget.TextGrid
+	scroll *container.Scroll
+	mutex  sync.Mutex
+
+	// Cursor Position
+	row int
+	col int
+
+	// Current Color State (Disimpan terpisah agar aman dari error struct)
+	currFg color.Color
+	currBg color.Color
+}
 
 func NewVirtualTerminal() *VirtualTerminal {
-	// Membuat Grid Kosong
 	g := widget.NewTextGrid()
-	g.ShowLineNumbers = false // Matikan nomor baris agar mirip terminal
-	
-	// Setup container scroll
+	g.ShowLineNumbers = false // Matikan nomor baris agar mirip terminal asli
+
+	// Scroll container
 	s := container.NewScroll(g)
-	
+
 	return &VirtualTerminal{
 		grid:   g,
 		scroll: s,
 		row:    0,
 		col:    0,
-		currentStyle: widget.TextGridStyle{
-			FGColor: color.White, // Default text putih
-			BGColor: color.Transparent,
-		},
+		currFg: color.White,       // Default text putih
+		currBg: color.Transparent, // Default bg transparan
 	}
 }
 
-// Reset layar (Clear Screen)
+// Fungsi reset layar (Clear Screen)
 func (vt *VirtualTerminal) Clear() {
 	vt.mutex.Lock()
 	defer vt.mutex.Unlock()
 	
-	// Cara reset TextGrid: Buat baris baru kosong
-	vt.grid.SetText("") 
+	// Reset Grid dengan membuat grid baru kosong (cara paling aman di Fyne)
+	vt.grid.SetText("")
 	vt.row = 0
 	vt.col = 0
+	vt.currFg = color.White
+	vt.currBg = color.Transparent
 	vt.grid.Refresh()
 }
 
-// Fungsi inti untuk menulis byte stream ke Grid
+// Core Logic: Menulis byte stream ke Grid
 func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 	vt.mutex.Lock()
 	defer vt.mutex.Unlock()
 
-	text := string(p)
-	
-	// Regex untuk memisahkan Kode ANSI dan Teks Biasa
-	// Menangkap: \x1b [ angka... huruf
-	re := regexp.MustCompile(`(\x1b\[[0-9;?]*[a-zA-Z])`)
-	
-	parts := re.Split(text, -1)
-	matches := re.FindAllString(text, -1)
-	
-	// Iterasi bagian teks dan kode secara berurutan
-	// Karena Split dan FindAll terpisah, kita perlu logika merge sederhana
-	// Namun untuk terminal stream, kita bisa parse linear scanning karakter per karakter
-	// atau menggunakan pendekatan split regex ini (dengan asumsi urutan terjaga).
-	
-	// PENDEKATAN LINEAR SCANNING (Lebih Aman untuk urutan)
-	// Kita akan memproses 'text' secara manual untuk menangani escape sequence
-	
-	i := 0
-	runes := []rune(text)
+	input := string(p)
+	runes := []rune(input)
 	lenRunes := len(runes)
 
+	i := 0
 	for i < lenRunes {
 		char := runes[i]
 
+		// 1. Deteksi ANSI Escape Sequence (\x1b)
 		if char == '\x1b' {
-			// Deteksi awal Escape Sequence
+			// Cari akhir sequence (biasanya huruf m, J, H, K)
 			endIdx := i + 1
 			for endIdx < lenRunes {
 				c := runes[endIdx]
-				// Karakter akhir ANSI biasanya huruf (m, J, H, K, dll)
 				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
 					endIdx++
 					break
@@ -132,38 +114,42 @@ func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 				endIdx++
 			}
 			
-			ansiCode := string(runes[i:endIdx])
-			vt.handleAnsiCode(ansiCode)
-			i = endIdx
-			continue
+			// Ambil kode ANSI (misal: "[31m")
+			if endIdx <= lenRunes {
+				ansiSeq := string(runes[i+1 : endIdx]) // skip \x1b
+				vt.handleAnsi(ansiSeq)
+				i = endIdx
+				continue
+			}
 		}
 
-		// Handle Newline
+		// 2. Deteksi Newline
 		if char == '\n' {
 			vt.row++
 			vt.col = 0
 			i++
 			continue
 		}
-		
-		// Handle Carriage Return (Reset ke awal baris)
+
+		// 3. Deteksi Carriage Return
 		if char == '\r' {
 			vt.col = 0
 			i++
 			continue
 		}
-		
-		// Handle Tab (4 spasi)
+
+		// 4. Deteksi Tab
 		if char == '\t' {
+			// Tab = 4 spasi
 			for k := 0; k < 4; k++ {
-				vt.setCell(' ')
+				vt.putChar(' ')
 			}
 			i++
 			continue
 		}
 
-		// Karakter Biasa: Tulis ke Grid
-		vt.setCell(char)
+		// 5. Karakter Biasa
+		vt.putChar(char)
 		i++
 	}
 
@@ -172,69 +158,77 @@ func (vt *VirtualTerminal) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (vt *VirtualTerminal) setCell(r rune) {
-	// Pastikan baris tersedia
+// Helper untuk menaruh 1 karakter di grid
+func (vt *VirtualTerminal) putChar(r rune) {
+	// Pastikan Baris Cukup
 	for len(vt.grid.Rows) <= vt.row {
+		// Tambah baris kosong
 		vt.grid.Rows = append(vt.grid.Rows, widget.TextGridRow{})
 	}
-	
-	// Ambil baris saat ini
-	 currentRow := vt.grid.Rows[vt.row]
-	 
-	 // Pastikan kolom tersedia (isi spasi jika loncat)
-	 for len(currentRow.Cells) <= vt.col {
-	 	currentRow.Cells = append(currentRow.Cells, widget.TextGridCell{Rune: ' '})
-	 }
-	 
-	 // Set karakter dan style di posisi kursor
-	 currentRow.Cells[vt.col] = widget.TextGridCell{
-	 	Rune:  r,
-	 	Style: vt.currentStyle,
-	 }
-	 
-	 // Simpan kembali perubahan baris
-	 vt.grid.Rows[vt.row] = currentRow
-	 
-	 // Majukan kursor
-	 vt.col++
+
+	// Pastikan Kolom Cukup (isi spasi jika loncat)
+	rowCells := vt.grid.Rows[vt.row].Cells
+	for len(rowCells) <= vt.col {
+		rowCells = append(rowCells, widget.TextGridCell{Rune: ' '})
+	}
+
+	// Set Style cell saat ini
+	style := widget.TextGridStyle{
+		FGColor: vt.currFg,
+		BGColor: vt.currBg,
+	}
+
+	// Update Cell
+	rowCells[vt.col] = widget.TextGridCell{
+		Rune:  r,
+		Style: style,
+	}
+
+	// Simpan kembali ke grid
+	vt.grid.Rows[vt.row].Cells = rowCells
+	vt.col++
 }
 
-func (vt *VirtualTerminal) handleAnsiCode(code string) {
-	// Hapus prefix \x1b[ dan suffix huruf untuk ambil parameter
-	if len(code) < 3 { return }
+// Parser ANSI Sederhana
+func (vt *VirtualTerminal) handleAnsi(seq string) {
+	if len(seq) < 2 { return }
 	
-	cmd := code[len(code)-1] // Huruf terakhir (m, J, H, dll)
-	paramStr := code[2 : len(code)-1]
+	cmd := seq[len(seq)-1] // Huruf terakhir (m, J, dll)
 	
+	// Hapus '[' di awal dan huruf perintah di akhir
+	paramRaw := seq
+	if strings.HasPrefix(paramRaw, "[") {
+		paramRaw = paramRaw[1 : len(paramRaw)-1]
+	} else {
+		return 
+	}
+
 	switch cmd {
-	case 'm': // Ganti Warna/Style
-		parts := strings.Split(paramStr, ";")
+	case 'm': // Ganti Warna
+		parts := strings.Split(paramRaw, ";")
 		for _, p := range parts {
 			val, _ := strconv.Atoi(p)
-			vt.updateStyle(val)
+			if val == 0 {
+				vt.currFg = color.White
+				vt.currBg = color.Transparent
+			} else if val >= 30 && val <= 37 { // FG Color
+				vt.currFg = ansiColors[val]
+			} else if val >= 90 && val <= 97 { // Bright FG
+				vt.currFg = ansiColors[val]
+			} else if val >= 40 && val <= 47 { // BG Color
+				// Map 40->30 untuk ambil warna dari map
+				vt.currBg = ansiColors[val-10]
+			}
 		}
 	case 'J': // Clear Screen
-		if strings.Contains(paramStr, "2") {
-			vt.Clear()
+		if strings.Contains(paramRaw, "2") {
+			// Kita lakukan clear di main thread via Write logic nanti, 
+			// atau simplenya reset row di sini jika logic mengizinkan.
+			// Untuk aman, kita biarkan logic scroll handle, atau reset manual:
+			vt.grid.SetText("")
+			vt.row = 0
+			vt.col = 0
 		}
-	// Case H (Home) bisa diabaikan atau reset col/row, tapi vt.Clear() biasanya sudah cukup
-	}
-}
-
-func (vt *VirtualTerminal) updateStyle(code int) {
-	if code == 0 {
-		// Reset
-		vt.currentStyle.FGColor = color.White
-		vt.currentStyle.BGColor = color.Transparent
-	} else if code >= 30 && code <= 37 {
-		// Foreground Standard
-		vt.currentStyle.FGColor = ansiColors[code]
-	} else if code >= 90 && code <= 97 {
-		// Foreground Bright
-		vt.currentStyle.FGColor = ansiColors[code]
-	} else if code >= 40 && code <= 47 {
-		// Background Standard (Map 40->30)
-		vt.currentStyle.BGColor = ansiColors[code-10]
 	}
 }
 
@@ -242,50 +236,38 @@ func (vt *VirtualTerminal) updateStyle(code int) {
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Universal Terminal")
+	myWindow := myApp.NewWindow("Terminal Executor")
 	myWindow.Resize(fyne.NewSize(800, 600))
 
-	// 1. Inisialisasi Terminal Kustom
+	// 1. Siapkan Terminal
 	term := NewVirtualTerminal()
+
+	// 2. Background Hitam Pekat (PENTING untuk TextGrid)
+	// Kita gunakan Stack: Paling bawah Rectangle Hitam, Paling atas Terminal Scroll
+	bgRect := canvas.NewRectangle(color.RGBA{10, 10, 10, 255})
 	
-	// Background Hitam untuk Terminal Container
-	// TextGrid transparan secara default, jadi kita butuh background di belakangnya
-	bgRect := container.NewStack(
-		// Ganti warna background sesuai selera (Hitam Pekat)
-		widget.NewButton("", nil), // Hack simple untuk background atau gunakan canvas
-	)
-	// Lebih bersih pakai canvas rectangle:
-	realBg := &fyne.Container{
-		Objects: []fyne.CanvasObject{
-			// Background Hitam Full
-			// Menggunakan rectangle hitam
-			// Note: Kita tumpuk TextGrid di atas background hitam
-		},
-	}
-	_ = realBg // Skip complex layout, TextGrid biasanya sudah oke.
-	
-	// Langsung gunakan term.scroll. TextGrid default backgroundnya mengikuti tema, 
-	// tapi karena kita set style Text putih, sebaiknya tema aplikasi gelap.
-	
-	// 2. INPUT AREA
+	// Layout Terminal Area
+	termContainer := container.NewStack(bgRect, term.scroll)
+
+	// 3. Input & Controls
 	inputEntry := widget.NewEntry()
 	inputEntry.SetPlaceHolder("Ketik perintah...")
 	
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
 
-	// 3. EXECUTE LOGIC
+	// 4. Eksekusi Script
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		statusLabel.SetText("Loading...")
-		term.Clear() // Bersihkan layar terminal
+		term.Clear()
 
 		targetPath := "/data/local/tmp/temp_exec"
 		data, _ := io.ReadAll(reader)
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 
 		go func() {
-			// Setup File
+			// Setup File System
 			exec.Command("su", "-c", "rm "+targetPath).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 755 "+targetPath)
 			copyStdin, _ := copyCmd.StdinPipe()
@@ -294,6 +276,9 @@ func main() {
 				copyStdin.Write(data)
 			}()
 			copyCmd.Run()
+
+			// Beri jeda sedikit
+			time.Sleep(500 * time.Millisecond)
 
 			statusLabel.SetText("Running...")
 
@@ -304,30 +289,29 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+targetPath)
 			}
 
-			// ENV PENTING untuk TextGrid
+			// ENV VARIABLES (Penting untuk formatting ASCII)
 			cmd.Env = append(os.Environ(),
 				"PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp",
 				"TERM=xterm-256color",
-				"COLUMNS=80", // Lebar terminal standar
+				"COLUMNS=80",
 				"LINES=25",
 			)
 
 			stdinPipe, _ = cmd.StdinPipe()
-
-			// Hubungkan Stdout/Stderr ke Terminal Kustom kita
 			cmd.Stdout = term
 			cmd.Stderr = term
 
 			err := cmd.Run()
 			if err != nil {
-				statusLabel.SetText("Exit Code: " + err.Error())
+				statusLabel.SetText("Selesai (Error/Exit)")
 			} else {
-				statusLabel.SetText("Done")
+				statusLabel.SetText("Selesai")
 			}
 			stdinPipe = nil
 		}()
 	}
 
+	// 5. Handling Input User
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
@@ -337,19 +321,19 @@ func main() {
 
 	inputEntry.OnSubmitted = func(s string) { sendInput() }
 	btnSend := widget.NewButton("Kirim", func() { sendInput() })
-	btnSelect := widget.NewButton("Load File", func() {
+	btnSelect := widget.NewButton("Pilih File", func() {
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if reader != nil { executeFile(reader) }
 		}, myWindow)
 		fd.Show()
 	})
 
-	// Layout Akhir
-	controls := container.NewVBox(btnSelect, statusLabel)
+	// 6. Layout Akhir
+	topBar := container.NewVBox(btnSelect, statusLabel)
 	bottomBar := container.NewBorder(nil, nil, nil, btnSend, inputEntry)
 	
-	// Gunakan term.scroll (TextGrid) di tengah
-	content := container.NewBorder(controls, bottomBar, nil, nil, term.scroll)
+	// Susun semua
+	content := container.NewBorder(topBar, bottomBar, nil, nil, termContainer)
 
 	myWindow.SetContent(content)
 	myWindow.ShowAndRun()
