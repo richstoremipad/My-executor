@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -18,8 +19,7 @@ import (
 )
 
 /* ==========================================
-   TERMINAL WIDGET (PENGGANTI RICHTEXT)
-   Menggunakan TextGrid agar 100% Rapat & Presisi
+   TERMINAL WIDGET (TEXTGRID + ANSI REGEX)
 ========================================== */
 
 type Terminal struct {
@@ -29,17 +29,22 @@ type Terminal struct {
 	curCol   int
 	curStyle *widget.CustomTextGridStyle
 	mutex    sync.Mutex
+	reAnsi   *regexp.Regexp // Regex untuk menangkap semua kode ANSI
 }
 
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
-	g.ShowLineNumbers = false // Hilangkan nomor baris
+	g.ShowLineNumbers = false
 	
-	// Style default: Foreground mengikuti tema, Background Transparan
+	// Default Style: Putih di atas Transparan
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
+
+	// Regex ini menangkap ESC + [ + angka + huruf perintah
+	// Contoh: \x1b[31m (Merah), \x1b[2J (Clear Screen)
+	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 
 	return &Terminal{
 		grid:     g,
@@ -47,107 +52,62 @@ func NewTerminal() *Terminal {
 		curRow:   0,
 		curCol:   0,
 		curStyle: defStyle,
+		reAnsi:   re,
 	}
 }
 
-// Map kode ANSI ke Warna Fyne
+// Konversi Kode ANSI ke Warna Fyne
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30", "90":
-		return color.Gray{Y: 100} // Grey
-	case "31", "91":
-		return theme.ErrorColor() // Red
-	case "32", "92":
-		return theme.SuccessColor() // Green
-	case "33", "93":
-		return theme.WarningColor() // Yellow/Orange
-	case "34", "94":
-		return theme.PrimaryColor() // Blue
-	case "35", "95":
-		return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Purple
-	case "36", "96":
-		return theme.PrimaryColor() // Cyan
-	case "37", "97":
-		return theme.ForegroundColor() // White
-	default:
-		return theme.ForegroundColor()
+	case "30", "90": return color.Gray{Y: 100}
+	case "31", "91": return theme.ErrorColor()   // Merah
+	case "32", "92": return theme.SuccessColor() // Hijau
+	case "33", "93": return theme.WarningColor() // Kuning
+	case "34", "94": return theme.PrimaryColor() // Biru
+	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Ungu
+	case "36", "96": return theme.PrimaryColor() // Cyan
+	case "37", "97": return theme.ForegroundColor() // Putih
+	default: return theme.ForegroundColor()
 	}
 }
 
-// Fungsi utama untuk menulis ke terminal
+func (t *Terminal) Clear() {
+	t.grid.SetText("") // Kosongkan grid
+	t.curRow = 0
+	t.curCol = 0
+}
+
+// Fungsi Write dengan Parser Regex yang Kuat
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	raw := string(p)
-	
-	// Normalisasi Newline
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r\n", "\n") // Normalisasi enter
 
-	// Split berdasarkan kode ESC ANSI
-	parts := strings.Split(raw, "\x1b")
+	// Loop untuk memproses string dan mencari kode ANSI
+	for len(raw) > 0 {
+		// Cari posisi kode ANSI berikutnya
+		loc := t.reAnsi.FindStringIndex(raw)
 
-	for i, part := range parts {
-		content := part
-		
-		// Jika bukan bagian pertama, berarti ini diawali kode ANSI
-		if i > 0 {
-			if strings.HasPrefix(content, "[") {
-				if idx := strings.Index(content, "m"); idx != -1 {
-					codeStr := content[1:idx] 
-					textPart := content[idx+1:] 
-
-					codes := strings.Split(codeStr, ";")
-					for _, c := range codes {
-						if c == "0" {
-							t.curStyle.FGColor = theme.ForegroundColor()
-						} else {
-							t.curStyle.FGColor = ansiToColor(c)
-						}
-					}
-					content = textPart
-				}
-			}
+		if loc == nil {
+			// Tidak ada kode ANSI lagi, cetak sisa teks
+			t.printText(raw)
+			break
 		}
 
-		// Proses karakter per karakter untuk TextGrid
-		for _, char := range content {
-			if char == '\n' {
-				t.curRow++
-				t.curCol = 0
-				continue
-			}
-			if char == '\r' {
-				t.curCol = 0 // Overwrite baris yang sama (Fix Loading Bar)
-				continue
-			}
-
-			// FIX: Menggunakan widget.TextGridRow bukan slice kosong
-			for t.curRow >= len(t.grid.Rows) {
-				t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{
-					Cells: []widget.TextGridCell{},
-				})
-			}
-			
-			// Pastikan baris cukup panjang
-			rowCells := t.grid.Rows[t.curRow].Cells
-			if t.curCol >= len(rowCells) {
-				newCells := make([]widget.TextGridCell, t.curCol+1)
-				copy(newCells, rowCells)
-				
-				// FIX: Bungkus newCells ke dalam widget.TextGridRow
-				t.grid.SetRow(t.curRow, widget.TextGridRow{
-					Cells: newCells,
-				})
-			}
-
-			// Set Cell
-			t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
-				Rune:  char,
-				Style: t.curStyle,
-			})
-			t.curCol++
+		// Ada kode ANSI. 
+		// 1. Cetak teks sebelum kode ANSI (jika ada)
+		if loc[0] > 0 {
+			t.printText(raw[:loc[0]])
 		}
+
+		// 2. Proses Kode ANSI
+		ansiCode := raw[loc[0]:loc[1]] // Contoh: \x1b[31m atau \x1b[2J
+		t.handleAnsiCode(ansiCode)
+
+		// 3. Lanjut ke teks setelah kode ANSI
+		raw = raw[loc[1]:]
 	}
 
 	t.grid.Refresh()
@@ -155,13 +115,66 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (t *Terminal) Clear() {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-	// FIX: Menggunakan SetText("") bukan SetContent
-	t.grid.SetText("") 
-	t.curRow = 0
-	t.curCol = 0
+// Menangani logika kode ANSI
+func (t *Terminal) handleAnsiCode(codeSeq string) {
+	// Hapus prefix \x1b[ dan suffix huruf
+	content := codeSeq[2 : len(codeSeq)-1]
+	command := codeSeq[len(codeSeq)-1] // Huruf terakhir (m, J, H, K)
+
+	switch command {
+	case 'm': // Ganti Warna (Graphics Mode)
+		parts := strings.Split(content, ";")
+		for _, part := range parts {
+			if part == "" || part == "0" {
+				t.curStyle.FGColor = theme.ForegroundColor() // Reset
+			} else {
+				t.curStyle.FGColor = ansiToColor(part)
+			}
+		}
+	case 'J': // Clear Screen commands
+		if content == "2" || content == "3" {
+			t.Clear() // \x1b[2J = Clear Screen
+		}
+	case 'H': // Cursor Home
+		t.curRow = 0
+		t.curCol = 0
+	// Abaikan kode lain (K, A, B, dll) agar tidak jadi simbol aneh
+	}
+}
+
+// Fungsi internal mencetak karakter ke Grid
+func (t *Terminal) printText(text string) {
+	for _, char := range text {
+		if char == '\n' {
+			t.curRow++
+			t.curCol = 0
+			continue
+		}
+		if char == '\r' {
+			t.curCol = 0
+			continue
+		}
+
+		// Extend baris jika perlu
+		for t.curRow >= len(t.grid.Rows) {
+			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
+		}
+
+		// Extend kolom jika perlu
+		rowCells := t.grid.Rows[t.curRow].Cells
+		if t.curCol >= len(rowCells) {
+			newCells := make([]widget.TextGridCell, t.curCol+1)
+			copy(newCells, rowCells)
+			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
+		}
+
+		// Set cell dengan warna saat ini
+		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
+			Rune:  char,
+			Style: t.curStyle,
+		})
+		t.curCol++
+	}
 }
 
 /* ===============================
@@ -175,9 +188,9 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
-	/* --- GANTI RICHTEXT DENGAN TERMINAL CUSTOM --- */
+	/* TERMINAL */
 	term := NewTerminal()
-	
+
 	/* INPUT */
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
@@ -187,7 +200,7 @@ func main() {
 
 	var stdin io.WriteCloser
 
-	/* EXEC FILE FUNCTION */
+	/* RUN FILE */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -210,8 +223,8 @@ func main() {
 			status.SetText("Status: Berjalan")
 
 			var cmd *exec.Cmd
-			// Tambahkan 'stty -echo' agar input user tidak muncul double
-			cmdStr := fmt.Sprintf("stty -echo; sh %s", target)
+			// stty raw -echo mencegah input user muncul ganda dan mengacaukan layout
+			cmdStr := fmt.Sprintf("stty raw -echo; sh %s", target)
 			if isBinary {
 				cmdStr = target
 			}
@@ -219,17 +232,16 @@ func main() {
 			cmd = exec.Command("su", "-c", cmdStr)
 
 			stdin, _ = cmd.StdinPipe()
-			
 			cmd.Stdout = term
 			cmd.Stderr = term
 
 			err := cmd.Run()
 			
 			if err != nil {
-				// \x1b[31m = Merah
+				// Tulis error dengan warna Merah manual (\x1b[31m)
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 			} else {
-				// \x1b[32m = Hijau
+				// Tulis sukses dengan warna Hijau manual (\x1b[32m)
 				term.Write([]byte("\n\x1b[32m[Selesai]\x1b[0m\n"))
 			}
 			status.SetText("Status: Selesai")
@@ -241,10 +253,8 @@ func main() {
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
-			
-			// \x1b[36m = Cyan
+			// Tampilkan input user (Cyan)
 			term.Write([]byte(fmt.Sprintf("\x1b[36m> %s\x1b[0m\n", input.Text)))
-			
 			input.SetText("")
 		}
 	}
