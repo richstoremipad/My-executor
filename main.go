@@ -101,12 +101,12 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   REAL-TIME PROGRESS LOGIC
+   REAL-TIME PROGRESS LOGIC (FIXED)
 ========================================== */
 
 type WriteCounter struct {
 	Total         uint64
-	ContentLength uint64
+	ContentLength int64 // Ubah ke int64 agar bisa deteksi -1
 	OnProgress    func(float64, string)
 }
 
@@ -118,14 +118,30 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 }
 
 func (wc *WriteCounter) PrintProgress() {
-	percent := float64(wc.Total) / float64(wc.ContentLength) * 100
 	currentMB := float64(wc.Total) / 1024 / 1024
+	
+	// FIX: Jika ContentLength tidak diketahui (-1) atau 0
+	if wc.ContentLength <= 0 {
+		statusStr := fmt.Sprintf("%.2f MB", currentMB)
+		if wc.OnProgress != nil { wc.OnProgress(-1, statusStr) } // Kirim -1 sebagai tanda unknown
+		return
+	}
+
+	// Normal Progress
+	percent := float64(wc.Total) / float64(wc.ContentLength) * 100
 	totalMB := float64(wc.ContentLength) / 1024 / 1024
 	statusStr := fmt.Sprintf("%.2f/%.2f MB", currentMB, totalMB)
 	if wc.OnProgress != nil { wc.OnProgress(percent, statusStr) }
 }
 
 func drawRealTimeBar(term *Terminal, percent float64, info string) {
+	// Jika percent -1, tampilkan mode "Indeterminate" (Unknown size)
+	if percent < 0 {
+		msg := fmt.Sprintf("\r\x1b[36mDownloading: [UNKNOWN SIZE] (%s)   \x1b[0m", info)
+		term.Write([]byte(msg))
+		return
+	}
+
 	barLength := 20
 	filledLength := int((percent * float64(barLength)) / 100)
 	bar := ""
@@ -146,6 +162,12 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
+func CheckRootAccess() bool {
+	cmd := exec.Command("su", "-c", "id")
+	if err := cmd.Run(); err == nil { return true }
+	return false
+}
+
 func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 
@@ -159,7 +181,7 @@ func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode) }
 
 	counter := &WriteCounter{
-		ContentLength: uint64(resp.ContentLength),
+		ContentLength: resp.ContentLength, // Pass int64 asli
 		OnProgress: func(p float64, info string) { drawRealTimeBar(term, p, info) },
 	}
 
@@ -199,11 +221,16 @@ func main() {
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 
-	var stdin io.WriteCloser // Variable Utama
+	var stdin io.WriteCloser
 
+	// --- LABEL STATUS HEADER ---
 	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
 	kernelLabel.TextSize = 10; kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
+	
+	rootLabel := canvas.NewText("ROOT: CHECKING...", color.RGBA{150, 150, 150, 255})
+	rootLabel.TextSize = 10; rootLabel.TextStyle = fyne.TextStyle{Bold: true}
 
+	// Update Kernel Status
 	updateKernelStatus := func() {
 		go func() {
 			if CheckKernelDriver() {
@@ -217,6 +244,18 @@ func main() {
 		}()
 	}
 	updateKernelStatus()
+
+	// Update Root Status
+	go func() {
+		if CheckRootAccess() {
+			rootLabel.Text = "ROOT: GRANTED"
+			rootLabel.Color = color.RGBA{0, 255, 0, 255}
+		} else {
+			rootLabel.Text = "ROOT: DENIED"
+			rootLabel.Color = color.RGBA{255, 0, 0, 255}
+		}
+		rootLabel.Refresh()
+	}()
 
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
@@ -239,13 +278,9 @@ func main() {
 			} else { cmd = exec.Command("su", "-c", "sh "+target) }
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			
-			// --- PERBAIKAN DI SINI ---
-			// Menggunakan '=' (bukan ':=') agar variabel 'stdin' utama terisi
 			var errPipe error
 			stdin, errPipe = cmd.StdinPipe()
-			if errPipe != nil {
-				term.Write([]byte("Error: Failed to create stdin pipe\n"))
-			}
+			if errPipe != nil { term.Write([]byte("Error: Pipe Fail\n")) }
 
 			cmd.Stdout = term; cmd.Stderr = term
 			cmd.Run()
@@ -346,6 +381,9 @@ func main() {
 		}()
 	}
 
+	// --- LAYOUTING UI ---
+	
+	// Tombol Header
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
 	})
@@ -358,18 +396,37 @@ func main() {
 		}()
 	})
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-
+	
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	header := container.NewBorder(nil, nil, container.NewVBox(canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), kernelLabel), container.NewHBox(installBtn, checkBtn, clearBtn))
-	inputContainer := container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input))
+	// 1. Header (Kiri: Info, Kanan: Tombol)
+	headerLeft := container.NewVBox(
+		canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), 
+		kernelLabel,
+		rootLabel, // Ditambahkan di sini
+	)
+	header := container.NewBorder(nil, nil, headerLeft, container.NewHBox(installBtn, checkBtn, clearBtn))
+
+	// 2. Footer (Credit di tengah atas Input)
+	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
+	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Bold: true}
 	
+	// inputContainer berisi tombol kirim dan input
+	inputBar := container.NewBorder(nil, nil, nil, sendBtn, input)
+	
+	// Menggabungkan Credit + Input (Credit di atas Input)
+	bottomSection := container.NewVBox(
+		copyright, 
+		container.NewPadded(inputBar),
+	)
+
+	// Layout Utama
 	mainContent := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()), 
-		inputContainer, 
+		bottomSection, // Footer baru
 		nil, nil, 
 		term.scroll,
 	)
