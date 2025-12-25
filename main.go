@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -22,7 +23,14 @@ import (
 )
 
 /* ==========================================
-   TERMINAL LOGIC (Jantung Aplikasi)
+   CONFIG: NAMA DRIVER KERNEL KAMU
+   Ganti string di bawah ini sesuai nama module kernel (.ko)
+   Contoh: "wifi_driver", "my_cheat_driver", dll.
+========================================== */
+const TargetDriverName = "nama_driver_kamu" // <--- GANTI INI
+
+/* ==========================================
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -161,6 +169,17 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
+   FUNGSI CEK DRIVER KERNEL
+================================ */
+func CheckKernelDriver() bool {
+	// Mengecek apakah folder /sys/module/[NamaDriver] ada.
+	// Ini cara standar Linux untuk mengetahui apakah module ter-load.
+	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
+	err := cmd.Run()
+	return err == nil // Jika tidak error, berarti ada (Detected)
+}
+
+/* ===============================
               MAIN UI
 ================================ */
 
@@ -178,6 +197,33 @@ func main() {
 	status := widget.NewLabel("Status: Siap")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
+
+	/* --- LABEL STATUS KERNEL --- */
+	// Default: Checking...
+	kernelLabel := canvas.NewText("KERNEL: CHECKING...", color.RGBA{150, 150, 150, 255})
+	kernelLabel.TextSize = 10
+	kernelLabel.TextStyle = fyne.TextStyle{Bold: true}
+	kernelLabel.Alignment = fyne.TextAlignTrailing
+
+	// Fungsi Update Status Kernel
+	updateKernelStatus := func() {
+		go func() {
+			isLoaded := CheckKernelDriver()
+			// Update UI di thread utama
+			w.Canvas().Refresh(kernelLabel)
+			if isLoaded {
+				kernelLabel.Text = "KERNEL: DETECTED"
+				kernelLabel.Color = color.RGBA{0, 255, 0, 255} // Hijau
+			} else {
+				kernelLabel.Text = "KERNEL: NOT FOUND"
+				kernelLabel.Color = color.RGBA{255, 50, 50, 255} // Merah
+			}
+			kernelLabel.Refresh()
+		}()
+	}
+
+	// Cek driver saat aplikasi mulai
+	updateKernelStatus()
 
 	/* --- FUNGSI EKSEKUSI --- */
 	runFile := func(reader fyne.URIReadCloser) {
@@ -197,6 +243,10 @@ func main() {
 			}()
 			copyCmd.Run()
 			status.SetText("Status: Berjalan")
+			
+			// Cek ulang driver sebelum menjalankan script (opsional)
+			updateKernelStatus()
+
 			var cmd *exec.Cmd
 			if isBinary {
 				cmd = exec.Command("su", "-c", target)
@@ -215,6 +265,10 @@ func main() {
 			}
 			status.SetText("Status: Selesai")
 			stdin = nil
+			
+			// Cek lagi setelah selesai (siapa tau script load/unload driver)
+			time.Sleep(1 * time.Second)
+			updateKernelStatus()
 		}()
 	}
 
@@ -228,10 +282,10 @@ func main() {
 	input.OnSubmitted = func(string) { send() }
 
 	/* ==========================================
-	   UI CONSTRUCTION (DESIGN FINAL)
+	   UI CONSTRUCTION
 	========================================== */
 
-	// 1. HEADER (Hanya Judul & Clear)
+	// 1. HEADER
 	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
@@ -239,49 +293,50 @@ func main() {
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
 		term.Clear()
 	})
-	
-	// Layout Header
+
+	// Layout Header Kiri: Judul
+	// Layout Header Kanan: Status Kernel + Tombol Clear
+	headerRight := container.NewHBox(
+		container.NewCenter(kernelLabel), // Status Kernel di sebelah tombol hapus
+		clearBtn,
+	)
+
 	headerBar := container.NewBorder(nil, nil, 
-		container.NewPadded(titleText), // Kiri
-		clearBtn, // Kanan
+		container.NewPadded(titleText), 
+		headerRight,
 	)
 
 	topSection := container.NewVBox(
-		headerBar,
+		container.NewPadded(headerBar),
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
 
-	// 2. COPYRIGHT STYLE (KEREN & BERWARNA)
-	// Kita gunakan canvas.NewText agar bisa set warna Hex spesifik
-	// Warna: Neon Pink/Magenta (RGB: 255, 0, 128)
+	// 2. FOOTER (Copyright & Input)
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10
 	copyright.Alignment = fyne.TextAlignCenter
-	copyright.TextStyle = fyne.TextStyle{Bold: true, Monospace: true} // Font Hacker style
+	copyright.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
-	// 3. INPUT BAR (BAWAH)
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
 	inputContainer := container.NewPadded(
 		container.NewBorder(nil, nil, nil, sendBtn, input),
 	)
 
-	// Gabungkan Copyright & Input dalam satu container bawah
-	// Copyright ditaruh DI ATAS Input
 	bottomSection := container.NewVBox(
 		copyright,
 		inputContainer,
 	)
 
-	// 4. MAIN CONTENT LAYER (Terminal di Tengah)
+	// 3. MAIN LAYOUT
 	mainLayer := container.NewBorder(
-		topSection,    // Atas
-		bottomSection, // Bawah (Copyright + Input)
+		topSection,
+		bottomSection,
 		nil, nil,
-		term.scroll,   // Tengah
+		term.scroll,
 	)
 
-	// 5. FLOATING ACTION BUTTON (FAB)
+	// 4. FAB
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
@@ -291,20 +346,17 @@ func main() {
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	// Atur posisi FAB agar tidak menutupi Input Bar
-	// Kita beri spacer bawah lebih banyak agar naik sedikit di atas input bar
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(
 			layout.NewSpacer(),
 			fabBtn,
-			widget.NewLabel(" "), // Margin Kanan
+			widget.NewLabel(" "), 
 		),
-		widget.NewLabel("      "), // Margin Bawah (Spacer dummy text)
-		widget.NewLabel("      "), // Tambahan Margin Bawah agar di atas input
+		widget.NewLabel("      "), 
+		widget.NewLabel("      "), 
 	)
 
-	// 6. STACK LAYOUT
 	finalLayout := container.NewStack(mainLayer, fabContainer)
 
 	w.SetContent(finalLayout)
