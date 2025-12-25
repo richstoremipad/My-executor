@@ -101,13 +101,13 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   REAL-TIME PROGRESS LOGIC (FIXED)
+   REAL-TIME PROGRESS LOGIC (CLEAN VERSION)
 ========================================== */
 
 type WriteCounter struct {
 	Total         uint64
 	ContentLength int64
-	OnProgress    func(float64, string)
+	OnProgress    func(float64)
 }
 
 func (wc *WriteCounter) Write(p []byte) (int, error) {
@@ -118,41 +118,36 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 }
 
 func (wc *WriteCounter) PrintProgress() {
-	currentMB := float64(wc.Total) / 1024 / 1024
 	var percent float64
-	var statusStr string
 
-	// LOGIKA ESTIMASI:
-	// Jika server tidak memberi tahu ukuran file (<= 0),
-	// kita anggap/estimasi file maksimal 5 MB agar bar tetap jalan.
+	// LOGIKA ESTIMASI VISUAL
+	// Jika server tidak mengirim ukuran (-1), kita estimasi file 5MB (5 * 1024 * 1024 bytes)
+	// agar bar tetap jalan dan terlihat hidup.
 	if wc.ContentLength <= 0 {
-		estimatedTotalMB := 5.0 // Estimasi 5 MB
-		percent = (currentMB / estimatedTotalMB) * 100
+		estimatedTotal := 5.0 * 1024 * 1024 
+		percent = (float64(wc.Total) / estimatedTotal) * 100
 		
-		// Jangan biarkan lebih dari 99% sebelum selesai beneran
+		// Kunci di 99% jika file aslinya ternyata lebih besar dari 5MB
+		// Bar hanya akan 100% jika fungsi download selesai.
 		if percent > 99 { percent = 99 }
-		
-		// Tampilkan format: "0.50 MB" (Tanpa total karena tidak tahu)
-		statusStr = fmt.Sprintf("%.2f MB", currentMB)
 	} else {
-		// Logika Normal (Jika size diketahui)
+		// Jika ukuran asli ada, hitung persen real
 		percent = float64(wc.Total) / float64(wc.ContentLength) * 100
-		totalMB := float64(wc.ContentLength) / 1024 / 1024
-		statusStr = fmt.Sprintf("%.2f/%.2f MB", currentMB, totalMB)
 	}
 
-	if wc.OnProgress != nil { wc.OnProgress(percent, statusStr) }
+	if wc.OnProgress != nil { wc.OnProgress(percent) }
 }
 
-func drawRealTimeBar(term *Terminal, percent float64, info string) {
-	barLength := 20
+func drawRealTimeBar(term *Terminal, percent float64) {
+	barLength := 25 // Bar lebih panjang biar gagah
 	filledLength := int((percent * float64(barLength)) / 100)
 	bar := ""
 	for i := 0; i < barLength; i++ {
 		if i < filledLength { bar += "█" } else { bar += "░" }
 	}
-	// \r untuk animasi menimpa baris
-	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%% (%s)   \x1b[0m", bar, percent, info)
+	
+	// TAMPILAN BERSIH: Cuma Bar dan Persen (Tanpa MB)
+	msg := fmt.Sprintf("\r\x1b[36mDownloading: [%s] %.0f%%   \x1b[0m", bar, percent)
 	term.Write([]byte(msg))
 }
 
@@ -186,7 +181,7 @@ func downloadFileRealTime(url string, filepath string, term *Terminal) error {
 
 	counter := &WriteCounter{
 		ContentLength: resp.ContentLength, 
-		OnProgress: func(p float64, info string) { drawRealTimeBar(term, p, info) },
+		OnProgress: func(p float64) { drawRealTimeBar(term, p) },
 	}
 
 	localTemp := os.TempDir() + "/kernel_temp.sh"
@@ -385,7 +380,7 @@ func main() {
 		}()
 	}
 
-	// --- UI COMPOSITION ---
+	// --- LAYOUTING UI ---
 	
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start process?", func(ok bool) { if ok { autoInstallKernel() } }, w)
@@ -405,7 +400,6 @@ func main() {
 	})
 	fabBtn.Importance = widget.HighImportance
 
-	// Header: Title + Kernel Status + Root Status (Vertical)
 	headerLeft := container.NewVBox(
 		canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor()), 
 		kernelLabel,
@@ -413,19 +407,16 @@ func main() {
 	)
 	header := container.NewBorder(nil, nil, headerLeft, container.NewHBox(installBtn, checkBtn, clearBtn))
 
-	// Credit & Input
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10; copyright.Alignment = fyne.TextAlignCenter; copyright.TextStyle = fyne.TextStyle{Bold: true}
 	
 	inputBar := container.NewBorder(nil, nil, nil, sendBtn, input)
 	
-	// Layout Bawah: Credit di atas Input
 	bottomSection := container.NewVBox(
 		copyright, 
 		container.NewPadded(inputBar),
 	)
 
-	// Gabung Semua
 	mainContent := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()), 
 		bottomSection,
