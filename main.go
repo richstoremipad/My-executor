@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 
 	"fyne.io/fyne/v2"
@@ -15,13 +14,14 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// customBuffer menggunakan widget.Label untuk tampilan lebih tajam
+// customBuffer menggunakan Label agar teks tajam dan tidak memicu keyboard
 type customBuffer struct {
 	label  *widget.Label
 	scroll *container.Scroll
 	window fyne.Window
 }
 
+// Menghapus kode ANSI agar log bersih di UI
 func cleanAnsi(str string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	return ansi.ReplaceAllString(str, "")
@@ -29,13 +29,14 @@ func cleanAnsi(str string) string {
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
 	cleanText := cleanAnsi(string(p))
+	
+	// Manipulasi visual untuk teks "Expires"
 	re := regexp.MustCompile(`(?i)Expires:.*`)
 	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
 
-	// Update teks pada Label
 	cb.label.SetText(cb.label.Text + modifiedText)
 	
-	// Otomatis scroll ke paling bawah setiap ada log baru
+	// Otomatis scroll ke bawah saat log bertambah
 	cb.scroll.ScrollToBottom()
 	cb.window.Canvas().Refresh(cb.label)
 	return len(p), nil
@@ -43,19 +44,18 @@ func (cb *customBuffer) Write(p []byte) (n int, err error) {
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Root Executor (Sharp Text)")
+	myWindow := myApp.NewWindow("Root Executor Pro")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// MENGGUNAKAN LABEL: Teks tetap putih tajam dan TIDAK memicu keyboard
+	// Output menggunakan Label (Anti-Keyboard & Sharp)
 	outputLabel := widget.NewLabel("")
 	outputLabel.TextStyle = fyne.TextStyle{Monospace: true}
 	outputLabel.Wrapping = fyne.TextWrapBreak
 
-	// Scroll container agar bisa digeser dengan jari
 	logScroll := container.NewScroll(outputLabel)
 
 	inputEntry := widget.NewEntry()
-	inputEntry.SetPlaceHolder("Ketik input di sini...")
+	inputEntry.SetPlaceHolder("Ketik input/jawaban di sini...")
 
 	statusLabel := widget.NewLabel("Status: Siap")
 	var stdinPipe io.WriteCloser
@@ -63,30 +63,45 @@ func main() {
 	executeFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		statusLabel.SetText("Status: Menyiapkan file...")
-		outputLabel.SetText("") // Reset log
+		outputLabel.SetText("") 
 
-		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "temp_bin")
-		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		io.Copy(out, reader)
-		out.Close()
-		os.Chmod(internalPath, 0755)
+		// Gunakan /data/local/tmp untuk menghindari masalah izin SELinux
+		targetPath := "/data/local/tmp/temp_script.sh"
+		
+		// Baca seluruh isi file script
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			statusLabel.SetText("Status: Gagal membaca file")
+			return
+		}
 
 		go func() {
+			// Langkah 1: Kirim script ke sistem dengan Root
+			copyCmd := exec.Command("su", "-c", "cat > "+targetPath+" && chmod 777 "+targetPath)
+			copyStdin, _ := copyCmd.StdinPipe()
+			go func() {
+				defer copyStdin.Close()
+				copyStdin.Write(data)
+			}()
+			copyCmd.Run()
+
 			statusLabel.SetText("Status: Berjalan (Interaktif)...")
-			cmdString := fmt.Sprintf("cd %s && ./%s", filepath.Dir(internalPath), filepath.Base(internalPath))
-			cmd := exec.Command("su", "-c", cmdString)
-			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin", "TERM=dumb")
+			
+			// Langkah 2: Eksekusi menggunakan 'sh' agar kompatibel dengan Android
+			cmd := exec.Command("su", "-c", "sh "+targetPath)
+			
+			// Set PATH agar perintah seperti 'date' atau 'bc' bisa ditemukan
+			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/tmp", "TERM=dumb")
 
 			stdinPipe, _ = cmd.StdinPipe()
-			
-			// Hubungkan ke label dan scroll
 			combinedBuf := &customBuffer{label: outputLabel, scroll: logScroll, window: myWindow}
 			cmd.Stdout = combinedBuf
 			cmd.Stderr = combinedBuf
 
-			err := cmd.Run()
-			if err != nil {
+			runErr := cmd.Run()
+			if runErr != nil {
 				statusLabel.SetText("Status: Berhenti/Error")
+				outputLabel.SetText(outputLabel.Text + "\n[Proses Berhenti: " + runErr.Error() + "]\n")
 			} else {
 				statusLabel.SetText("Status: Selesai")
 			}
