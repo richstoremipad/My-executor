@@ -65,9 +65,9 @@ func ansiToColor(code string) color.Color {
 	case "33", "93": return theme.WarningColor() // Kuning
 	case "34", "94": return theme.PrimaryColor() // Biru
 	case "35", "95": return color.RGBA{R: 200, G: 0, B: 200, A: 255} // Ungu
-	case "36", "96": return theme.PrimaryColor() // Cyan (Warna Logo XFILES)
+	case "36", "96": return theme.PrimaryColor() // Cyan
 	case "37", "97": return theme.ForegroundColor() // Putih
-	default: return nil // Return nil jika bukan kode warna (misal kode bold)
+	default: return nil 
 	}
 }
 
@@ -107,7 +107,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Logika Handler ANSI yang DIPERBAIKI
+// Logika Handler ANSI
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	
@@ -119,16 +119,12 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
-				// Reset ke default
 				t.curStyle.FGColor = theme.ForegroundColor()
 			} else {
-				// Cek apakah ini kode warna
 				col := ansiToColor(part)
 				if col != nil {
 					t.curStyle.FGColor = col
 				}
-				// Jika col == nil (misalnya kode "1" untuk bold),
-				// kita abaikan saja agar warna sebelumnya TIDAK ter-reset.
 			}
 		}
 	case 'J': // Clear Screen
@@ -164,7 +160,6 @@ func (t *Terminal) printText(text string) {
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
 
-		// PENTING: Copy style value, bukan pointer, agar warna statis
 		cellStyle := *t.curStyle 
 		
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
@@ -186,6 +181,17 @@ func main() {
 	w := a.NewWindow("Universal Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
 
+	/* --- KONFIRMASI KELUAR (FITUR BARU) --- */
+	w.SetCloseIntercept(func() {
+		dialog.ShowConfirm("Konfirmasi Keluar", "Apakah Anda yakin ingin keluar?", func(ok bool) {
+			if ok {
+				w.SetCloseIntercept(nil) // Lepas intercept agar window bisa close
+				w.Close()
+			}
+		}, w)
+	})
+
+	/* TERMINAL SETUP */
 	term := NewTerminal()
 
 	input := widget.NewEntry()
@@ -196,6 +202,7 @@ func main() {
 
 	var stdin io.WriteCloser
 
+	/* RUN FILE FUNCTION */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 
@@ -225,7 +232,7 @@ func main() {
 
 			cmd := exec.Command("su", "-c", cmdStr)
 
-			// [FIX UTAMA] Inject TERM variable agar script mau mengeluarkan warna
+			// INJECT TERM variable (PENTING UNTUK WARNA)
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 			stdin, _ = cmd.StdinPipe()
@@ -244,6 +251,7 @@ func main() {
 		}()
 	}
 
+	/* SEND INPUT */
 	send := func() {
 		if stdin != nil && input.Text != "" {
 			fmt.Fprintln(stdin, input.Text)
