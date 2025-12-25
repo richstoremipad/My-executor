@@ -33,7 +33,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL UI LOGIC (FIXED POINTER ERROR)
+   TERMINAL UI LOGIC (SAFE STYLE HANDLING)
 ========================================== */
 type Terminal struct {
 	grid     *widget.TextGrid
@@ -64,7 +64,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	
 	raw := string(p)
 	
-	// Khusus Progress Bar (Pakai \r tanpa \n) -> Timpa baris ini
+	// Khusus Progress Bar (Pakai \r tanpa \n) -> Reset kolom
 	if strings.Contains(raw, "\r") && !strings.Contains(raw, "\n") {
 		t.curCol = 0
 		t.cleanCurrentLine()
@@ -99,7 +99,7 @@ func (t *Terminal) cleanCurrentLine() {
 	}
 }
 
-// FIX: Menggunakan dereferencing (*t.curStyle) agar bisa di-assign
+// FIX: Membuat Object Style Baru untuk menghindari error pointer/assignment
 func (t *Terminal) handleAnsiCode(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
@@ -111,30 +111,35 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 		for _, part := range parts {
 			val, _ := strconv.Atoi(part)
 			
-			// Copy style saat ini ke variabel sementara
-			currentStyle := *t.curStyle
+			// Buat pointer baru berdasarkan nilai lama (Clone)
+			// Ini cara paling aman agar compile tidak error
+			newStyle := &widget.CustomTextGridStyle{
+				FGColor: t.curStyle.FGColor,
+				BGColor: t.curStyle.BGColor,
+				Style:   t.curStyle.Style,
+			}
 
 			// Reset
 			if val == 0 { 
-				currentStyle.FGColor = theme.ForegroundColor()
-				currentStyle.Style = fyne.TextStyle{} // Reset Bold/Italic
+				newStyle.FGColor = theme.ForegroundColor()
+				newStyle.Style = fyne.TextStyle{} // Reset Style
 			}
 			// Bold
 			if val == 1 { 
-				currentStyle.Style = fyne.TextStyle{Bold: true} 
+				newStyle.Style = fyne.TextStyle{Bold: true}
 			}
 			// Colors
-			if val == 30 || val == 90 { currentStyle.FGColor = color.Gray{Y: 100} }
-			if val == 31 || val == 91 { currentStyle.FGColor = theme.ErrorColor() }
-			if val == 32 || val == 92 { currentStyle.FGColor = theme.SuccessColor() }
-			if val == 33 || val == 93 { currentStyle.FGColor = theme.WarningColor() }
-			if val == 34 || val == 94 { currentStyle.FGColor = theme.PrimaryColor() }
-			if val == 35 || val == 95 { currentStyle.FGColor = color.RGBA{255, 0, 255, 255} }
-			if val == 36 || val == 96 { currentStyle.FGColor = color.RGBA{0, 255, 255, 255} }
-			if val == 37 || val == 97 { currentStyle.FGColor = color.White }
+			if val == 30 || val == 90 { newStyle.FGColor = color.Gray{Y: 100} }
+			if val == 31 || val == 91 { newStyle.FGColor = theme.ErrorColor() }
+			if val == 32 || val == 92 { newStyle.FGColor = theme.SuccessColor() }
+			if val == 33 || val == 93 { newStyle.FGColor = theme.WarningColor() }
+			if val == 34 || val == 94 { newStyle.FGColor = theme.PrimaryColor() }
+			if val == 35 || val == 95 { newStyle.FGColor = color.RGBA{R: 255, G: 0, B: 255, A: 255} }
+			if val == 36 || val == 96 { newStyle.FGColor = color.RGBA{R: 0, G: 255, B: 255, A: 255} }
+			if val == 37 || val == 97 { newStyle.FGColor = color.White }
 
-			// Simpan kembali ke pointer struct
-			t.curStyle = &currentStyle
+			// Terapkan Style Baru
+			t.curStyle = newStyle
 		}
 	case 'J': // Clear Screen
 		if strings.Contains(content, "2") || content == "" { t.Clear() }
@@ -156,6 +161,7 @@ func (t *Terminal) printText(text string) {
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
 		
+		// Gunakan style saat ini
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
 		t.curCol++
@@ -163,7 +169,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ==========================================
-   TURBO OVAL ANIMATION
+   TURBO OVAL ANIMATION (KAPSUL PING-PONG)
 ========================================== */
 
 type WriteCounter struct {
@@ -196,32 +202,32 @@ func drawProgressBar(term *Terminal, current uint64, total int64) {
 	}
 
 	// MODE 2: UNKNOWN SIZE (TURBO OVAL PING-PONG)
-	// Speed: 5 (Sangat Cepat/Turbo)
-	speed := int64(5) 
+	// Speed: Semakin kecil pembaginya, semakin cepat
+	speed := int64(3) // 3ms per frame = SANGAT CEPAT
 	t := time.Now().UnixMilli() / speed
 	
 	// Logika Ping-Pong
-	blockSize := 4 // Lebar Oval
+	blockSize := 6 // Panjang Kapsul
 	maxPos := barLength - blockSize
 	cycle := maxPos * 2
 	pos := int(t % int64(cycle))
 	if pos >= maxPos {
-		pos = cycle - pos 
+		pos = cycle - pos // Gerak Balik
 	}
 
-	// Konstruksi Bar Oval
+	// Konstruksi Bar Kapsul (Oval)
 	var barBuilder strings.Builder
 	for i := 0; i < barLength; i++ {
-		// Ujung Kiri Oval
+		// Ujung Kiri Kapsul (Bulat)
 		if i == pos {
 			barBuilder.WriteString("▐") 
-		// Ujung Kanan Oval
+		// Ujung Kanan Kapsul (Bulat)
 		} else if i == pos+blockSize-1 {
 			barBuilder.WriteString("▌") 
-		// Badan Oval
+		// Badan Kapsul (Isi)
 		} else if i > pos && i < pos+blockSize-1 {
 			barBuilder.WriteString("█") 
-		// Background
+		// Background Kosong
 		} else {
 			barBuilder.WriteString("░") 
 		}
