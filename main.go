@@ -13,6 +13,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -21,7 +22,7 @@ import (
 )
 
 /* ==========================================
-   CORE TERMINAL LOGIC (TIDAK BERUBAH)
+   TERMINAL LOGIC (Jantung Aplikasi)
 ========================================== */
 
 type Terminal struct {
@@ -52,6 +53,7 @@ func NewTerminal() *Terminal {
 	}
 }
 
+// Map Warna agar support warna terang (90-97) seperti MT Manager
 func ansiToColor(code string) color.Color {
 	switch code {
 	case "30": return color.Gray{Y: 100}
@@ -167,17 +169,19 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Universal Root Executor")
+	w := a.NewWindow("Root Executor")
 	w.Resize(fyne.NewSize(720, 520))
-	w.SetMaster()
+	w.SetMaster() // Wajib untuk Android Back Button
 
+	// Variabel UI
 	term := NewTerminal()
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Ketik perintah...")
 	status := widget.NewLabel("Status: Siap")
+	status.TextStyle = fyne.TextStyle{Bold: true} // Bold agar jelas
 	var stdin io.WriteCloser
 
-	/* --- LOGIKA EKSEKUSI (TIDAK BERUBAH) --- */
+	/* --- FUNGSI EKSEKUSI --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -186,7 +190,10 @@ func main() {
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		go func() {
+			// Hapus file lama (Penting!)
 			exec.Command("su", "-c", "rm -f "+target).Run()
+			
+			// Tulis file baru
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() {
@@ -194,6 +201,7 @@ func main() {
 				in.Write(data)
 			}()
 			copyCmd.Run()
+
 			status.SetText("Status: Berjalan")
 			var cmd *exec.Cmd
 			if isBinary {
@@ -201,10 +209,12 @@ func main() {
 			} else {
 				cmd = exec.Command("su", "-c", "sh "+target)
 			}
+			// Environment Colors
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term
 			cmd.Stderr = term
+			
 			err := cmd.Run()
 			if err != nil {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
@@ -226,45 +236,54 @@ func main() {
 	input.OnSubmitted = func(string) { send() }
 
 	/* ==========================================
-	   UI BARU: HEADER & COPYRIGHT TANGSAN
+	   UI CONSTRUCTION (FIXED LAYOUT)
 	========================================== */
 
-	// Judul Besar
-	titleLabel := widget.NewLabelWithStyle("Root Executor", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	// Copyright Kecil
-	copyrightLabel := widget.NewLabel("Made by TANGSAN")
+	// 1. HEADER KEREN
+	// Judul kiri
+	titleText := canvas.NewText("Root Executor", theme.ForegroundColor())
+	titleText.TextSize = 18
+	titleText.TextStyle = fyne.TextStyle{Bold: true}
 	
-	// Gabungkan Judul dan Copyright secara vertikal
-	headerText := container.NewVBox(titleLabel, copyrightLabel)
+	subText := canvas.NewText("Made by TANGSAN", theme.PlaceHolderColor())
+	subText.TextSize = 12
 
-	// Tombol Clear Log (Icon Sampah)
+	headerText := container.NewVBox(titleText, subText)
+
+	// Tombol Hapus (Kanan)
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
 		term.Clear()
 	})
-	// Agar tombol clear tidak terlalu lebar
-	clearBtnContainer := container.NewHBox(layout.NewSpacer(), clearBtn)
+	
+	// Gabungkan Header
+	headerBar := container.NewBorder(nil, nil, nil, clearBtn, headerText)
+	// Bungkus header dengan padding agar tidak mepet
+	headerStyled := container.NewPadded(headerBar)
 
-	// Header Toolbar (Teks di kiri, Tombol Clear di kanan)
-	headerToolbar := container.NewBorder(nil, nil, nil, clearBtnContainer, headerText)
-
-	// Gabungkan Header Toolbar, Status Bar, dan Garis Pemisah
-	topContainer := container.NewVBox(
-		headerToolbar,
-		status,
+	// Bagian Atas Total (Header + Status + Garis)
+	topSection := container.NewVBox(
+		headerStyled,
+		container.NewPadded(status), // Status diberi padding sedikit
 		widget.NewSeparator(),
 	)
 
-	/* ==========================================
-	   UI BARU: INPUT BAR BAWAH
-	========================================== */
+	// 2. INPUT BAR (BAWAH)
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	bottomControl := container.NewBorder(nil, nil, nil, sendBtn, input)
+	// Input bar diberi padding agar terlihat "terpisah" dari terminal
+	inputBar := container.NewPadded(
+		container.NewBorder(nil, nil, nil, sendBtn, input),
+	)
 
-	/* ==========================================
-	   UI BARU: TOMBOL MELAYANG (FAB)
-	========================================== */
-	
-	// Tombol Pilih File dengan Icon Folder
+	// 3. MAIN CONTENT LAYER (Terminal di tengah)
+	mainLayer := container.NewBorder(
+		topSection, // Atas
+		inputBar,   // Bawah
+		nil, nil,
+		term.scroll, // Tengah (Terminal)
+	)
+
+	// 4. FLOATING ACTION BUTTON (FAB)
+	// Tombol Folder Bulat (Icon)
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
@@ -272,31 +291,26 @@ func main() {
 			}
 		}, w).Show()
 	})
-	// Jadikan tombol "Penting" agar warnanya menonjol (Primary Color)
-	fabBtn.Importance = widget.HighImportance 
+	fabBtn.Importance = widget.HighImportance // Warna Biru (Primary)
 
-	/* ==========================================
-	   KOMPOSISI LAYOUT UTAMA (STACK)
-	========================================== */
-
-	// LAYER 1: Konten Utama (Belakang)
-	// Header di atas, Input di bawah, Terminal di tengah
-	mainContentLayer := container.NewBorder(
-		topContainer,
-		bottomControl,
-		nil, nil,
-		term.scroll,
+	// --- LOGIKA POSISI FAB (FIX AGAR TIDAK MELAR) ---
+	// Kita bungkus FAB dalam Container HBox dan VBox dengan Spacer.
+	// Spacer akan mendorong FAB ke pojok kanan bawah.
+	
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(), // Dorong ke bawah
+		container.NewHBox(
+			layout.NewSpacer(), // Dorong ke kanan
+			fabBtn,             // Tombolnya
+			widget.NewLabel(" "), // Sedikit margin kanan dummy
+		),
+		widget.NewLabel(" "), // Sedikit margin bawah dummy
 	)
 
-	// LAYER 2: Tombol Melayang (Depan)
-	// Gunakan Padded container agar ada jarak dari pinggir layar
-	// Gunakan Border layout dengan tombol di 'bottom' dan 'right' (ini triknya)
-	fabLayer := container.NewPadded(
-		container.NewBorder(nil, nil, nil, fabBtn, nil),
-	)
-
-	// Tumpuk Layer 2 di atas Layer 1 menggunakan Stack
-	finalLayout := container.NewStack(mainContentLayer, fabLayer)
+	// 5. STACK LAYOUT (Tumpuk Layer)
+	// Layer bawah: Main App
+	// Layer atas: FAB Container (Transparan)
+	finalLayout := container.NewStack(mainLayer, fabContainer)
 
 	w.SetContent(finalLayout)
 	w.ShowAndRun()
