@@ -24,11 +24,13 @@ import (
 )
 
 /* ==========================================
-   CONFIG: GITHUB & DRIVER
-   GANTI LINK INI DENGAN LINK RAW GITHUB KAMU!
+   CONFIG
 ========================================== */
-const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/" // <--- GANTI INI (Harus RAW link)
-const TargetDriverName = "Driver" // Nama folder di /sys/module/ untuk deteksi
+// Link RAW GitHub yang sudah BENAR (Public & Folder Driver)
+const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
+
+// Nama folder module kernel untuk deteksi status (Ganti jika tahu nama aslinya)
+const TargetDriverName = "Driver" 
 
 /* ==========================================
    TERMINAL LOGIC
@@ -173,16 +175,25 @@ func (t *Terminal) printText(text string) {
    HELPER FUNCTIONS
 ================================ */
 
-// Cek Folder Module
 func CheckKernelDriver() bool {
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	err := cmd.Run()
 	return err == nil 
 }
 
-// Download File dari Internet
+// [FIXED] Download File dengan User-Agent Chrome
 func downloadFile(url string, filepath string) error {
-	resp, err := http.Get(url)
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	// Menyamar sebagai Browser agar tidak diblokir GitHub (404/403)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -243,13 +254,12 @@ func main() {
 	}
 	updateKernelStatus()
 
-		/* --- LOGIKA AUTO INSTALL KERNEL (UPDATED) --- */
+	/* --- LOGIKA AUTO INSTALL KERNEL --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("Status: Auto Install Kernel")
 		
 		go func() {
-			// 1. Deteksi Versi Kernel
 			term.Write([]byte("\x1b[36m[*] Detecting Device Kernel...\x1b[0m\n"))
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil {
@@ -257,7 +267,6 @@ func main() {
 				return
 			}
 			
-			// Bersihkan newline/spasi agar tidak error saat jadi URL
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" > Kernel Version: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
@@ -265,7 +274,7 @@ func main() {
 			var downloadUrl string
 			var found bool = false
 
-			// --- PERCOBAAN 1: Full Version (misal: 4.19.157-perf-...) ---
+			// 1. Cek Full Name
 			url1 := GitHubRepo + rawVersion + ".sh"
 			term.Write([]byte(fmt.Sprintf("\x1b[90m[1] Checking: %s\x1b[0m\n", url1)))
 			if downloadFile(url1, "temp_kernel_dl") == nil {
@@ -273,7 +282,7 @@ func main() {
 				found = true
 			}
 
-			// --- PERCOBAAN 2: Short Version (misal: 4.19.157) ---
+			// 2. Cek Short Version (Sebelum tanda -)
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
@@ -287,12 +296,11 @@ func main() {
 				}
 			}
 
-			// --- PERCOBAAN 3: Major Version (misal: 4.19) ---
-			// Fitur baru: Berguna jika kamu punya script universal untuk semua 4.19
+			// 3. Cek Major Version (misal 4.19)
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
-					majorVersion := parts[0] + "." + parts[1] // Ambil "4.19"
+					majorVersion := parts[0] + "." + parts[1]
 					url3 := GitHubRepo + majorVersion + ".sh"
 					term.Write([]byte(fmt.Sprintf("\x1b[90m[3] Checking: %s\x1b[0m\n", url3)))
 					if downloadFile(url3, "temp_kernel_dl") == nil {
@@ -302,21 +310,18 @@ func main() {
 				}
 			}
 
-			// --- EKSEKUSI JIKA KETEMU ---
+			// Eksekusi
 			if !found {
 				term.Write([]byte("\n\x1b[31m[X] Kernel Not Supported / Script Not Found.\x1b[0m\n"))
 				term.Write([]byte("\x1b[90m    Pastikan file sudah di-PUSH ke GitHub: " + rawVersion + ".sh\x1b[0m\n"))
-				term.Write([]byte("\x1b[90m    Cek via browser apakah file ada di folder Driver repo kamu.\x1b[0m\n"))
 				status.SetText("Status: Gagal")
 			} else {
 				term.Write([]byte(fmt.Sprintf("\n\x1b[32m[V] Script Found: %s\x1b[0m\n", downloadUrl)))
 				term.Write([]byte("[*] Installing...\n"))
 				
-				// Baca file download
 				data, _ := os.ReadFile("temp_kernel_dl")
 				os.Remove("temp_kernel_dl")
 
-				// Tulis ke target & Jalankan
 				exec.Command("su", "-c", "rm -f "+targetFile).Run()
 				copyCmd := exec.Command("su", "-c", "cat > "+targetFile+" && chmod 777 "+targetFile)
 				in, _ := copyCmd.StdinPipe()
@@ -350,7 +355,7 @@ func main() {
 		}()
 	}
 
-	/* --- FUNGSI EKSEKUSI FILE LOKAL --- */
+	/* --- FUNGSI LOCAL FILE --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -405,7 +410,7 @@ func main() {
 	   UI CONSTRUCTION
 	========================================== */
 
-	// 1. HEADER
+	// Header
 	titleText := canvas.NewText("ROOT EXECUTOR", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
@@ -415,7 +420,6 @@ func main() {
 		kernelLabel,
 	)
 
-	// Tombol Auto Install (Baru!)
 	installBtn := widget.NewButtonWithIcon("Install Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Auto Install", "Download dan install driver sesuai kernel HP?", func(ok bool) {
 			if ok {
@@ -428,21 +432,18 @@ func main() {
 		term.Clear()
 	})
 
-	// Layout Header Kanan: Install Btn + Clear Btn
 	headerRight := container.NewHBox(installBtn, clearBtn)
-
 	headerBar := container.NewBorder(nil, nil, 
 		container.NewPadded(headerLeft), 
 		headerRight,
 	)
-
 	topSection := container.NewVBox(
 		headerBar,
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
 
-	// 2. FOOTER
+	// Footer
 	copyright := canvas.NewText("Made by TANGSAN", color.RGBA{R: 255, G: 0, B: 128, A: 255})
 	copyright.TextSize = 10
 	copyright.Alignment = fyne.TextAlignCenter
@@ -452,13 +453,12 @@ func main() {
 	inputContainer := container.NewPadded(
 		container.NewBorder(nil, nil, nil, sendBtn, input),
 	)
-
 	bottomSection := container.NewVBox(
 		copyright,
 		inputContainer,
 	)
 
-	// 3. MAIN LAYOUT
+	// Main Layout
 	mainLayer := container.NewBorder(
 		topSection,
 		bottomSection,
@@ -466,7 +466,7 @@ func main() {
 		term.scroll,
 	)
 
-	// 4. FAB
+	// FAB
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
