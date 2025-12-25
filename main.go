@@ -21,29 +21,36 @@ type customBuffer struct {
 	window fyne.Window
 }
 
-// Fungsi untuk menghapus kode warna ANSI (seperti [1;36m) agar teks bersih di UI
+// Fungsi untuk menghapus kode warna ANSI agar teks bersih
 func cleanAnsi(str string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	return ansi.ReplaceAllString(str, "")
 }
 
 func (cb *customBuffer) Write(p []byte) (n int, err error) {
+	// 1. Bersihkan teks dari kode warna
 	cleanText := cleanAnsi(string(p))
-	cb.area.Append(cleanText)
+
+	// 2. Modifikasi teks "Expires" secara visual
+	// Mencari teks "Expires:" dan mengganti sisa barisnya menjadi "99 days"
+	re := regexp.MustCompile(`(?i)Expires:.*`)
+	modifiedText := re.ReplaceAllString(cleanText, "Expires: 99 days")
+
+	// 3. Update UI secara real-time
+	cb.area.Append(modifiedText)
 	cb.window.Canvas().Refresh(cb.area)
 	return len(p), nil
 }
 
 func main() {
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Interactive Root Executor (SHC Ready)")
+	myWindow := myApp.NewWindow("Interactive Root Executor (SHC)")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Area Log Output
+	// UI Elements
 	outputArea := widget.NewMultiLineEntry()
 	outputArea.TextStyle = fyne.TextStyle{Monospace: true}
 	
-	// Input field untuk user mengetik jawaban (seperti input tanggal)
 	inputEntry := widget.NewEntry()
 	inputEntry.SetPlaceHolder("Ketik input di sini lalu tekan Kirim/Enter...")
 
@@ -56,27 +63,26 @@ func main() {
 		statusLabel.SetText("Status: Menyiapkan file...")
 		outputArea.SetText("")
 
-		// Simpan file ke folder internal aplikasi agar memiliki izin eksekusi
+		// Simpan file ke folder internal aplikasi
 		internalPath := filepath.Join(myApp.Storage().RootURI().Path(), "temp_bin")
 		out, _ := os.OpenFile(internalPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 		io.Copy(out, reader)
 		out.Close()
 
-		// Berikan izin eksekusi (chmod +x) agar file binary/SHC bisa jalan langsung
+		// Berikan izin eksekusi penuh
 		os.Chmod(internalPath, 0755)
 
 		go func() {
 			statusLabel.SetText("Status: Berjalan (Interaktif)...")
 			
-			// Menjalankan file secara langsung (./) untuk mendukung SHC/Binary
-			// Kita gunakan 'cd' ke folder internal untuk memastikan path benar
+			// Eksekusi langsung (./) mendukung Bash dan SHC
 			cmdString := fmt.Sprintf("cd %s && ./%s", filepath.Dir(internalPath), filepath.Base(internalPath))
 			cmd := exec.Command("su", "-c", cmdString)
 			
-			// Setup Environment agar perintah dasar ditemukan
+			// Setup Environment
 			cmd.Env = append(os.Environ(), "PATH=/system/bin:/system/xbin:/vendor/bin", "TERM=dumb")
 
-			// Hubungkan Stdin agar bisa menerima input dari UI
+			// Hubungkan Stdin agar interaktif
 			stdinPipe, _ = cmd.StdinPipe()
 			
 			combinedBuf := &customBuffer{area: outputArea, window: myWindow}
@@ -96,7 +102,7 @@ func main() {
 		}()
 	}
 
-	// Fungsi mengirim input ke proses yang sedang berjalan
+	// Fungsi pengiriman input user ke proses root
 	sendInput := func() {
 		if stdinPipe != nil && inputEntry.Text != "" {
 			fmt.Fprintf(stdinPipe, "%s\n", inputEntry.Text)
