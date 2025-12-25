@@ -24,14 +24,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG (HYBRID DETECTION)
+   CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL LOGIC (BASE CODE)
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -72,7 +72,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 150}
+	case "90": return color.Gray{Y: 100}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -195,14 +195,25 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
-// [BARU] Fungsi Cek SELinux
+// FUNGSI CEK SELINUX (BARU)
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
-	if err != nil {
-		return "UNKNOWN"
-	}
+	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
+}
+
+// FUNGSI VERIFIKASI AKHIR (BARU - Agar tidak tertipu log sukses palsu)
+func VerifySuccessAndCreateFlag() bool {
+	// 1. Cek apakah folder module benar-benar ada di sistem
+	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
+	if err := cmd.Run(); err == nil {
+		// Jika driver ada, PAKSA BUAT FLAG
+		exec.Command("su", "-c", "touch "+FlagFile).Run()
+		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+		return true
+	}
+	return false
 }
 
 func downloadFile(url string, filepath string) (error, string) {
@@ -254,38 +265,33 @@ func main() {
 	w.SetMaster()
 
 	term := NewTerminal()
+	
+	// --- WARNA KUNING CERAH ---
+	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
+
+	// --- INPUT & BUTTON JUMBO ---
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
-	
-	// Definisi Warna Kuning Cerah
-	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// --- SETUP LABEL DETEKTOR (KUNING DI JUDUL) ---
-
-	// 1. Kernel Label (Dipisah agar "KERNEL:" kuning)
-	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
+	// --- HEADER LABEL (KERNEL & SELINUX) ---
+	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow) // KUNING
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
-	
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// 2. SELinux Label (Dipisah agar "SELINUX:" kuning) [BARU]
-	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
+	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow) // KUNING
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
-
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// FUNGSI UPDATE STATUS GABUNGAN
 	updateAllStatus := func() {
 		go func() {
-			// Cek Kernel
-			isLoaded := CheckKernelDriver()
-			if isLoaded {
+			// Update Kernel
+			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
 				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
 			} else {
@@ -294,13 +300,13 @@ func main() {
 			}
 			lblKernelValue.Refresh()
 
-			// Cek SELinux [BARU]
-			selinuxStatus := CheckSELinux()
-			lblSELinuxValue.Text = selinuxStatus
-			if selinuxStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{255, 100, 100, 255} // Merah jika Enforcing
-			} else if selinuxStatus == "Permissive" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // Hijau jika Permissive
+			// Update SELinux (HIJAU=Enforcing, MERAH=Permissive)
+			seStatus := CheckSELinux()
+			lblSELinuxValue.Text = seStatus
+			if seStatus == "Enforcing" {
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // HIJAU
+			} else if seStatus == "Permissive" {
+				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255} // MERAH
 			} else {
 				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
@@ -309,7 +315,7 @@ func main() {
 	}
 	updateAllStatus()
 
-	/* --- LOGIKA AUTO INSTALL --- */
+	/* --- AUTO INSTALL --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
@@ -427,12 +433,17 @@ func main() {
 				
 				err = cmd.Run()
 				
-				if err != nil {
-					term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
-				} else {
-					exec.Command("su", "-c", "touch "+FlagFile).Run()
-					exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+				// [PERBAIKAN LOGIKA]
+				// Cek apakah driver BENAR-BENAR terpasang di sistem
+				success := VerifySuccessAndCreateFlag()
 
+				if err != nil || !success {
+					// Jika Script Error ATAU Driver tidak ditemukan setelah script jalan
+					term.Write([]byte("\n\x1b[31m[INSTALLATION FAILED OR DRIVER NOT LOADED]\x1b[0m\n"))
+					// Hapus flag jika ada (karena gagal)
+					exec.Command("su", "-c", "rm -f "+FlagFile).Run()
+				} else {
+					// Jika Script Sukses DAN Driver ditemukan
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
@@ -444,7 +455,7 @@ func main() {
 		}()
 	}
 
-	/* --- FUNGSI RUN FILE LOCAL --- */
+	/* --- RUN FILE --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -465,17 +476,17 @@ func main() {
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term; cmd.Stderr = term
-			err := cmd.Run()
-
-			if err == nil {
-				exec.Command("su", "-c", "touch "+FlagFile).Run()
-				exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+			cmd.Run()
+			
+			// [VERIFIKASI] Cek apakah driver ada setelah install manual
+			if VerifySuccessAndCreateFlag() {
+				term.Write([]byte("\n\x1b[32m[Execution Success: Driver Detected]\x1b[0m\n"))
+			} else {
+				term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
 			}
 			
-			term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
 			status.SetText("Status: Idle")
 			stdin = nil
-			
 			time.Sleep(500 * time.Millisecond)
 			updateAllStatus()
 		}()
@@ -490,17 +501,14 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- UI LAYOUT CONSTRUCTION --- */
-	
+	/* --- UI LAYOUT (JUMBO SIZE 5X) --- */
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
-	titleText.TextSize = 16
-	titleText.TextStyle = fyne.TextStyle{Bold: true}
+	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
-	// Header Kiri: Judul + Kernel Check + SELinux Check
 	headerLeft := container.NewVBox(
 		titleText,
 		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux ditambahkan disini
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux Ditambahkan
 	)
 
 	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
@@ -529,50 +537,58 @@ func main() {
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
-	// FOOTER: ROOT STATUS (DIPISAH AGAR "SYSTEM:" KUNING)
+	// FOOTER: ROOT STATUS (SYSTEM: KUNING)
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-	
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
+	// [UI JUMBO] TOMBOL KIRIM & INPUT
+	// Menggunakan GridWrap untuk memaksa ukuran fixed besar pada tombol
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-
-	// [PERBESAR UI & JARAK] INPUT & TOMBOL KIRIM
-	// Menggunakan Padded untuk memperbesar area, dan HBox dengan Spacer untuk jarak.
-	bigInput := container.NewPadded(input)
-	bigSendBtn := container.NewPadded(sendBtn)
 	
+	// Ukuran Tombol Kirim: 120x60 (Sangat Besar)
+	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
+	
+	// Input Field dibuat lebih tinggi dengan Container GridWrap juga
+	// Ukuran Input: Lebar Dinamis (Expand), Tinggi 60
+	// Karena Input butuh lebar dinamis, kita pakai Border Layout tapi Inputnya dibungkus container
+	bigInput := container.NewPadded(input) 
+	
+	// Container Input Area
 	inputArea := container.NewBorder(nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("  "), bigSendBtn), // Spacer di kiri tombol kirim
+		container.NewHBox(widget.NewLabel("   "), bigSendBtn), // Spacer agar tidak mepet
 		bigInput,
 	)
-	inputContainer := container.NewPadded(inputArea)
-
+	
+	// Tambahkan padding ekstra agar terlihat "Gemuk"
+	inputContainer := container.NewPadded(container.NewPadded(inputArea))
+	
 	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [PERBESAR UI] TOMBOL FILE (FAB)
+	// [UI JUMBO] TOMBOL FILE (FAB) - 5x LEBIH BESAR
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
-	bigFabBtn := container.NewPadded(fabBtn) // Perbesar FAB dengan padding
+	
+	// Ukuran FAB: 100x100 (Sangat Besar)
+	hugeFab := container.NewGridWrap(fyne.NewSize(100, 100), fabBtn)
 
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(
 			layout.NewSpacer(),
-			bigFabBtn,
+			hugeFab,
 			widget.NewLabel(" "), 
 		),
 		widget.NewLabel("      "), 
 		widget.NewLabel("      "), 
 	)
-
+	
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
