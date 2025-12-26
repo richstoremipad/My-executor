@@ -33,8 +33,8 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.12" 
-const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
+const AppVersion = "1.0" 
+const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
