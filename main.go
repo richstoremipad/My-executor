@@ -203,7 +203,7 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// FUNGSI VERIFIKASI AKHIR (BARU - Agar tidak tertipu log sukses palsu)
+// FUNGSI VERIFIKASI AKHIR
 func VerifySuccessAndCreateFlag() bool {
 	// 1. Cek apakah folder module benar-benar ada di sistem
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
@@ -508,11 +508,12 @@ func main() {
 	headerLeft := container.NewVBox(
 		titleText,
 		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux Ditambahkan
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [MODIFIKASI: Tombol Scan diganti menjadi SELinux Switch]
-	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
+	// [ICON GANTI: se.png]
+	iconSE, _ := fyne.LoadResourceFromPath("se.png")
+	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", iconSE, func() {
 		term.Write([]byte("\n\x1b[36m[*] Toggling SELinux Status...\x1b[0m\n"))
 		go func() {
 			// Cek status saat ini
@@ -534,7 +535,9 @@ func main() {
 		}()
 	})
 
-	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
+	// [ICON GANTI: id.png]
+	iconInject, _ := fyne.LoadResourceFromPath("id.png")
+	installBtn := widget.NewButtonWithIcon("Inject Driver", iconInject, func() {
 		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
 			if ok { autoInstallKernel() }
 		}, w)
@@ -542,7 +545,6 @@ func main() {
 	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
 	
-	// Masukkan selinuxBtn ke dalam container menggantikan checkBtn
 	headerRight := container.NewHBox(installBtn, selinuxBtn, clearBtn)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
@@ -556,37 +558,29 @@ func main() {
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
 	// [UI JUMBO] TOMBOL KIRIM & INPUT
-	// Menggunakan GridWrap untuk memaksa ukuran fixed besar pada tombol
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	
-	// Ukuran Tombol Kirim: 120x60 (Sangat Besar)
 	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
 	
-	// Input Field dibuat lebih tinggi dengan Container GridWrap juga
-	// Ukuran Input: Lebar Dinamis (Expand), Tinggi 60
-	// Karena Input butuh lebar dinamis, kita pakai Border Layout tapi Inputnya dibungkus container
 	bigInput := container.NewPadded(input) 
 	
-	// Container Input Area
 	inputArea := container.NewBorder(nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("   "), bigSendBtn), // Spacer agar tidak mepet
+		container.NewHBox(widget.NewLabel("   "), bigSendBtn), 
 		bigInput,
 	)
 	
-	// Tambahkan padding ekstra agar terlihat "Gemuk"
 	inputContainer := container.NewPadded(container.NewPadded(inputArea))
 	
 	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [UI JUMBO] TOMBOL FILE (FAB) - 5x LEBIH BESAR
-	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+	// [ICON GANTI: cf.png]
+	iconCF, _ := fyne.LoadResourceFromPath("cf.png")
+	fabBtn := widget.NewButtonWithIcon("", iconCF, func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
 	
-	// Ukuran FAB: 100x100 (Sangat Besar)
 	hugeFab := container.NewGridWrap(fyne.NewSize(100, 100), fabBtn)
 
 	fabContainer := container.NewVBox(
