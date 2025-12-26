@@ -499,11 +499,11 @@ func main() {
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
 	// -------------------------------------------------------------
-	//   CUSTOM POPUP "INJECT DRIVER" - BESAR & TOMBOL LEBAR
+	//   CUSTOM POPUP "INJECT DRIVER" - [PERBAIKAN TIPE VARIABLE]
 	// -------------------------------------------------------------
 	
-	// Deklarasi variabel container popup agar bisa diakses dari tombol
-	var popupOverlay *container.Stack
+	// [FIX] Menggunakan *fyne.Container, bukan *container.Stack
+	var popupOverlay *fyne.Container
 
 	// Tombol YES / NO untuk Popup
 	popupBtnNo := widget.NewButton("NO", func() {
@@ -546,9 +546,6 @@ func main() {
 	
 	// Background Redup (Dimmed) di belakang popup
 	dimmedBg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 200})
-	// Tekan background untuk menutup (Opsional, tapi aman dimatikan agar fokus ke tombol)
-	// dimmedBgButton := widget.NewButton("", func() {}) 
-	// dimmedBgButton.Importance = widget.LowImportance
 
 	// Container Overlay Akhir (Tengah Layar)
 	popupOverlay = container.NewStack(dimmedBg, container.NewCenter(popupBox))
