@@ -462,15 +462,13 @@ func main() {
 			input.SetText("")
 		}
 	}
-
-	// [PERBAIKAN FITUR INPUT]
-	// Menambahkan Handler agar tombol Centang/Enter di keyboard melakukan 'send'
+	
 	input.OnSubmitted = func(_ string) { 
 		send() 
 	}
 
 	// [LAYOUT HEADER]
-	titleText := canvas.NewText("EXECUTOR PRO BY TANGSAN", theme.ForegroundColor())
+	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	headerLeft := container.NewVBox(
@@ -483,7 +481,7 @@ func main() {
 	const btnHeight = 40
 	btnSize := fyne.NewSize(btnWidth, btnHeight)
 
-	// 1. SELinux Button
+	// SELinux Button
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
 			current := CheckSELinux()
@@ -493,24 +491,78 @@ func main() {
 	})
 	selinuxBtn.Importance = widget.MediumImportance
 
-	// 2. Inject Button
+	// Clear Button
+	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
+	realClearBtn.Importance = widget.LowImportance 
+	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100})
+	clearBg.CornerRadius = theme.InputRadiusSize()
+	clearStack := container.NewStack(clearBg, realClearBtn)
+
+	// -------------------------------------------------------------
+	//   CUSTOM POPUP "INJECT DRIVER" - BESAR & TOMBOL LEBAR
+	// -------------------------------------------------------------
+	
+	// Deklarasi variabel container popup agar bisa diakses dari tombol
+	var popupOverlay *container.Stack
+
+	// Tombol YES / NO untuk Popup
+	popupBtnNo := widget.NewButton("NO", func() {
+		popupOverlay.Hide() // Tutup popup
+	})
+	popupBtnNo.Importance = widget.DangerImportance // Warna Merah
+
+	popupBtnYes := widget.NewButton("YES", func() {
+		popupOverlay.Hide() // Tutup popup
+		autoInstallKernel() // Jalankan perintah
+	})
+	popupBtnYes.Importance = widget.HighImportance // Warna Biru
+
+	// Grid Layout 2 Kolom untuk Tombol (Membagi lebar 50:50, Pojok ke Pojok)
+	popupBtns := container.NewGridWithColumns(2, popupBtnNo, popupBtnYes)
+
+	// Isi Popup
+	popupTitle := canvas.NewText("Inject Driver", theme.ForegroundColor())
+	popupTitle.TextSize = 20
+	popupTitle.TextStyle = fyne.TextStyle{Bold: true}
+	popupTitle.Alignment = fyne.TextAlignCenter
+
+	popupMsg := widget.NewLabel("Start automatic injection process?")
+	popupMsg.Alignment = fyne.TextAlignCenter
+
+	popupContent := container.NewVBox(
+		widget.NewLabel(" "), // Spacer Atas
+		container.NewCenter(popupTitle),
+		widget.NewLabel(" "), // Spacer Tengah
+		popupMsg,
+		layout.NewSpacer(), // Dorong tombol ke bawah
+		popupBtns, // Tombol Lebar di Bawah
+	)
+
+	// Card/Box Popup
+	popupCard := widget.NewCard("", "", container.NewPadded(popupContent))
+	
+	// Ukuran Popup (Besar tapi tidak full screen, misal 550x240)
+	popupBox := container.NewGridWrap(fyne.NewSize(550, 240), popupCard)
+	
+	// Background Redup (Dimmed) di belakang popup
+	dimmedBg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+	// Tekan background untuk menutup (Opsional, tapi aman dimatikan agar fokus ke tombol)
+	// dimmedBgButton := widget.NewButton("", func() {}) 
+	// dimmedBgButton.Importance = widget.LowImportance
+
+	// Container Overlay Akhir (Tengah Layar)
+	popupOverlay = container.NewStack(dimmedBg, container.NewCenter(popupBox))
+	popupOverlay.Hide() // Sembunyikan saat awal
+
+	// Tombol Header "Inject Driver" yang memicu Popup
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
-		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
-			if ok { autoInstallKernel() }
-		}, w)
+		popupOverlay.Show()
 	})
 	installBtn.Importance = widget.MediumImportance
 
-	// 3. Clear Button
-	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
-	realClearBtn.Importance = widget.LowImportance 
+	// -------------------------------------------------------------
 
-	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100}) // Merah Transparan
-	clearBg.CornerRadius = theme.InputRadiusSize()
-
-	clearStack := container.NewStack(clearBg, realClearBtn)
-
-	// Container Buttons
+	// Container Buttons Header
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
 	installContainer := container.NewGridWrap(btnSize, installBtn)
 	clearContainer := container.NewGridWrap(btnSize, clearStack)
@@ -569,7 +621,8 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 	
-	w.SetContent(container.NewStack(mainLayer, fabContainer))
+	// Tambahkan popupOverlay di paling atas stack
+	w.SetContent(container.NewStack(mainLayer, fabContainer, popupOverlay))
 	w.ShowAndRun()
 }
 
