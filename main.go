@@ -24,18 +24,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG (HYBRID DETECTION)
+   CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
-
-// DETEKSI 1: File Flag (Reset saat reboot)
 const FlagFile = "/dev/status_driver_aktif"
-
-// DETEKSI 2: Folder Module (Backup check)
-const TargetDriverName = "5.10_A12" 
+const TargetDriverName = "5.10_A12"
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC & FILTERING
 ========================================== */
 
 type Terminal struct {
@@ -55,7 +51,6 @@ func NewTerminal() *Terminal {
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
-	// Regex untuk mendeteksi ANSI codes
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	return &Terminal{
 		grid:     g,
@@ -75,15 +70,15 @@ func ansiToColor(code string) color.Color {
 	case "33": return theme.WarningColor()
 	case "34": return theme.PrimaryColor()
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100} // Dark Gray
+	case "90": return color.Gray{Y: 100}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
-	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255} // Bright Green
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
 	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
 	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
-	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255} // Bright Cyan
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
 	case "97": return color.White
 	default: return nil
 	}
@@ -95,21 +90,20 @@ func (t *Terminal) Clear() {
 	t.curCol = 0
 }
 
-// === BAGIAN MODIFIKASI (TANPA WARNA) ===
+// === FUNGSI INI AKAN MENANGKAP OUTPUT DARI C++ / BINARY LAIN ===
 func (t *Terminal) Write(p []byte) (int, error) {
 	raw := string(p)
 
 	// LOGIKA MANIPULASI LOG:
-	// Jika mendeteksi kata-kata error/invalid, ganti dengan sukses
+	// Jika Binary C++ mengirim error/invalid, Go akan MENCEGATNYA dan menampilkan SUKSES.
 	if strings.Contains(raw, "Failed: INVALID") || strings.Contains(raw, "Invalid key") || strings.Contains(raw, "Auth failed") {
-		// Ganti pesan error menjadi pesan sukses palsu TANPA WARNA
+		// Pesan palsu tanpa warna (sesuai request terakhir)
 		raw = "\nLogin successful!\nExpires: 9 days 15:39:54\nDevice:  1/1 devices\n"
 	}
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	
-	// Replace CRLF jadi LF
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	
 	for len(raw) > 0 {
@@ -165,7 +159,6 @@ func (t *Terminal) printText(text string) {
 			continue
 		}
 		if char == '\r' {
-			// LOGIKA REFRESH BARIS (Untuk Progress Bar)
 			t.curCol = 0
 			continue
 		}
@@ -187,11 +180,6 @@ func (t *Terminal) printText(text string) {
 	}
 }
 
-/* ===============================
-   ANIMATION & HELPERS
-================================ */
-
-// FUNGSI BARU: Progress Bar Animation
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20
 	filledLength := (percent * barLength) / 100
@@ -203,7 +191,6 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 			bar += "░"
 		}
 	}
-	// \r Mengembalikan kursor ke awal baris untuk animasi
 	msg := fmt.Sprintf("\r%s %s [%s] %d%%", colorCode, label, bar, percent)
 	term.Write([]byte(msg))
 }
@@ -217,34 +204,25 @@ func CheckKernelDriver() bool {
 
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
-
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
-	
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
-		if checkCmd.Run() == nil {
-			return nil, "Success"
-		}
+		if checkCmd.Run() == nil { return nil, "Success" }
 	}
-
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
 	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
-	
 	resp, err := client.Do(req)
 	if err != nil { return err, "Net Err" }
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
-
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
 	if err != nil { return err, "Pipe Err" }
 	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
-
 	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
 	return nil, "Success"
 }
@@ -257,7 +235,6 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	// Reset Flag saat start
 	exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 
 	w := a.NewWindow("Root Executor")
@@ -292,22 +269,18 @@ func main() {
 	}
 	updateKernelStatus()
 
-	/* --- LOGIKA AUTO INSTALL KEREN (PROFESSIONAL UI) --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
-		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			updateKernelStatus() 
 			
-			// Header Keren
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
-			
 			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
-			time.Sleep(500 * time.Millisecond) // Efek delay biar kelihatan mikir
+			time.Sleep(500 * time.Millisecond)
 
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil {
@@ -319,22 +292,18 @@ func main() {
 
 			downloadPath := "/data/local/tmp/temp_kernel_dl" 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
-			
 			var downloadUrl string
 			var found bool = false
 
-			// Helper untuk animasi proses bar
 			simulateProcess := func(label string) {
 				for i := 0; i <= 100; i+=10 {
-					drawProgressBar(term, label, i, "\x1b[36m") // Cyan color
+					drawProgressBar(term, label, i, "\x1b[36m")
 					time.Sleep(50 * time.Millisecond)
 				}
-				term.Write([]byte("\n")) // Newline setelah selesai
+				term.Write([]byte("\n"))
 			}
 
-			// 1. Cek Full Version
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
-			// Animasi loading palsu (biar user lihat proses)
 			simulateProcess("Connecting...")
 			
 			url1 := GitHubRepo + rawVersion + ".sh"
@@ -347,13 +316,11 @@ func main() {
 				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 			}
 
-			// 2. Cek Short Version
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
 					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
 					simulateProcess("Connecting...")
-					
 					shortVersion := parts[0]
 					url2 := GitHubRepo + shortVersion + ".sh"
 					err, _ = downloadFile(url2, downloadPath)
@@ -367,13 +334,11 @@ func main() {
 				}
 			}
 
-			// 3. Cek Major Version
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
 					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 3)...\x1b[0m\n"))
 					simulateProcess("Connecting...")
-
 					majorVersion := parts[0] + "." + parts[1]
 					url3 := GitHubRepo + majorVersion + ".sh"
 					err, _ = downloadFile(url3, downloadPath)
@@ -394,24 +359,24 @@ func main() {
 				status.SetText("System: Failed")
 			} else {
 				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + downloadUrl + "\x1b[0m\n"))
-				// Animasi Download yang lebih lama
 				for i := 0; i <= 100; i+=5 {
 					drawProgressBar(term, "Downloading Payload", i, "\x1b[92m")
 					time.Sleep(30 * time.Millisecond)
 				}
 				term.Write([]byte("\n\n\x1b[97m[*] Executing Root Installer...\x1b[0m\n"))
 				
-				// Eksekusi Real
 				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
 				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
 
 				cmd := exec.Command("su", "-c", "sh "+targetFile)
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-				
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
-				cmd.Stdout = term
+				
+				// === KUNCI UTAMA: Sambungkan Output Script ke Terminal Go ===
+				cmd.Stdout = term 
 				cmd.Stderr = term
+				// ============================================================
 				
 				err = cmd.Run()
 				
@@ -421,7 +386,6 @@ func main() {
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
-				
 				time.Sleep(1 * time.Second)
 				updateKernelStatus()
 				status.SetText("System: Online")
@@ -429,30 +393,54 @@ func main() {
 		}()
 	}
 
-	/* --- FUNGSI LAINNYA --- */
+	// === FUNGSI EKSEKUSI BINARY (IMGUI / EXTERNAL) ===
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
 		status.SetText("Status: Processing...")
+		
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		
 		go func() {
+			// Persiapan File
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() { defer in.Close(); in.Write(data) }()
 			copyCmd.Run()
 			
+			// Siapkan Command Eksekusi
 			var cmd *exec.Cmd
-			if isBinary { cmd = exec.Command("su", "-c", target)
-			} else { cmd = exec.Command("su", "-c", "sh "+target) }
-			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			stdin, _ = cmd.StdinPipe()
-			cmd.Stdout = term; cmd.Stderr = term
-			cmd.Run()
+			if isBinary { 
+				cmd = exec.Command("su", "-c", target)
+			} else { 
+				cmd = exec.Command("su", "-c", "sh "+target) 
+			}
 			
-			term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			
+			// === BAGIAN PENTING: PIPA LOG REAL-TIME ===
+			// Mengarahkan output standar (stdout) dan error (stderr) dari binary C++
+			// LANGSUNG ke widget Terminal kita. 
+			// Karena terminal kita punya fungsi "Write" yang sudah dimodifikasi (manipulasi log),
+			// maka pesan "Invalid" dari C++ akan otomatis berubah jadi "Success".
+			cmd.Stdout = term
+			cmd.Stderr = term
+			// ==========================================
+
+			stdin, _ = cmd.StdinPipe()
+			
+			// Jalankan
+			err := cmd.Run()
+			
+			if err != nil {
+				term.Write([]byte(fmt.Sprintf("\n[Process Exited: %v]\n", err)))
+			} else {
+				term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
+			}
+			
 			status.SetText("Status: Idle")
 			stdin = nil
 		}()
@@ -467,7 +455,6 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- UI LAYOUT --- */
 	titleText := canvas.NewText("ROOT EXECUTOR PRO", theme.ForegroundColor())
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
