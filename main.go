@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"embed" // IMPORT PENTING: Untuk menanam gambar ke dalam aplikasi
 	"fmt"
 	"image/color"
 	"io"
@@ -22,6 +23,9 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
+
+//go:embed cf.png se.png id.png
+var resourceFiles embed.FS
 
 /* ==========================================
    CONFIG
@@ -195,7 +199,6 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
-// FUNGSI CEK SELINUX (BARU)
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
@@ -203,12 +206,9 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// FUNGSI VERIFIKASI AKHIR
 func VerifySuccessAndCreateFlag() bool {
-	// 1. Cek apakah folder module benar-benar ada di sistem
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil {
-		// Jika driver ada, PAKSA BUAT FLAG
 		exec.Command("su", "-c", "touch "+FlagFile).Run()
 		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
 		return true
@@ -266,10 +266,8 @@ func main() {
 
 	term := NewTerminal()
 	
-	// --- WARNA KUNING CERAH ---
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 
-	// --- INPUT & BUTTON JUMBO ---
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 	
@@ -277,20 +275,18 @@ func main() {
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// --- HEADER LABEL (KERNEL & SELINUX) ---
-	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow) // KUNING
+	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow) // KUNING
+	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
 	updateAllStatus := func() {
 		go func() {
-			// Update Kernel
 			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
 				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
@@ -300,13 +296,12 @@ func main() {
 			}
 			lblKernelValue.Refresh()
 
-			// Update SELinux (HIJAU=Enforcing, MERAH=Permissive)
 			seStatus := CheckSELinux()
 			lblSELinuxValue.Text = seStatus
 			if seStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // HIJAU
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255}
 			} else if seStatus == "Permissive" {
-				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255} // MERAH
+				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255}
 			} else {
 				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
@@ -315,7 +310,6 @@ func main() {
 	}
 	updateAllStatus()
 
-	/* --- AUTO INSTALL --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
@@ -353,7 +347,6 @@ func main() {
 				term.Write([]byte("\n"))
 			}
 
-			// 1. Cek Full Version
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
 			
@@ -367,7 +360,6 @@ func main() {
 				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 			}
 
-			// 2. Cek Short Version
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
@@ -387,7 +379,6 @@ func main() {
 				}
 			}
 
-			// 3. Cek Major Version
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
@@ -433,17 +424,12 @@ func main() {
 				
 				err = cmd.Run()
 				
-				// [PERBAIKAN LOGIKA]
-				// Cek apakah driver BENAR-BENAR terpasang di sistem
 				success := VerifySuccessAndCreateFlag()
 
 				if err != nil || !success {
-					// Jika Script Error ATAU Driver tidak ditemukan setelah script jalan
 					term.Write([]byte("\n\x1b[31m[INSTALLATION FAILED OR DRIVER NOT LOADED]\x1b[0m\n"))
-					// Hapus flag jika ada (karena gagal)
 					exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 				} else {
-					// Jika Script Sukses DAN Driver ditemukan
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
@@ -455,7 +441,6 @@ func main() {
 		}()
 	}
 
-	/* --- RUN FILE --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -478,7 +463,6 @@ func main() {
 			cmd.Stdout = term; cmd.Stderr = term
 			cmd.Run()
 			
-			// [VERIFIKASI] Cek apakah driver ada setelah install manual
 			if VerifySuccessAndCreateFlag() {
 				term.Write([]byte("\n\x1b[32m[Execution Success: Driver Detected]\x1b[0m\n"))
 			} else {
@@ -501,7 +485,7 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- UI LAYOUT (JUMBO SIZE 5X) --- */
+	/* --- UI LAYOUT --- */
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -511,32 +495,32 @@ func main() {
 		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [ICON GANTI: se.png]
-	iconSE, _ := fyne.LoadResourceFromPath("se.png")
+	// [FIX: MEMUAT GAMBAR DARI EMBED]
+	seData, _ := resourceFiles.ReadFile("se.png")
+	iconSE := fyne.NewStaticResource("se.png", seData)
+	
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", iconSE, func() {
 		term.Write([]byte("\n\x1b[36m[*] Toggling SELinux Status...\x1b[0m\n"))
 		go func() {
-			// Cek status saat ini
 			current := CheckSELinux()
 			if current == "Enforcing" {
 				exec.Command("su", "-c", "setenforce 0").Run()
 				term.Write([]byte(" -> Switching to: \x1b[31mPermissive\x1b[0m\n"))
 			} else {
-				// Asumsi jika Permissive atau Unknown, paksa Enforcing
 				exec.Command("su", "-c", "setenforce 1").Run()
 				term.Write([]byte(" -> Switching to: \x1b[32mEnforcing\x1b[0m\n"))
 			}
-			
 			time.Sleep(500 * time.Millisecond)
-			updateAllStatus() // Update label di header
-			
+			updateAllStatus() 
 			newStat := CheckSELinux()
 			term.Write([]byte(fmt.Sprintf("\x1b[33m-> Result: %s\x1b[0m\n", newStat)))
 		}()
 	})
 
-	// [ICON GANTI: id.png]
-	iconInject, _ := fyne.LoadResourceFromPath("id.png")
+	// [FIX: MEMUAT GAMBAR DARI EMBED]
+	idData, _ := resourceFiles.ReadFile("id.png")
+	iconInject := fyne.NewStaticResource("id.png", idData)
+
 	installBtn := widget.NewButtonWithIcon("Inject Driver", iconInject, func() {
 		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
 			if ok { autoInstallKernel() }
@@ -550,14 +534,12 @@ func main() {
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
-	// FOOTER: ROOT STATUS (SYSTEM: KUNING)
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
-	// [UI JUMBO] TOMBOL KIRIM & INPUT
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
 	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
 	
@@ -574,8 +556,10 @@ func main() {
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [ICON GANTI: cf.png]
-	iconCF, _ := fyne.LoadResourceFromPath("cf.png")
+	// [FIX: MEMUAT GAMBAR DARI EMBED]
+	cfData, _ := resourceFiles.ReadFile("cf.png")
+	iconCF := fyne.NewStaticResource("cf.png", cfData)
+
 	fabBtn := widget.NewButtonWithIcon("", iconCF, func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
