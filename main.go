@@ -272,6 +272,11 @@ func main() {
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
+	// [WARNA EMAS UNTUK HEADER]
+	// Kita gunakan Emas yang agak gelap (Dark Goldenrod) agar tulisan putih tetap terbaca
+	// Jika terlalu terang, mata akan sakit di tema gelap.
+	goldHeaderColor := color.RGBA{R: 139, G: 101, B: 8, A: 255} // Dark Gold solid
+
 	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
@@ -440,8 +445,7 @@ func main() {
 	)
 
 	// [SETTING TOMBOL SERAGAM]
-	// Ukuran tombol disamakan (cukup lebar untuk teks terpanjang)
-	// Agar "Inject Driver" muat, kita pakai width 130
+	// Ukuran tombol disamakan
 	const btnWidth = 130
 	const btnHeight = 40
 	btnSize := fyne.NewSize(btnWidth, btnHeight)
@@ -455,7 +459,7 @@ func main() {
 			updateAllStatus() 
 		}()
 	})
-	selinuxBtn.Importance = widget.MediumImportance // Agak transparan
+	selinuxBtn.Importance = widget.MediumImportance 
 
 	// 2. Inject Button
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
@@ -463,18 +467,27 @@ func main() {
 			if ok { autoInstallKernel() }
 		}, w)
 	})
-	installBtn.Importance = widget.MediumImportance // Agak transparan
+	installBtn.Importance = widget.MediumImportance 
 
-	// 3. Clear Button
-	clearBtn := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	// MINTA: "warna tombol clear buat menjadi agak transparan"
-	clearBtn.Importance = widget.MediumImportance 
+	// 3. Clear Button (MERAH TRANSPARAN)
+	// Untuk membuat tombol merah yang "agak transparan" tapi ukurannya sama,
+	// Kita akan menumpuk (Stack) sebuah kotak merah semi-transparan dengan tombol transparan.
+	
+	// A. Tombol Logika (Text Only, Low Importance = Transparan)
+	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
+	realClearBtn.Importance = widget.LowImportance // Agar background asli tombol hilang
 
-	// MINTA: "ukuran nya samakan"
-	// Kita bungkus semua tombol dalam GridWrap dengan ukuran yang SAMA
+	// B. Background Merah Transparan (RGBA: Merah 200, Alpha 100)
+	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100})
+	clearBg.CornerRadius = theme.InputRadiusSize() // Agar sudut tidak tajam
+
+	// C. Gabungkan dalam Stack
+	clearStack := container.NewStack(clearBg, realClearBtn)
+
+	// Bungkus agar ukuran seragam dengan tombol lain
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
 	installContainer := container.NewGridWrap(btnSize, installBtn)
-	clearContainer := container.NewGridWrap(btnSize, clearBtn)
+	clearContainer := container.NewGridWrap(btnSize, clearStack) // Gunakan stack tadi
 
 	headerRight := container.NewHBox(
 		installContainer, 
@@ -484,8 +497,21 @@ func main() {
 		clearContainer,
 	)
 	
-	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
-	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
+	// HEADER UTAMA (GOLD BACKGROUND)
+	// Kita buat konten header (Text + Tombol)
+	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
+	
+	// Kita buat Background Emas
+	headerBgRect := canvas.NewRectangle(goldHeaderColor)
+	
+	// Tumpuk Background Emas dengan Konten
+	// Tambahkan Padding agar teks tidak mepet pinggir background emas
+	headerBarWithBg := container.NewStack(
+		headerBgRect,
+		container.NewPadded(headerContent),
+	)
+
+	topSection := container.NewVBox(headerBarWithBg, container.NewPadded(status), widget.NewSeparator())
 	
 	// [LAYOUT FOOTER & INPUT]
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
@@ -501,20 +527,18 @@ func main() {
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [POSISI FAB (FD) DIKEMBALIKAN KE SEMULA SESUAI SKRIPT ASLI ANDA]
+	// [POSISI FAB (FD) - UKURAN DIKECILKAN JADI 60 SESUAI REQUEST]
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
 	clickableIcon := container.NewStack(
-		container.NewGridWrap(fyne.NewSize(100, 100), img),
+		container.NewGridWrap(fyne.NewSize(60, 60), img), // DIKECILKAN
 		widget.NewButton("", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 		}),
 	)
 	clickableIcon.Objects[1].(*widget.Button).Importance = widget.LowImportance
 
-	// Ini adalah susunan container yang PERSIS sama dengan kode asli Anda
-	// yang memberikan jarak cukup agar tidak mepet dengan tombol kirim
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(layout.NewSpacer(), clickableIcon, widget.NewLabel(" ")),
