@@ -34,7 +34,7 @@ const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST (JANGAN GOOGLE DOCS)
+// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST
 const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
 
 type OnlineConfig struct {
@@ -354,6 +354,7 @@ func main() {
 	
 	var updateOverlay *fyne.Container
 	
+	// FUNGSI POPUP UPDATE (Normal)
 	showUpdatePopup := func(msg string, link string) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -409,7 +410,47 @@ func main() {
 		updateOverlay.Refresh()
 	}
 
-	// [UPDATE LOGIC with DEBUG]
+	// [BARU] FUNGSI POPUP ERROR KONEKSI
+	showErrorPopup := func(msg string) {
+		w.Canvas().Refresh(w.Content())
+		
+		// Hanya 1 tombol: EXIT
+		btnExit := widget.NewButton("EXIT", func() {
+			os.Exit(0) 
+		})
+		btnExit.Importance = widget.DangerImportance
+
+		// Layout tombol ditengah
+		btnContainer := container.NewCenter(container.NewGridWrap(fyne.NewSize(140, 40), btnExit))
+
+		title := canvas.NewText("CONNECTION ERROR", theme.ErrorColor())
+		title.TextSize = 20; title.TextStyle = fyne.TextStyle{Bold: true}
+		title.Alignment = fyne.TextAlignCenter
+		
+		msgLabel := widget.NewLabel(msg)
+		msgLabel.Alignment = fyne.TextAlignCenter
+		msgLabel.Wrapping = fyne.TextWrapWord
+
+		content := container.NewVBox(
+			widget.NewLabel(" "),
+			container.NewCenter(title),
+			widget.NewLabel(" "),
+			msgLabel,
+			layout.NewSpacer(),
+			btnContainer,
+			widget.NewLabel(" "),
+		)
+
+		card := widget.NewCard("", "", container.NewPadded(content))
+		box := container.NewGridWrap(fyne.NewSize(550, 240), card)
+		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240})
+
+		updateOverlay.Objects = []fyne.CanvasObject{bg, container.NewCenter(box)}
+		updateOverlay.Show()
+		updateOverlay.Refresh()
+	}
+
+	// [UPDATE LOGIC]
 	go func() {
 		time.Sleep(2 * time.Second)
 
@@ -423,37 +464,41 @@ func main() {
 		
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(ConfigURL)
+		
+		// 1. Cek Koneksi Error (No Internet / Server Down)
 		if err != nil {
 			term.Write([]byte("\x1b[31m[ERR] Connect Fail: " + err.Error() + "\x1b[0m\n"))
+			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode == 200 {
-			body, _ := io.ReadAll(resp.Body)
-			
-			// Membersihkan karakter aneh (BOM/Whitespace) dari GoogleDocs/Pastebin
-			body = bytes.TrimSpace(body)
-			body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf")) // Hapus UTF-8 BOM jika ada
+		// 2. Cek HTTP Status Error (Misal 404, 500)
+		if resp.StatusCode != 200 {
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] HTTP Error: %d\x1b[0m\n", resp.StatusCode)))
+			showErrorPopup(fmt.Sprintf("Server Error (%d).\nPlease try again later.", resp.StatusCode))
+			return
+		}
 
-			var config OnlineConfig
-			
-			if err := json.Unmarshal(body, &config); err == nil {
-				if config.Version != "" {
-					if config.Version != AppVersion {
-						term.Write([]byte("\x1b[33m[!] New Version Found: " + config.Version + "\x1b[0m\n"))
-						showUpdatePopup(config.Message, config.Link)
-					} else {
-						term.Write([]byte("\x1b[32m[V] App is up to date.\x1b[0m\n"))
-					}
+		body, _ := io.ReadAll(resp.Body)
+		body = bytes.TrimSpace(body)
+		body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf")) 
+
+		var config OnlineConfig
+		
+		if err := json.Unmarshal(body, &config); err == nil {
+			if config.Version != "" {
+				if config.Version != AppVersion {
+					term.Write([]byte("\x1b[33m[!] New Version Found: " + config.Version + "\x1b[0m\n"))
+					showUpdatePopup(config.Message, config.Link)
+				} else {
+					term.Write([]byte("\x1b[32m[V] App is up to date.\x1b[0m\n"))
 				}
-			} else {
-				term.Write([]byte("\x1b[31m[ERR] JSON Parse Fail. Check URL.\x1b[0m\n"))
-				// Debug: Tampilkan isi file jika gagal parse
-				// term.Write([]byte("Data: " + string(body) + "\n")) 
 			}
 		} else {
-			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] HTTP Error: %d\x1b[0m\n", resp.StatusCode)))
+			// 3. Cek Gagal Baca JSON (Data Rusak)
+			term.Write([]byte("\x1b[31m[ERR] JSON Parse Fail. Check URL.\x1b[0m\n"))
+			showErrorPopup("Invalid configuration data received.\nPlease check application updates.")
 		}
 	}()
 
