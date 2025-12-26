@@ -199,7 +199,6 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
-// FUNGSI CEK SELINUX (BARU)
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
@@ -207,12 +206,9 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// FUNGSI VERIFIKASI AKHIR (BARU - Agar tidak tertipu log sukses palsu)
 func VerifySuccessAndCreateFlag() bool {
-	// 1. Cek apakah folder module benar-benar ada di sistem
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil {
-		// Jika driver ada, PAKSA BUAT FLAG
 		exec.Command("su", "-c", "touch "+FlagFile).Run()
 		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
 		return true
@@ -270,10 +266,8 @@ func main() {
 
 	term := NewTerminal()
 	
-	// --- WARNA KUNING CERAH ---
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 
-	// --- INPUT & BUTTON JUMBO ---
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 	
@@ -281,20 +275,18 @@ func main() {
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// --- HEADER LABEL (KERNEL & SELINUX) ---
-	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow) // KUNING
+	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow) // KUNING
+	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
 	updateAllStatus := func() {
 		go func() {
-			// Update Kernel
 			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
 				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
@@ -304,13 +296,12 @@ func main() {
 			}
 			lblKernelValue.Refresh()
 
-			// Update SELinux (HIJAU=Enforcing, MERAH=Permissive)
 			seStatus := CheckSELinux()
 			lblSELinuxValue.Text = seStatus
 			if seStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // HIJAU
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255}
 			} else if seStatus == "Permissive" {
-				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255} // MERAH
+				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255}
 			} else {
 				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
@@ -319,11 +310,9 @@ func main() {
 	}
 	updateAllStatus()
 
-	/* --- AUTO INSTALL --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
-		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			updateAllStatus() 
@@ -357,7 +346,6 @@ func main() {
 				term.Write([]byte("\n"))
 			}
 
-			// 1. Cek Full Version
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
 			
@@ -371,7 +359,6 @@ func main() {
 				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
 			}
 
-			// 2. Cek Short Version
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
@@ -391,7 +378,6 @@ func main() {
 				}
 			}
 
-			// 3. Cek Major Version
 			if !found {
 				parts := strings.Split(rawVersion, ".")
 				if len(parts) >= 2 {
@@ -437,17 +423,12 @@ func main() {
 				
 				err = cmd.Run()
 				
-				// [PERBAIKAN LOGIKA]
-				// Cek apakah driver BENAR-BENAR terpasang di sistem
 				success := VerifySuccessAndCreateFlag()
 
 				if err != nil || !success {
-					// Jika Script Error ATAU Driver tidak ditemukan setelah script jalan
 					term.Write([]byte("\n\x1b[31m[INSTALLATION FAILED OR DRIVER NOT LOADED]\x1b[0m\n"))
-					// Hapus flag jika ada (karena gagal)
 					exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 				} else {
-					// Jika Script Sukses DAN Driver ditemukan
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
@@ -459,7 +440,6 @@ func main() {
 		}()
 	}
 
-	/* --- RUN FILE --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -482,7 +462,6 @@ func main() {
 			cmd.Stdout = term; cmd.Stderr = term
 			cmd.Run()
 			
-			// [VERIFIKASI] Cek apakah driver ada setelah install manual
 			if VerifySuccessAndCreateFlag() {
 				term.Write([]byte("\n\x1b[32m[Execution Success: Driver Detected]\x1b[0m\n"))
 			} else {
@@ -505,33 +484,29 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
-	/* --- UI LAYOUT (JUMBO SIZE 5X) --- */
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	headerLeft := container.NewVBox(
 		titleText,
 		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux Ditambahkan
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [MODIFIKASI: Tombol Scan diganti menjadi SELinux Switch]
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		term.Write([]byte("\n\x1b[36m[*] Toggling SELinux Status...\x1b[0m\n"))
 		go func() {
-			// Cek status saat ini
 			current := CheckSELinux()
 			if current == "Enforcing" {
 				exec.Command("su", "-c", "setenforce 0").Run()
 				term.Write([]byte(" -> Switching to: \x1b[31mPermissive\x1b[0m\n"))
 			} else {
-				// Asumsi jika Permissive atau Unknown, paksa Enforcing
 				exec.Command("su", "-c", "setenforce 1").Run()
 				term.Write([]byte(" -> Switching to: \x1b[32mEnforcing\x1b[0m\n"))
 			}
 			
 			time.Sleep(500 * time.Millisecond)
-			updateAllStatus() // Update label di header
+			updateAllStatus() 
 			
 			newStat := CheckSELinux()
 			term.Write([]byte(fmt.Sprintf("\x1b[33m-> Result: %s\x1b[0m\n", newStat)))
@@ -546,69 +521,63 @@ func main() {
 	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
 	
-	// Masukkan selinuxBtn ke dalam container menggantikan checkBtn
 	headerRight := container.NewHBox(installBtn, selinuxBtn, clearBtn)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
-	// FOOTER: ROOT STATUS (SYSTEM: KUNING)
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
-	// [UI JUMBO] TOMBOL KIRIM & INPUT
-	// Menggunakan GridWrap untuk memaksa ukuran fixed besar pada tombol
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
 	
-	// Ukuran Tombol Kirim: 120x60 (Sangat Besar)
 	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
 	
-	// Input Field dibuat lebih tinggi dengan Container GridWrap juga
-	// Ukuran Input: Lebar Dinamis (Expand), Tinggi 60
-	// Karena Input butuh lebar dinamis, kita pakai Border Layout tapi Inputnya dibungkus container
 	bigInput := container.NewPadded(input) 
 	
-	// Container Input Area
 	inputArea := container.NewBorder(nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("   "), bigSendBtn), // Spacer agar tidak mepet
+		container.NewHBox(widget.NewLabel("   "), bigSendBtn), 
 		bigInput,
 	)
 	
-	// Tambahkan padding ekstra agar terlihat "Gemuk"
 	inputContainer := container.NewPadded(container.NewPadded(inputArea))
 	
 	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [MODIFIKASI - EMBED FD.PNG]
-	// Membuat Resource dari data byte embed (fdPng)
+	// [UI BUTTON FILE CHOICE - PERBAIKAN]
 	fdResource := &fyne.StaticResource{
 		StaticName: "fd.png",
 		StaticContent: fdPng,
 	}
 
-	// Membuat tombol dengan icon fd.png
-	// Kotak besar (container GridWrap) telah dihapus sesuai instruksi
 	fabBtn := widget.NewButtonWithIcon("", fdResource, func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
-	fabBtn.Importance = widget.HighImportance
+	// KITA HAPUS "HighImportance" AGAR TIDAK ADA KOTAK BIRU BACKGROUND
+	// fabBtn.Importance = widget.HighImportance <--- DIHAPUS
 
-	// Container untuk menempatkan tombol di pojok kanan bawah
-	// Tanpa "Huge" wrapper 100x100
+	// BUNGKUS DENGAN GRIDWRAP AGAR UKURAN TOMBOL MENJADI BESAR (80x80)
+	// Ini membuat area sentuh luas dan kotak terlihat besar tanpa warna mencolok
+	largeFab := container.NewGridWrap(fyne.NewSize(80, 80), fabBtn)
+
+	// Container diposisikan di pojok kanan bawah
+	// Kita tambahkan Spacer di bawah tombol agar posisinya NAIK KE ATAS (tidak mepet tombol kirim)
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(
 			layout.NewSpacer(),
-			fabBtn, // Langsung tombol icon fd.png
+			largeFab, // Tombol Besar
 			widget.NewLabel(" "), 
 		),
-		widget.NewLabel("      "), 
-		widget.NewLabel("      "), 
+		// Tambahan jarak di bawah tombol untuk menaikkannya
+		widget.NewLabel(" "), // Jarak vertikal 1
+		widget.NewLabel(" "), // Jarak vertikal 2
+		widget.NewLabel(" "), // Jarak vertikal 3
 	)
 	
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
