@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	_ "embed" 
+	_ "embed"
 	"fmt"
 	"image/color"
 	"io"
@@ -32,7 +32,12 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 //go:embed fd.png
-var fdPng []byte 
+var fdPng []byte
+
+// [BARU] Embed background image untuk terminal
+// PASTIKAN file 'bg.png' ada di folder project Anda
+//go:embed bg.png
+var bgPng []byte
 
 /* ==========================================
    TERMINAL LOGIC (TIDAK DIUBAH)
@@ -196,7 +201,7 @@ func CheckKernelDriver() bool {
 	if _, err := os.Stat(FlagFile); err == nil { return true }
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil { return true }
-	return false 
+	return false
 }
 
 func CheckSELinux() string {
@@ -222,7 +227,7 @@ func downloadFile(url string, filepath string) (error, string) {
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
-	
+
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil {
@@ -234,7 +239,7 @@ func downloadFile(url string, filepath string) (error, string) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
 	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
-	
+
 	resp, err := client.Do(req)
 	if err != nil { return err, "Net Err" }
 	defer resp.Body.Close()
@@ -267,15 +272,14 @@ func main() {
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
-	
+
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// [WARNA EMAS UNTUK HEADER]
-	// Kita gunakan Emas yang agak gelap (Dark Goldenrod) agar tulisan putih tetap terbaca
-	// Jika terlalu terang, mata akan sakit di tema gelap.
-	goldHeaderColor := color.RGBA{R: 139, G: 101, B: 8, A: 255} // Dark Gold solid
+	// [UBAH WARNA HEADER]
+	// Mengganti Emas menjadi Abu-abu Gelap (Dark Gray)
+	grayHeaderColor := color.Gray{Y: 60}
 
 	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
@@ -292,10 +296,10 @@ func main() {
 		go func() {
 			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
-				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
+				lblKernelValue.Color = color.RGBA{0, 255, 0, 255}
 			} else {
 				lblKernelValue.Text = "NOT FOUND"
-				lblKernelValue.Color = color.RGBA{255, 50, 50, 255} 
+				lblKernelValue.Color = color.RGBA{255, 50, 50, 255}
 			}
 			lblKernelValue.Refresh()
 
@@ -319,11 +323,11 @@ func main() {
 		status.SetText("System: Installing...")
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
-			updateAllStatus() 
+			updateAllStatus()
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
-			
+
 			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
 			time.Sleep(500 * time.Millisecond)
 
@@ -335,9 +339,9 @@ func main() {
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" -> Target: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
-			downloadPath := "/data/local/tmp/temp_kernel_dl" 
+			downloadPath := "/data/local/tmp/temp_kernel_dl"
 			targetFile := "/data/local/tmp/kernel_installer.sh"
-			
+
 			var downloadUrl string
 			var found bool = false
 
@@ -351,7 +355,7 @@ func main() {
 
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
-			
+
 			url1 := GitHubRepo + rawVersion + ".sh"
 			err, _ = downloadFile(url1, downloadPath)
 			if err == nil {
@@ -445,7 +449,6 @@ func main() {
 	)
 
 	// [SETTING TOMBOL SERAGAM]
-	// Ukuran tombol disamakan
 	const btnWidth = 130
 	const btnHeight = 40
 	btnSize := fyne.NewSize(btnWidth, btnHeight)
@@ -456,10 +459,10 @@ func main() {
 			current := CheckSELinux()
 			if current == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run()
 			} else { exec.Command("su", "-c", "setenforce 1").Run() }
-			updateAllStatus() 
+			updateAllStatus()
 		}()
 	})
-	selinuxBtn.Importance = widget.MediumImportance 
+	selinuxBtn.Importance = widget.MediumImportance
 
 	// 2. Inject Button
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
@@ -467,45 +470,36 @@ func main() {
 			if ok { autoInstallKernel() }
 		}, w)
 	})
-	installBtn.Importance = widget.MediumImportance 
+	installBtn.Importance = widget.MediumImportance
 
-	// 3. Clear Button (MERAH TRANSPARAN)
-	// Untuk membuat tombol merah yang "agak transparan" tapi ukurannya sama,
-	// Kita akan menumpuk (Stack) sebuah kotak merah semi-transparan dengan tombol transparan.
-	
-	// A. Tombol Logika (Text Only, Low Importance = Transparan)
+	// 3. Clear Button (MERAH TRANSPARAN - Stack Technique)
 	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
-	realClearBtn.Importance = widget.LowImportance // Agar background asli tombol hilang
+	realClearBtn.Importance = widget.LowImportance 
 
-	// B. Background Merah Transparan (RGBA: Merah 200, Alpha 100)
-	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100})
-	clearBg.CornerRadius = theme.InputRadiusSize() // Agar sudut tidak tajam
+	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100}) // Merah Transparan
+	clearBg.CornerRadius = theme.InputRadiusSize()
 
-	// C. Gabungkan dalam Stack
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
-	// Bungkus agar ukuran seragam dengan tombol lain
+	// Bungkus agar ukuran seragam
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
 	installContainer := container.NewGridWrap(btnSize, installBtn)
-	clearContainer := container.NewGridWrap(btnSize, clearStack) // Gunakan stack tadi
+	clearContainer := container.NewGridWrap(btnSize, clearStack)
 
 	headerRight := container.NewHBox(
-		installContainer, 
+		installContainer,
 		widget.NewLabel(" "), // Spacer
-		selinuxContainer, 
+		selinuxContainer,
 		widget.NewLabel(" "), // Spacer
 		clearContainer,
 	)
-	
-	// HEADER UTAMA (GOLD BACKGROUND)
-	// Kita buat konten header (Text + Tombol)
+
+	// HEADER UTAMA (ABU-ABU BACKGROUND)
 	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	
-	// Kita buat Background Emas
-	headerBgRect := canvas.NewRectangle(goldHeaderColor)
+	// Menggunakan warna ABU-ABU yang baru
+	headerBgRect := canvas.NewRectangle(grayHeaderColor)
 	
-	// Tumpuk Background Emas dengan Konten
-	// Tambahkan Padding agar teks tidak mepet pinggir background emas
 	headerBarWithBg := container.NewStack(
 		headerBgRect,
 		container.NewPadded(headerContent),
@@ -525,14 +519,26 @@ func main() {
 	inputArea := container.NewBorder(nil, nil, nil, container.NewHBox(widget.NewLabel("   "), bigSendBtn), container.NewPadded(input))
 	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
 
-	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
+	// [IMPLEMENTASI BACKGROUND TERMINAL DENGAN STACK]
+	// 1. Load gambar dari embed resource
+	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
+	bgImg.FillMode = canvas.ImageFillStretch // Stretch agar memenuhi area terminal
+
+	// 2. Tumpuk (Stack) gambar di belakang terminal scroll
+	terminalWithBg := container.NewStack(
+		bgImg,       // Lapisan bawah: Gambar Background
+		term.scroll, // Lapisan atas: Terminal
+	)
+
+	// 3. Gunakan stack tersebut di layer utama
+	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, terminalWithBg)
 	
-	// [POSISI FAB (FD) - UKURAN DIKECILKAN JADI 60 SESUAI REQUEST]
+	// [POSISI FAB (FD) - UKURAN 60]
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
 	clickableIcon := container.NewStack(
-		container.NewGridWrap(fyne.NewSize(60, 60), img), // DIKECILKAN
+		container.NewGridWrap(fyne.NewSize(60, 60), img),
 		widget.NewButton("", func() {
 			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 		}),
@@ -540,7 +546,7 @@ func main() {
 	clickableIcon.Objects[1].(*widget.Button).Importance = widget.LowImportance
 
 	fabContainer := container.NewVBox(
-		layout.NewSpacer(), 
+		layout.NewSpacer(),
 		container.NewHBox(layout.NewSpacer(), clickableIcon, widget.NewLabel(" ")),
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
