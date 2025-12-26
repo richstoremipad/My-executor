@@ -499,26 +499,40 @@ func main() {
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
 	// -------------------------------------------------------------
-	//   CUSTOM POPUP "INJECT DRIVER" - [PERBAIKAN TIPE VARIABLE]
+	//   CUSTOM POPUP "INJECT DRIVER" - [LAYOUT BUTTON DIPERBAIKI]
 	// -------------------------------------------------------------
 	
-	// [FIX] Menggunakan *fyne.Container, bukan *container.Stack
 	var popupOverlay *fyne.Container
 
-	// Tombol YES / NO untuk Popup
+	// Tombol YES / NO
 	popupBtnNo := widget.NewButton("NO", func() {
-		popupOverlay.Hide() // Tutup popup
+		popupOverlay.Hide()
 	})
-	popupBtnNo.Importance = widget.DangerImportance // Warna Merah
+	popupBtnNo.Importance = widget.DangerImportance // Merah
 
 	popupBtnYes := widget.NewButton("YES", func() {
-		popupOverlay.Hide() // Tutup popup
-		autoInstallKernel() // Jalankan perintah
+		popupOverlay.Hide()
+		autoInstallKernel()
 	})
-	popupBtnYes.Importance = widget.HighImportance // Warna Biru
+	popupBtnYes.Importance = widget.HighImportance // Biru
 
-	// Grid Layout 2 Kolom untuk Tombol (Membagi lebar 50:50, Pojok ke Pojok)
-	popupBtns := container.NewGridWithColumns(2, popupBtnNo, popupBtnYes)
+	// [FIX] Mengatur ukuran tombol agar tidak terlalu panjang
+	// Kita bungkus masing-masing tombol dengan ukuran tetap (Fixed Size)
+	// Misal 140x40 cukup lebar tapi tidak memenuhi layar
+	popupBtnSize := fyne.NewSize(140, 40)
+	
+	noWrapper := container.NewGridWrap(popupBtnSize, popupBtnNo)
+	yesWrapper := container.NewGridWrap(popupBtnSize, popupBtnYes)
+
+	// [FIX] Layout HBox dengan Jarak (Gap) Manual
+	// Spacer kiri-kanan agar posisi di tengah, label di tengah sebagai pemisah (gap)
+	popupBtns := container.NewHBox(
+		layout.NewSpacer(), 
+		noWrapper, 
+		widget.NewLabel("        "), // Gap Manual yang cukup lebar
+		yesWrapper, 
+		layout.NewSpacer(),
+	)
 
 	// Isi Popup
 	popupTitle := canvas.NewText("Inject Driver", theme.ForegroundColor())
@@ -535,23 +549,24 @@ func main() {
 		widget.NewLabel(" "), // Spacer Tengah
 		popupMsg,
 		layout.NewSpacer(), // Dorong tombol ke bawah
-		popupBtns, // Tombol Lebar di Bawah
+		popupBtns, // Tombol di Bawah (Sudah diatur layoutnya diatas)
+		widget.NewLabel(" "), // Sedikit spacer bawah
 	)
 
 	// Card/Box Popup
 	popupCard := widget.NewCard("", "", container.NewPadded(popupContent))
 	
-	// Ukuran Popup (Besar tapi tidak full screen, misal 550x240)
+	// Ukuran Popup (Besar tapi tidak full screen) - Ukuran yang Anda suka
 	popupBox := container.NewGridWrap(fyne.NewSize(550, 240), popupCard)
 	
-	// Background Redup (Dimmed) di belakang popup
+	// Background Redup (Dimmed)
 	dimmedBg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 200})
 
-	// Container Overlay Akhir (Tengah Layar)
+	// Container Overlay
 	popupOverlay = container.NewStack(dimmedBg, container.NewCenter(popupBox))
-	popupOverlay.Hide() // Sembunyikan saat awal
+	popupOverlay.Hide() 
 
-	// Tombol Header "Inject Driver" yang memicu Popup
+	// Tombol Header "Inject Driver"
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		popupOverlay.Show()
 	})
