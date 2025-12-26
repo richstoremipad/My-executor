@@ -42,7 +42,7 @@ const TargetDriverName = "5.10_A12"
 const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
 
 // KUNCI INI HARUS SAMA PERSIS DENGAN GENERATOR (32 Bytes)
-const CryptoKey = "RahasiaNegaraJanganSampaiBocorr" 
+const CryptoKey = "RahasiaNegaraJanganSampaiBocorir" 
 
 type OnlineConfig struct {
 	Version string `json:"version"`
