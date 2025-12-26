@@ -35,7 +35,7 @@ const TargetDriverName = "5.10_A12"
 var fdPng []byte 
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC (TIDAK DIUBAH)
 ========================================== */
 
 type Terminal struct {
@@ -174,7 +174,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   ANIMATION & HELPERS
+   ANIMATION & HELPERS (TIDAK DIUBAH)
 ================================ */
 
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
@@ -259,7 +259,7 @@ func main() {
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	w := a.NewWindow("Simple Exec by TANGSAN")
-	w.Resize(fyne.NewSize(750, 550)) // Sedikit diperlebar agar layout lega
+	w.Resize(fyne.NewSize(720, 520))
 	w.SetMaster()
 
 	term := NewTerminal()
@@ -282,6 +282,7 @@ func main() {
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
+	// [LOGIC ASLI - TIDAK DIUBAH]
 	updateAllStatus := func() {
 		go func() {
 			if CheckKernelDriver() {
@@ -307,6 +308,7 @@ func main() {
 	}
 	updateAllStatus()
 
+	// [LOGIC ASLI - TIDAK DIUBAH]
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
@@ -392,6 +394,7 @@ func main() {
 		}()
 	}
 
+	// [LOGIC ASLI - TIDAK DIUBAH]
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -426,22 +429,17 @@ func main() {
 		}
 	}
 
-	/* ====================================================================
-	   UI LAYOUT CONSTRUCTION (DIMODIFIKASI UNTUK TAMPILAN LEBIH PROFESSIONAL)
-	   ==================================================================== */
-
+	// [LAYOUT HEADER]
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
-	// [PANEL INFO] - Dikelompokkan vertikal agar rapi
-	infoPanel := container.NewVBox(
+	headerLeft := container.NewVBox(
 		titleText,
-		widget.NewSeparator(),
 		container.NewHBox(lblKernelTitle, lblKernelValue),
 		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [TOMBOL AKSI] - Diberi Importance agar bentuk lebih modern & warna jelas
+	// [PERBAIKAN 1: Tombol SELinux Transparan/Medium]
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
 			current := CheckSELinux()
@@ -450,70 +448,50 @@ func main() {
 			updateAllStatus() 
 		}()
 	})
-	selinuxBtn.Importance = widget.MediumImportance // Outline style
+	selinuxBtn.Importance = widget.MediumImportance 
 
+	// [PERBAIKAN 2: Tombol Inject Transparan/Medium]
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
 			if ok { autoInstallKernel() }
 		}, w)
 	})
-	installBtn.Importance = widget.HighImportance // Solid Primary Color (Biru)
+	installBtn.Importance = widget.MediumImportance 
+
+	// [PERBAIKAN 3: Tombol Clear Kecil, Merah Gelap (Danger)]
+	clearBtn := widget.NewButton("Clear", func() { term.Clear() })
+	clearBtn.Importance = widget.DangerImportance
+	// Bungkus agar ukurannya kecil (Fixed size container)
+	clearBtnSmall := container.NewGridWrap(fyne.NewSize(70, 38), clearBtn)
+
+	// Jarak diperlebar sedikit antar tombol
+	headerRight := container.NewHBox(
+		installBtn, 
+		widget.NewLabel(" "), // Spacer
+		selinuxBtn, 
+		widget.NewLabel(" "), // Spacer
+		clearBtnSmall,
+	)
 	
-	clearBtn := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	clearBtn.Importance = widget.WarningImportance // Sedikit kemerahan (Warning)
-
-	// [CONTAINER TOMBOL] - Menggunakan Spacer dan Margin agar tidak mepet
-	actionButtons := container.NewHBox(
-		selinuxBtn,
-		layout.NewSpacer(),      // Jarak fleksibel
-		widget.NewLabel(" "),    // Jarak fix
-		installBtn,
-		widget.NewLabel(" "),    // Jarak fix
-		clearBtn,
-	)
-
-	// [HEADER BAR] - Menggunakan Card agar terlihat seperti dashboard panel
-	// Border: Kiri=Info, Kanan=Tombol
-	headerContent := container.NewBorder(
-		nil, nil, 
-		container.NewPadded(infoPanel), 
-		container.NewPadded(actionButtons),
-	)
-	headerCard := widget.NewCard("", "", headerContent)
-
-	// [FOOTER SYSTEM STATUS]
+	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
+	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
+	
+	// [LAYOUT FOOTER & INPUT]
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
-	// [INPUT AREA]
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	
-	// Input diberi container Border agar tombol kirim ada di kanan dan input mengisi sisa ruang
-	inputArea := container.NewBorder(
-		nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("  "), sendBtn), // Tombol dikanan + margin
-		input, // Entry
-	)
-	
-	// [BOTTOM SECTION GABUNGAN]
-	bottomSection := container.NewVBox(
-		footerStatusBox, 
-		container.NewPadded(status), // Status teks di tengah
-		container.NewPadded(inputArea), // Input area dengan padding
-	)
+	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
+	inputArea := container.NewBorder(nil, nil, nil, container.NewHBox(widget.NewLabel("   "), bigSendBtn), container.NewPadded(input))
+	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
 
-	// [MAIN LAYER] - Header Card di atas, Terminal di tengah (dengan padding), Bottom di bawah
-	mainLayer := container.NewBorder(
-		headerCard, 
-		bottomSection, 
-		nil, nil, 
-		container.NewPadded(term.scroll), // Terminal tidak mepet pinggir
-	)
+	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [FLOATING ACTION BUTTON (FD)] - Logika Tetap, Posisi Dirapikan
+	// [PERBAIKAN 4: POSISI FAB (FD) DIKEMBALIKAN SEMULA]
+	// Kembali ke layout asli Anda agar tidak mepet
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
@@ -527,12 +505,8 @@ func main() {
 
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
-		container.NewHBox(
-			layout.NewSpacer(), 
-			clickableIcon, 
-			widget.NewLabel("    "), // Menambah jarak dari kanan
-		),
-		widget.NewLabel("    "), // Menambah jarak dari bawah
+		container.NewHBox(layout.NewSpacer(), clickableIcon, widget.NewLabel(" ")),
+		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 	
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
