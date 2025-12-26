@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -25,16 +27,28 @@ import (
 )
 
 /* ==========================================
-   CONFIG
+   CONFIG & UPDATE SYSTEM
 ========================================== */
+const AppVersion = "1.0" // Ganti ini setiap Anda build APK baru
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
+// [PENTING] Ganti URL ini dengan Link RAW file JSON Anda (Google Drive Direct Link / GitHub Raw)
+// Contoh isi file JSON di internet:
+// {"version": "2.0", "message": "Update Critical Tersedia!", "link": "https://google.com"}
+const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
+
+// Struktur Data untuk Config Online
+type OnlineConfig struct {
+	Version string `json:"version"`
+	Message string `json:"message"`
+	Link    string `json:"link"`
+}
+
 //go:embed fd.png
 var fdPng []byte
 
-// PASTIKAN ada file 'bg.png' di folder yang sama
 //go:embed bg.png
 var bgPng []byte
 
@@ -196,14 +210,12 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 	term.Write([]byte(msg))
 }
 
-// Cek Kernel Valid (Cek folder modul langsung)
 func CheckKernelDriver() bool {
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil { return true }
 	return false 
 }
 
-// Cek SELinux Valid
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
@@ -211,12 +223,10 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// Cek Root Valid
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
 	if err != nil { return false }
-	// Jika output 0 berarti root
 	return strings.TrimSpace(string(out)) == "0"
 }
 
@@ -301,7 +311,7 @@ func main() {
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// [LABEL SYSTEM (ROOT)]
+	// [LABEL SYSTEM]
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
@@ -310,7 +320,6 @@ func main() {
 	// [REAL TIME MONITORING LOOP]
 	go func() {
 		for {
-			// 1. Cek Root
 			isRoot := CheckRoot()
 			if isRoot {
 				lblSystemValue.Text = "ROOT ACCESS GRANTED"
@@ -321,7 +330,6 @@ func main() {
 			}
 			lblSystemValue.Refresh()
 
-			// 2. Cek Kernel Driver
 			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
 				lblKernelValue.Color = successGreen
@@ -331,7 +339,6 @@ func main() {
 			}
 			lblKernelValue.Refresh()
 
-			// 3. Cek SELinux
 			seStatus := CheckSELinux()
 			lblSELinuxValue.Text = strings.ToUpper(seStatus)
 			if seStatus == "Enforcing" {
@@ -347,6 +354,110 @@ func main() {
 		}
 	}()
 
+	// -------------------------------------------------------------
+	//   ONLINE VERSION CHECKER (OTA)
+	// -------------------------------------------------------------
+	
+	// Deklarasi Popup Update
+	var updateOverlay *fyne.Container
+	
+	// Fungsi untuk menampilkan Popup Update
+	showUpdatePopup := func(msg string, link string) {
+		// Pastikan berjalan di UI Thread
+		w.Canvas().Refresh(w.Content())
+		
+		// Tombol NO (Force Close)
+		btnNo := widget.NewButton("CANCEL", func() {
+			os.Exit(0) // Force Close Aplikasi
+		})
+		btnNo.Importance = widget.DangerImportance
+
+		// Tombol YES (Buka Link)
+		btnYes := widget.NewButton("UPDATE", func() {
+			// Buka Link Browser
+			u, err := url.Parse(link)
+			if err == nil {
+				app.New().OpenURL(u)
+			}
+			// Bisa exit atau membiarkan user di popup
+			// os.Exit(0) 
+		})
+		btnYes.Importance = widget.HighImportance
+
+		// Layout Tombol (Sama seperti Inject Driver)
+		popupBtnSize := fyne.NewSize(140, 40)
+		noWrapper := container.NewGridWrap(popupBtnSize, btnNo)
+		yesWrapper := container.NewGridWrap(popupBtnSize, btnYes)
+
+		updateBtns := container.NewHBox(
+			layout.NewSpacer(), 
+			noWrapper, 
+			widget.NewLabel("        "), 
+			yesWrapper, 
+			layout.NewSpacer(),
+		)
+
+		// Isi Konten
+		title := canvas.NewText("UPDATE REQUIRED", theme.WarningColor())
+		title.TextSize = 20; title.TextStyle = fyne.TextStyle{Bold: true}
+		title.Alignment = fyne.TextAlignCenter
+		
+		msgLabel := widget.NewLabel(msg)
+		msgLabel.Alignment = fyne.TextAlignCenter
+		msgLabel.Wrapping = fyne.TextWrapWord
+
+		content := container.NewVBox(
+			widget.NewLabel(" "),
+			container.NewCenter(title),
+			widget.NewLabel(" "),
+			msgLabel,
+			layout.NewSpacer(),
+			updateBtns,
+			widget.NewLabel(" "),
+		)
+
+		card := widget.NewCard("", "", container.NewPadded(content))
+		box := container.NewGridWrap(fyne.NewSize(550, 240), card)
+		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240}) // Gelap pekat agar fokus
+
+		// Setup overlay content
+		updateOverlay.Objects = []fyne.CanvasObject{bg, container.NewCenter(box)}
+		updateOverlay.Show()
+		updateOverlay.Refresh()
+	}
+
+	// Fungsi Cek Online
+	go func() {
+		// Tunggu sebentar saat startup agar UI siap
+		time.Sleep(2 * time.Second)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(ConfigURL)
+		if err != nil {
+			// Gagal koneksi, diam saja atau log error
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == 200 {
+			body, _ := io.ReadAll(resp.Body)
+			var config OnlineConfig
+			
+			// Parsing JSON
+			if err := json.Unmarshal(body, &config); err == nil {
+				// Cek Versi
+				if config.Version != "" && config.Version != AppVersion {
+					// Versi BEDA! Tampilkan Popup
+					showUpdatePopup(config.Message, config.Link)
+				}
+			}
+		}
+	}()
+
+	// -------------------------------------------------------------
+	//   FUNGSI INSTALL & RUN
+	// -------------------------------------------------------------
+
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
@@ -355,7 +466,6 @@ func main() {
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
-
 			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
 			time.Sleep(500 * time.Millisecond)
 
@@ -369,7 +479,6 @@ func main() {
 
 			downloadPath := "/data/local/tmp/temp_kernel_dl"
 			targetFile := "/data/local/tmp/kernel_installer.sh"
-
 			var downloadUrl string
 			var found bool = false
 
@@ -383,7 +492,6 @@ func main() {
 
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
-
 			url1 := GitHubRepo + rawVersion + ".sh"
 			err, _ = downloadFile(url1, downloadPath)
 			if err == nil {
@@ -462,10 +570,7 @@ func main() {
 			input.SetText("")
 		}
 	}
-	
-	input.OnSubmitted = func(_ string) { 
-		send() 
-	}
+	input.OnSubmitted = func(_ string) { send() }
 
 	// [LAYOUT HEADER]
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
@@ -499,80 +604,58 @@ func main() {
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
 	// -------------------------------------------------------------
-	//   CUSTOM POPUP "INJECT DRIVER" - [LAYOUT BUTTON DIPERBAIKI]
+	//   CUSTOM POPUP "INJECT DRIVER"
 	// -------------------------------------------------------------
-	
 	var popupOverlay *fyne.Container
 
-	// Tombol YES / NO
-	popupBtnNo := widget.NewButton("NO", func() {
-		popupOverlay.Hide()
-	})
-	popupBtnNo.Importance = widget.DangerImportance // Merah
-
+	popupBtnNo := widget.NewButton("NO", func() { popupOverlay.Hide() })
+	popupBtnNo.Importance = widget.DangerImportance 
 	popupBtnYes := widget.NewButton("YES", func() {
 		popupOverlay.Hide()
 		autoInstallKernel()
 	})
-	popupBtnYes.Importance = widget.HighImportance // Biru
+	popupBtnYes.Importance = widget.HighImportance 
 
-	// [FIX] Mengatur ukuran tombol agar tidak terlalu panjang
-	// Kita bungkus masing-masing tombol dengan ukuran tetap (Fixed Size)
-	// Misal 140x40 cukup lebar tapi tidak memenuhi layar
 	popupBtnSize := fyne.NewSize(140, 40)
-	
 	noWrapper := container.NewGridWrap(popupBtnSize, popupBtnNo)
 	yesWrapper := container.NewGridWrap(popupBtnSize, popupBtnYes)
 
-	// [FIX] Layout HBox dengan Jarak (Gap) Manual
-	// Spacer kiri-kanan agar posisi di tengah, label di tengah sebagai pemisah (gap)
 	popupBtns := container.NewHBox(
 		layout.NewSpacer(), 
 		noWrapper, 
-		widget.NewLabel("        "), // Gap Manual yang cukup lebar
+		widget.NewLabel("        "), 
 		yesWrapper, 
 		layout.NewSpacer(),
 	)
 
-	// Isi Popup
 	popupTitle := canvas.NewText("Inject Driver", theme.ForegroundColor())
-	popupTitle.TextSize = 20
-	popupTitle.TextStyle = fyne.TextStyle{Bold: true}
+	popupTitle.TextSize = 20; popupTitle.TextStyle = fyne.TextStyle{Bold: true}
 	popupTitle.Alignment = fyne.TextAlignCenter
-
 	popupMsg := widget.NewLabel("Start automatic injection process?")
 	popupMsg.Alignment = fyne.TextAlignCenter
 
 	popupContent := container.NewVBox(
-		widget.NewLabel(" "), // Spacer Atas
-		container.NewCenter(popupTitle),
-		widget.NewLabel(" "), // Spacer Tengah
-		popupMsg,
-		layout.NewSpacer(), // Dorong tombol ke bawah
-		popupBtns, // Tombol di Bawah (Sudah diatur layoutnya diatas)
-		widget.NewLabel(" "), // Sedikit spacer bawah
+		widget.NewLabel(" "), container.NewCenter(popupTitle), widget.NewLabel(" "),
+		popupMsg, layout.NewSpacer(), popupBtns, widget.NewLabel(" "),
 	)
 
-	// Card/Box Popup
 	popupCard := widget.NewCard("", "", container.NewPadded(popupContent))
-	
-	// Ukuran Popup (Besar tapi tidak full screen) - Ukuran yang Anda suka
 	popupBox := container.NewGridWrap(fyne.NewSize(550, 240), popupCard)
-	
-	// Background Redup (Dimmed)
 	dimmedBg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 200})
 
-	// Container Overlay
 	popupOverlay = container.NewStack(dimmedBg, container.NewCenter(popupBox))
 	popupOverlay.Hide() 
 
-	// Tombol Header "Inject Driver"
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		popupOverlay.Show()
 	})
 	installBtn.Importance = widget.MediumImportance
 
 	// -------------------------------------------------------------
+	//   INITIALIZE UPDATE OVERLAY (Disembunyikan Awal)
+	// -------------------------------------------------------------
+	updateOverlay = container.NewStack()
+	updateOverlay.Hide()
 
 	// Container Buttons Header
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
@@ -580,45 +663,29 @@ func main() {
 	clearContainer := container.NewGridWrap(btnSize, clearStack)
 
 	headerRight := container.NewHBox(
-		installContainer,
-		widget.NewLabel(" "), 
-		selinuxContainer,
-		widget.NewLabel(" "), 
+		installContainer, widget.NewLabel(" "), 
+		selinuxContainer, widget.NewLabel(" "), 
 		clearContainer,
 	)
 
 	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	headerBgRect := canvas.NewRectangle(grayHeaderColor)
-	
-	headerBarWithBg := container.NewStack(
-		headerBgRect,
-		container.NewPadded(headerContent),
-	)
-
+	headerBarWithBg := container.NewStack(headerBgRect, container.NewPadded(headerContent))
 	topSection := container.NewVBox(headerBarWithBg, container.NewPadded(status), widget.NewSeparator())
 	
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
-	
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
 	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
 	inputArea := container.NewBorder(nil, nil, nil, container.NewHBox(widget.NewLabel("   "), bigSendBtn), container.NewPadded(input))
 	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
 
-	// Background Terminal
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch 
-
-	terminalWithBg := container.NewStack(
-		bgImg,       
-		term.scroll, 
-	)
-
+	terminalWithBg := container.NewStack(bgImg, term.scroll)
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, terminalWithBg)
 	
-	// FAB (FD)
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
-
 	clickableIcon := container.NewStack(
 		container.NewGridWrap(fyne.NewSize(60, 60), img),
 		widget.NewButton("", func() {
@@ -633,8 +700,8 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 	
-	// Tambahkan popupOverlay di paling atas stack
-	w.SetContent(container.NewStack(mainLayer, fabContainer, popupOverlay))
+	// Tumpukan Layer: Main -> FAB -> InjectPopup -> UpdatePopup(Paling Atas)
+	w.SetContent(container.NewStack(mainLayer, fabContainer, popupOverlay, updateOverlay))
 	w.ShowAndRun()
 }
 
