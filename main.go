@@ -511,17 +511,26 @@ func main() {
 		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux Ditambahkan
 	)
 
-	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
-		term.Write([]byte("\n\x1b[36m[*] Scanning Kernel Modules...\x1b[0m\n"))
+	// [MODIFIKASI: Tombol Scan diganti menjadi SELinux Switch]
+	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
+		term.Write([]byte("\n\x1b[36m[*] Toggling SELinux Status...\x1b[0m\n"))
 		go func() {
-			cmd := exec.Command("su", "-c", "lsmod")
-			output, err := cmd.CombinedOutput()
-			if err != nil || len(output) < 5 {
-				cmd = exec.Command("su", "-c", "ls /sys/module/")
-				output, _ = cmd.CombinedOutput()
+			// Cek status saat ini
+			current := CheckSELinux()
+			if current == "Enforcing" {
+				exec.Command("su", "-c", "setenforce 0").Run()
+				term.Write([]byte(" -> Switching to: \x1b[31mPermissive\x1b[0m\n"))
+			} else {
+				// Asumsi jika Permissive atau Unknown, paksa Enforcing
+				exec.Command("su", "-c", "setenforce 1").Run()
+				term.Write([]byte(" -> Switching to: \x1b[32mEnforcing\x1b[0m\n"))
 			}
-			term.Write(output)
-			term.Write([]byte("\n\x1b[32m[Scan Complete]\x1b[0m\n"))
+			
+			time.Sleep(500 * time.Millisecond)
+			updateAllStatus() // Update label di header
+			
+			newStat := CheckSELinux()
+			term.Write([]byte(fmt.Sprintf("\x1b[33m-> Result: %s\x1b[0m\n", newStat)))
 		}()
 	})
 
@@ -532,7 +541,9 @@ func main() {
 	})
 	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
-	headerRight := container.NewHBox(installBtn, checkBtn, clearBtn)
+	
+	// Masukkan selinuxBtn ke dalam container menggantikan checkBtn
+	headerRight := container.NewHBox(installBtn, selinuxBtn, clearBtn)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
