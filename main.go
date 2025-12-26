@@ -31,7 +31,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 /* ==========================================
-   TERMINAL LOGIC & FILTERING
+   TERMINAL LOGIC & CAPTURE SYSTEM
 ========================================== */
 
 type Terminal struct {
@@ -90,16 +90,20 @@ func (t *Terminal) Clear() {
 	t.curCol = 0
 }
 
-// === FUNGSI INI AKAN MENANGKAP OUTPUT DARI C++ / BINARY LAIN ===
+// === INI ADALAH JANTUNG PENCEGATAN DATA ===
+// Fungsi ini menangkap SEMUA yang dikirim server/aplikasi ke layar
 func (t *Terminal) Write(p []byte) (int, error) {
 	raw := string(p)
 
-	// LOGIKA MANIPULASI LOG:
-	// Jika Binary C++ mengirim error/invalid, Go akan MENCEGATNYA dan menampilkan SUKSES.
+	// 1. FILTER: Jika Server bilang "Gagal/Invalid", kita ubah jadi "Sukses"
 	if strings.Contains(raw, "Failed: INVALID") || strings.Contains(raw, "Invalid key") || strings.Contains(raw, "Auth failed") {
-		// Pesan palsu tanpa warna (sesuai request terakhir)
+		// Pesan palsu tanpa warna (Plain text) sesuai permintaan
 		raw = "\nLogin successful!\nExpires: 9 days 15:39:54\nDevice:  1/1 devices\n"
 	}
+
+	// 2. CAPTURE LAINNYA:
+	// Semua pesan lain (seperti "Connecting...", "Server Response: OK", dll)
+	// akan lolos dan tercetak apa adanya di bawah ini.
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -373,10 +377,9 @@ func main() {
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
 				
-				// === KUNCI UTAMA: Sambungkan Output Script ke Terminal Go ===
+				// Redirect ke Terminal Go
 				cmd.Stdout = term 
 				cmd.Stderr = term
-				// ============================================================
 				
 				err = cmd.Run()
 				
@@ -393,7 +396,7 @@ func main() {
 		}()
 	}
 
-	// === FUNGSI EKSEKUSI BINARY (IMGUI / EXTERNAL) ===
+	// === FUNGSI EKSEKUSI BINARY / SCRIPT ===
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -404,14 +407,12 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		
 		go func() {
-			// Persiapan File
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() { defer in.Close(); in.Write(data) }()
 			copyCmd.Run()
 			
-			// Siapkan Command Eksekusi
 			var cmd *exec.Cmd
 			if isBinary { 
 				cmd = exec.Command("su", "-c", target)
@@ -421,18 +422,15 @@ func main() {
 			
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			
-			// === BAGIAN PENTING: PIPA LOG REAL-TIME ===
-			// Mengarahkan output standar (stdout) dan error (stderr) dari binary C++
-			// LANGSUNG ke widget Terminal kita. 
-			// Karena terminal kita punya fungsi "Write" yang sudah dimodifikasi (manipulasi log),
-			// maka pesan "Invalid" dari C++ akan otomatis berubah jadi "Success".
+			// === KUNCI PENANGKAPAN ===
+			// Ini menghubungkan "Mulut" (Stdout) aplikasi ImGui/Bash
+			// langsung ke "Telinga" (Terminal) aplikasi Go kita.
+			// Apapun yang server kirim ke ImGui, akan tampil di sini.
 			cmd.Stdout = term
 			cmd.Stderr = term
-			// ==========================================
+			// =========================
 
 			stdin, _ = cmd.StdinPipe()
-			
-			// Jalankan
 			err := cmd.Run()
 			
 			if err != nil {
