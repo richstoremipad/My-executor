@@ -29,17 +29,14 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.0" // Ganti ini setiap Anda build APK baru
+const AppVersion = "1.0" 
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// [PENTING] Ganti URL ini dengan Link RAW file JSON Anda (Google Drive Direct Link / GitHub Raw)
-// Contoh isi file JSON di internet:
-// {"version": "2.0", "message": "Update Critical Tersedia!", "link": "https://google.com"}
-const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
+// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST (JANGAN GOOGLE DOCS)
+const ConfigURL = "https://pastebin.com/raw/GANTI_DENGAN_LINK_RAW_ANDA" 
 
-// Struktur Data untuk Config Online
 type OnlineConfig struct {
 	Version string `json:"version"`
 	Message string `json:"message"`
@@ -298,7 +295,6 @@ func main() {
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// [WARNA HEADER - ABU ABU]
 	grayHeaderColor := color.Gray{Y: 60}
 
 	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
@@ -311,13 +307,11 @@ func main() {
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// [LABEL SYSTEM]
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
-	// [REAL TIME MONITORING LOOP]
 	go func() {
 		for {
 			isRoot := CheckRoot()
@@ -358,33 +352,24 @@ func main() {
 	//   ONLINE VERSION CHECKER (OTA)
 	// -------------------------------------------------------------
 	
-	// Deklarasi Popup Update
 	var updateOverlay *fyne.Container
 	
-	// Fungsi untuk menampilkan Popup Update
 	showUpdatePopup := func(msg string, link string) {
-		// Pastikan berjalan di UI Thread
 		w.Canvas().Refresh(w.Content())
 		
-		// Tombol NO (Force Close)
 		btnNo := widget.NewButton("CANCEL", func() {
-			os.Exit(0) // Force Close Aplikasi
+			os.Exit(0) 
 		})
 		btnNo.Importance = widget.DangerImportance
 
-		// Tombol YES (Buka Link)
 		btnYes := widget.NewButton("UPDATE", func() {
-			// Buka Link Browser
 			u, err := url.Parse(link)
 			if err == nil {
 				app.New().OpenURL(u)
 			}
-			// Bisa exit atau membiarkan user di popup
-			// os.Exit(0) 
 		})
 		btnYes.Importance = widget.HighImportance
 
-		// Layout Tombol (Sama seperti Inject Driver)
 		popupBtnSize := fyne.NewSize(140, 40)
 		noWrapper := container.NewGridWrap(popupBtnSize, btnNo)
 		yesWrapper := container.NewGridWrap(popupBtnSize, btnYes)
@@ -397,7 +382,6 @@ func main() {
 			layout.NewSpacer(),
 		)
 
-		// Isi Konten
 		title := canvas.NewText("UPDATE REQUIRED", theme.WarningColor())
 		title.TextSize = 20; title.TextStyle = fyne.TextStyle{Bold: true}
 		title.Alignment = fyne.TextAlignCenter
@@ -418,45 +402,60 @@ func main() {
 
 		card := widget.NewCard("", "", container.NewPadded(content))
 		box := container.NewGridWrap(fyne.NewSize(550, 240), card)
-		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240}) // Gelap pekat agar fokus
+		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240})
 
-		// Setup overlay content
 		updateOverlay.Objects = []fyne.CanvasObject{bg, container.NewCenter(box)}
 		updateOverlay.Show()
 		updateOverlay.Refresh()
 	}
 
-	// Fungsi Cek Online
+	// [UPDATE LOGIC with DEBUG]
 	go func() {
-		// Tunggu sebentar saat startup agar UI siap
 		time.Sleep(2 * time.Second)
 
+		// Cek apakah ConfigURL masih default
+		if strings.Contains(ConfigURL, "GANTI_DENGAN_LINK") {
+			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
+			return
+		}
+
+		term.Write([]byte("\n\x1b[90m[*] Checking for updates...\x1b[0m\n"))
+		
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(ConfigURL)
 		if err != nil {
-			// Gagal koneksi, diam saja atau log error
+			term.Write([]byte("\x1b[31m[ERR] Connect Fail: " + err.Error() + "\x1b[0m\n"))
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode == 200 {
 			body, _ := io.ReadAll(resp.Body)
+			
+			// Membersihkan karakter aneh (BOM/Whitespace) dari GoogleDocs/Pastebin
+			body = bytes.TrimSpace(body)
+			body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf")) // Hapus UTF-8 BOM jika ada
+
 			var config OnlineConfig
 			
-			// Parsing JSON
 			if err := json.Unmarshal(body, &config); err == nil {
-				// Cek Versi
-				if config.Version != "" && config.Version != AppVersion {
-					// Versi BEDA! Tampilkan Popup
-					showUpdatePopup(config.Message, config.Link)
+				if config.Version != "" {
+					if config.Version != AppVersion {
+						term.Write([]byte("\x1b[33m[!] New Version Found: " + config.Version + "\x1b[0m\n"))
+						showUpdatePopup(config.Message, config.Link)
+					} else {
+						term.Write([]byte("\x1b[32m[V] App is up to date.\x1b[0m\n"))
+					}
 				}
+			} else {
+				term.Write([]byte("\x1b[31m[ERR] JSON Parse Fail. Check URL.\x1b[0m\n"))
+				// Debug: Tampilkan isi file jika gagal parse
+				// term.Write([]byte("Data: " + string(body) + "\n")) 
 			}
+		} else {
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] HTTP Error: %d\x1b[0m\n", resp.StatusCode)))
 		}
 	}()
-
-	// -------------------------------------------------------------
-	//   FUNGSI INSTALL & RUN
-	// -------------------------------------------------------------
 
 	autoInstallKernel := func() {
 		term.Clear()
@@ -572,7 +571,6 @@ func main() {
 	}
 	input.OnSubmitted = func(_ string) { send() }
 
-	// [LAYOUT HEADER]
 	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -586,7 +584,6 @@ func main() {
 	const btnHeight = 40
 	btnSize := fyne.NewSize(btnWidth, btnHeight)
 
-	// SELinux Button
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
 			current := CheckSELinux()
@@ -596,16 +593,12 @@ func main() {
 	})
 	selinuxBtn.Importance = widget.MediumImportance
 
-	// Clear Button
 	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
 	realClearBtn.Importance = widget.LowImportance 
 	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100})
 	clearBg.CornerRadius = theme.InputRadiusSize()
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
-	// -------------------------------------------------------------
-	//   CUSTOM POPUP "INJECT DRIVER"
-	// -------------------------------------------------------------
 	var popupOverlay *fyne.Container
 
 	popupBtnNo := widget.NewButton("NO", func() { popupOverlay.Hide() })
@@ -651,13 +644,9 @@ func main() {
 	})
 	installBtn.Importance = widget.MediumImportance
 
-	// -------------------------------------------------------------
-	//   INITIALIZE UPDATE OVERLAY (Disembunyikan Awal)
-	// -------------------------------------------------------------
 	updateOverlay = container.NewStack()
 	updateOverlay.Hide()
 
-	// Container Buttons Header
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
 	installContainer := container.NewGridWrap(btnSize, installBtn)
 	clearContainer := container.NewGridWrap(btnSize, clearStack)
@@ -700,7 +689,6 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 	
-	// Tumpukan Layer: Main -> FAB -> InjectPopup -> UpdatePopup(Paling Atas)
 	w.SetContent(container.NewStack(mainLayer, fabContainer, popupOverlay, updateOverlay))
 	w.ShowAndRun()
 }
