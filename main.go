@@ -35,7 +35,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 // GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST (JANGAN GOOGLE DOCS)
-const ConfigURL = "https://pastebin.com/raw/GANTI_DENGAN_LINK_RAW_ANDA" 
+const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
 
 type OnlineConfig struct {
 	Version string `json:"version"`
