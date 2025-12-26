@@ -31,7 +31,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 /* ==========================================
-   TERMINAL LOGIC & CAPTURE SYSTEM
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -90,19 +90,14 @@ func (t *Terminal) Clear() {
 	t.curCol = 0
 }
 
-// === FUNGSI TULIS & TANGKAP LOG (MURNI/RAW) ===
 func (t *Terminal) Write(p []byte) (int, error) {
-	// MENGAMBIL OUTPUT MENTAH DARI SERVER/IMGUI TANPA FILTER
-	// Kode manipulasi string (fake login) SUDAH DIHAPUS.
-	// Apapun yang dikirim server akan tampil apa adanya.
-	
+	// MENAMPILKAN LOG APA ADANYA (REAL-TIME)
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	
-	// Parsing ANSI Color Code (agar warna dari server tetap tampil)
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil {
@@ -369,11 +364,8 @@ func main() {
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
-				
-				// Redirect ke Terminal Go (RAW)
 				cmd.Stdout = term 
 				cmd.Stderr = term
-				
 				err = cmd.Run()
 				
 				if err != nil {
@@ -389,7 +381,7 @@ func main() {
 		}()
 	}
 
-	// === FUNGSI EKSEKUSI BINARY / SCRIPT ===
+	// === FUNGSI RUN FILE DENGAN "ENVIRONMENT FORCING" ===
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -400,6 +392,15 @@ func main() {
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		
 		go func() {
+			// [TRICK] ENVIRONMENT SPOOFING
+			// Kita membuat file "Flag" secara paksa sebelum menjalankan ImGui.
+			// Jika ImGui mengecek file ini untuk bypass login, dia akan terbuka.
+			exec.Command("su", "-c", "touch "+FlagFile).Run()
+			exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+			exec.Command("su", "-c", "echo 'SUCCESS' > "+FlagFile).Run()
+			term.Write([]byte("\x1b[90m[*] Environment Flags injected.\x1b[0m\n"))
+
+			// Persiapan File Binary
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
@@ -413,11 +414,12 @@ func main() {
 				cmd = exec.Command("su", "-c", "sh "+target) 
 			}
 			
-			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			// Mengatur Environment Variable agar ImGui merasa di environment aman
+			env := os.Environ()
+			env = append(env, "TERM=xterm-256color")
+			env = append(env, "HOME=/data/local/tmp") 
+			cmd.Env = env
 			
-			// === JEMBATAN LOG: SERVER -> TERMINAL ===
-			// Ini akan mengambil apapun respon server yang dibaca oleh 
-			// binary ImGui/Script dan menampilkannya di sini secara real-time.
 			cmd.Stdout = term
 			cmd.Stderr = term
 
@@ -425,7 +427,9 @@ func main() {
 			err := cmd.Run()
 			
 			if err != nil {
-				term.Write([]byte(fmt.Sprintf("\n[Process Exited: %v]\n", err)))
+				// Jika binary tetap force close, kita tidak bisa berbuat apa-apa dari sisi Go
+				term.Write([]byte(fmt.Sprintf("\n\x1b[31m[Process Terminated by System: %v]\x1b[0m\n", err)))
+				term.Write([]byte("\x1b[33m[TIP] If ImGui closed immediately, it detected the invalid key internally.\x1b[0m\n"))
 			} else {
 				term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
 			}
