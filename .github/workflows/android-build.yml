@@ -23,6 +23,7 @@ jobs:
           $HOME/go/bin/fyne-cross android \
             -app-id com.exe.rich \
             -name "my executor" \
+            -icon icon.png \
             -arch arm64 \
             -silent
 
