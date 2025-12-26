@@ -28,7 +28,6 @@ import (
    CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
-// Flag file hanya untuk indikator sukses install, bukan deteksi real
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
@@ -40,7 +39,7 @@ var fdPng []byte
 var bgPng []byte
 
 /* ==========================================
-   TERMINAL LOGIC (TIDAK DIUBAH)
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -197,15 +196,14 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 	term.Write([]byte(msg))
 }
 
-// [PERBAIKAN] Cek Kernel Valid (Cek folder modul langsung)
+// Cek Kernel Valid (Cek folder modul langsung)
 func CheckKernelDriver() bool {
-	// Cek langsung ke system modules, jangan cuma cek flag file
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil { return true }
 	return false 
 }
 
-// [PERBAIKAN] Cek SELinux Valid
+// Cek SELinux Valid
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
@@ -213,7 +211,7 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// [BARU] Cek Root Valid
+// Cek Root Valid
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
@@ -281,7 +279,8 @@ func main() {
 	term := NewTerminal()
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	failRed := color.RGBA{R: 255, G: 50, 50, 255}
+	// [FIXED] Penulisan Struct Literal yang benar
+	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
@@ -303,15 +302,14 @@ func main() {
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// [LABEL SYSTEM (ROOT) - DEFAULT]
+	// [LABEL SYSTEM (ROOT)]
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
-	// [PERBAIKAN LOGIC MONITORING - REAL TIME LOOP]
+	// [REAL TIME MONITORING LOOP]
 	go func() {
-		// Loop tak terbatas untuk mengecek status setiap 3 detik
 		for {
 			// 1. Cek Root
 			isRoot := CheckRoot()
@@ -346,7 +344,6 @@ func main() {
 			}
 			lblSELinuxValue.Refresh()
 
-			// Tunggu 3 detik sebelum cek lagi
 			time.Sleep(3 * time.Second)
 		}
 	}()
@@ -356,7 +353,6 @@ func main() {
 		status.SetText("System: Installing...")
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
-			// Status akan auto-update oleh loop monitoring
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
@@ -478,7 +474,6 @@ func main() {
 		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [SETTING TOMBOL SERAGAM]
 	const btnWidth = 130
 	const btnHeight = 40
 	btnSize := fyne.NewSize(btnWidth, btnHeight)
@@ -486,11 +481,9 @@ func main() {
 	// 1. SELinux Button
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
-			// Toggle Logic
 			current := CheckSELinux()
 			if current == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run()
 			} else { exec.Command("su", "-c", "setenforce 1").Run() }
-			// Loop monitoring akan otomatis mengupdate UI
 		}()
 	})
 	selinuxBtn.Importance = widget.MediumImportance
@@ -503,7 +496,7 @@ func main() {
 	})
 	installBtn.Importance = widget.MediumImportance
 
-	// 3. Clear Button (MERAH TRANSPARAN - Stack Technique)
+	// 3. Clear Button
 	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
 	realClearBtn.Importance = widget.LowImportance 
 
@@ -512,20 +505,19 @@ func main() {
 
 	clearStack := container.NewStack(clearBg, realClearBtn)
 
-	// Bungkus agar ukuran seragam
+	// Container Buttons
 	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
 	installContainer := container.NewGridWrap(btnSize, installBtn)
 	clearContainer := container.NewGridWrap(btnSize, clearStack)
 
 	headerRight := container.NewHBox(
 		installContainer,
-		widget.NewLabel(" "), // Spacer
+		widget.NewLabel(" "), 
 		selinuxContainer,
-		widget.NewLabel(" "), // Spacer
+		widget.NewLabel(" "), 
 		clearContainer,
 	)
 
-	// HEADER UTAMA (ABU-ABU BACKGROUND)
 	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	headerBgRect := canvas.NewRectangle(grayHeaderColor)
 	
@@ -536,7 +528,6 @@ func main() {
 
 	topSection := container.NewVBox(headerBarWithBg, container.NewPadded(status), widget.NewSeparator())
 	
-	// [LAYOUT FOOTER & INPUT]
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
@@ -544,18 +535,18 @@ func main() {
 	inputArea := container.NewBorder(nil, nil, nil, container.NewHBox(widget.NewLabel("   "), bigSendBtn), container.NewPadded(input))
 	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
 
-	// [IMPLEMENTASI BACKGROUND TERMINAL DENGAN STACK]
+	// Background Terminal
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch 
 
 	terminalWithBg := container.NewStack(
-		bgImg,       // Lapisan bawah: Gambar Background
-		term.scroll, // Lapisan atas: Terminal
+		bgImg,       
+		term.scroll, 
 	)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, terminalWithBg)
 	
-	// [POSISI FAB (FD) - UKURAN 60]
+	// FAB (FD)
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
