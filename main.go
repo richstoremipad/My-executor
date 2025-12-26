@@ -439,7 +439,14 @@ func main() {
 		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
 	)
 
-	// [PERBAIKAN 1: Tombol SELinux Transparan/Medium]
+	// [SETTING TOMBOL SERAGAM]
+	// Ukuran tombol disamakan (cukup lebar untuk teks terpanjang)
+	// Agar "Inject Driver" muat, kita pakai width 130
+	const btnWidth = 130
+	const btnHeight = 40
+	btnSize := fyne.NewSize(btnWidth, btnHeight)
+
+	// 1. SELinux Button
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
 			current := CheckSELinux()
@@ -448,29 +455,33 @@ func main() {
 			updateAllStatus() 
 		}()
 	})
-	selinuxBtn.Importance = widget.MediumImportance 
+	selinuxBtn.Importance = widget.MediumImportance // Agak transparan
 
-	// [PERBAIKAN 2: Tombol Inject Transparan/Medium]
+	// 2. Inject Button
 	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
 		dialog.ShowConfirm("Inject Driver", "Start automatic injection process?", func(ok bool) {
 			if ok { autoInstallKernel() }
 		}, w)
 	})
-	installBtn.Importance = widget.MediumImportance 
+	installBtn.Importance = widget.MediumImportance // Agak transparan
 
-	// [PERBAIKAN 3: Tombol Clear Kecil, Merah Gelap (Danger)]
-	clearBtn := widget.NewButton("Clear", func() { term.Clear() })
-	clearBtn.Importance = widget.DangerImportance
-	// Bungkus agar ukurannya kecil (Fixed size container)
-	clearBtnSmall := container.NewGridWrap(fyne.NewSize(70, 38), clearBtn)
+	// 3. Clear Button
+	clearBtn := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
+	// MINTA: "warna tombol clear buat menjadi agak transparan"
+	clearBtn.Importance = widget.MediumImportance 
 
-	// Jarak diperlebar sedikit antar tombol
+	// MINTA: "ukuran nya samakan"
+	// Kita bungkus semua tombol dalam GridWrap dengan ukuran yang SAMA
+	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
+	installContainer := container.NewGridWrap(btnSize, installBtn)
+	clearContainer := container.NewGridWrap(btnSize, clearBtn)
+
 	headerRight := container.NewHBox(
-		installBtn, 
+		installContainer, 
 		widget.NewLabel(" "), // Spacer
-		selinuxBtn, 
+		selinuxContainer, 
 		widget.NewLabel(" "), // Spacer
-		clearBtnSmall,
+		clearContainer,
 	)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
@@ -490,8 +501,7 @@ func main() {
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [PERBAIKAN 4: POSISI FAB (FD) DIKEMBALIKAN SEMULA]
-	// Kembali ke layout asli Anda agar tidak mepet
+	// [POSISI FAB (FD) DIKEMBALIKAN KE SEMULA SESUAI SKRIPT ASLI ANDA]
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
@@ -503,6 +513,8 @@ func main() {
 	)
 	clickableIcon.Objects[1].(*widget.Button).Importance = widget.LowImportance
 
+	// Ini adalah susunan container yang PERSIS sama dengan kode asli Anda
+	// yang memberikan jarak cukup agar tidak mepet dengan tombol kirim
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(layout.NewSpacer(), clickableIcon, widget.NewLabel(" ")),
