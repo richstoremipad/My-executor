@@ -279,7 +279,6 @@ func main() {
 	term := NewTerminal()
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	// [FIXED] Penulisan Struct Literal yang benar
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
 
 	input := widget.NewEntry()
@@ -464,8 +463,14 @@ func main() {
 		}
 	}
 
+	// [PERBAIKAN FITUR INPUT]
+	// Menambahkan Handler agar tombol Centang/Enter di keyboard melakukan 'send'
+	input.OnSubmitted = func(_ string) { 
+		send() 
+	}
+
 	// [LAYOUT HEADER]
-	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
+	titleText := canvas.NewText("EXECUTOR PRO BY TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	headerLeft := container.NewVBox(
