@@ -34,8 +34,8 @@ const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST
-const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
+// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST (Format JSON Biasa)
+const ConfigURL = "https://pastebin.com/raw/GANTI_DENGAN_LINK_RAW_ANDA" 
 
 type OnlineConfig struct {
 	Version string `json:"version"`
@@ -354,7 +354,6 @@ func main() {
 	
 	var updateOverlay *fyne.Container
 	
-	// FUNGSI POPUP UPDATE (Normal)
 	showUpdatePopup := func(msg string, link string) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -410,17 +409,14 @@ func main() {
 		updateOverlay.Refresh()
 	}
 
-	// [BARU] FUNGSI POPUP ERROR KONEKSI
 	showErrorPopup := func(msg string) {
 		w.Canvas().Refresh(w.Content())
 		
-		// Hanya 1 tombol: EXIT
 		btnExit := widget.NewButton("EXIT", func() {
 			os.Exit(0) 
 		})
 		btnExit.Importance = widget.DangerImportance
 
-		// Layout tombol ditengah
 		btnContainer := container.NewCenter(container.NewGridWrap(fyne.NewSize(140, 40), btnExit))
 
 		title := canvas.NewText("CONNECTION ERROR", theme.ErrorColor())
@@ -450,11 +446,10 @@ func main() {
 		updateOverlay.Refresh()
 	}
 
-	// [UPDATE LOGIC]
+	// [UPDATE LOGIC - NO ENCRYPTION, URL HIDDEN]
 	go func() {
 		time.Sleep(2 * time.Second)
 
-		// Cek apakah ConfigURL masih default
 		if strings.Contains(ConfigURL, "GANTI_DENGAN_LINK") {
 			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
 			return
@@ -465,17 +460,17 @@ func main() {
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(ConfigURL)
 		
-		// 1. Cek Koneksi Error (No Internet / Server Down)
 		if err != nil {
-			term.Write([]byte("\x1b[31m[ERR] Connect Fail: " + err.Error() + "\x1b[0m\n"))
+			// [SECURE LOG] Hides the actual URL error
+			term.Write([]byte("\x1b[31m[ERR] Connection Failed (Network/Server)\x1b[0m\n"))
 			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
 		}
 		defer resp.Body.Close()
 
-		// 2. Cek HTTP Status Error (Misal 404, 500)
 		if resp.StatusCode != 200 {
-			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] HTTP Error: %d\x1b[0m\n", resp.StatusCode)))
+			// [SECURE LOG] Hides potential leaking info
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Remote Server Error: %d\x1b[0m\n", resp.StatusCode)))
 			showErrorPopup(fmt.Sprintf("Server Error (%d).\nPlease try again later.", resp.StatusCode))
 			return
 		}
@@ -486,6 +481,7 @@ func main() {
 
 		var config OnlineConfig
 		
+		// Parsing JSON Biasa (Tanpa Dekripsi)
 		if err := json.Unmarshal(body, &config); err == nil {
 			if config.Version != "" {
 				if config.Version != AppVersion {
@@ -496,8 +492,7 @@ func main() {
 				}
 			}
 		} else {
-			// 3. Cek Gagal Baca JSON (Data Rusak)
-			term.Write([]byte("\x1b[31m[ERR] JSON Parse Fail. Check URL.\x1b[0m\n"))
+			term.Write([]byte("\x1b[31m[ERR] Invalid Config Data.\x1b[0m\n"))
 			showErrorPopup("Invalid configuration data received.\nPlease check application updates.")
 		}
 	}()
@@ -588,16 +583,25 @@ func main() {
 		status.SetText("Status: Processing...")
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
+		// Cek apakah file adalah Binary (ELF) - Ini berlaku juga untuk file hasil kompilasi Go
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+target).Run()
+			// Salin dan beri izin eksekusi penuh (chmod 777)
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
 			in, _ := copyCmd.StdinPipe()
 			go func() { defer in.Close(); in.Write(data) }()
 			copyCmd.Run()
+			
 			var cmd *exec.Cmd
-			if isBinary { cmd = exec.Command("su", "-c", target)
-			} else { cmd = exec.Command("su", "-c", "sh "+target) }
+			if isBinary {
+				// Jika file kompilasi Go (Binary), jalankan langsung
+				cmd = exec.Command("su", "-c", target)
+			} else {
+				// Jika script text biasa, jalankan dengan sh
+				cmd = exec.Command("su", "-c", "sh "+target)
+			}
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term; cmd.Stderr = term
