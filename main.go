@@ -34,7 +34,7 @@ const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST (Format JSON Biasa)
+// GANTI LINK INI DENGAN LINK RAW DARI PASTEBIN / GIST
 const ConfigURL = "https://pastebin.com/raw/GANTI_DENGAN_LINK_RAW_ANDA" 
 
 type OnlineConfig struct {
@@ -109,6 +109,7 @@ func (t *Terminal) Clear() {
 	t.curCol = 0
 }
 
+// Menambahkan method Write agar Terminal memenuhi interface io.Writer
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -357,16 +358,12 @@ func main() {
 	showUpdatePopup := func(msg string, link string) {
 		w.Canvas().Refresh(w.Content())
 		
-		btnNo := widget.NewButton("CANCEL", func() {
-			os.Exit(0) 
-		})
+		btnNo := widget.NewButton("CANCEL", func() { os.Exit(0) })
 		btnNo.Importance = widget.DangerImportance
 
 		btnYes := widget.NewButton("UPDATE", func() {
 			u, err := url.Parse(link)
-			if err == nil {
-				app.New().OpenURL(u)
-			}
+			if err == nil { app.New().OpenURL(u) }
 		})
 		btnYes.Importance = widget.HighImportance
 
@@ -375,11 +372,7 @@ func main() {
 		yesWrapper := container.NewGridWrap(popupBtnSize, btnYes)
 
 		updateBtns := container.NewHBox(
-			layout.NewSpacer(), 
-			noWrapper, 
-			widget.NewLabel("        "), 
-			yesWrapper, 
-			layout.NewSpacer(),
+			layout.NewSpacer(), noWrapper, widget.NewLabel("        "), yesWrapper, layout.NewSpacer(),
 		)
 
 		title := canvas.NewText("UPDATE REQUIRED", theme.WarningColor())
@@ -391,13 +384,8 @@ func main() {
 		msgLabel.Wrapping = fyne.TextWrapWord
 
 		content := container.NewVBox(
-			widget.NewLabel(" "),
-			container.NewCenter(title),
-			widget.NewLabel(" "),
-			msgLabel,
-			layout.NewSpacer(),
-			updateBtns,
-			widget.NewLabel(" "),
+			widget.NewLabel(" "), container.NewCenter(title), widget.NewLabel(" "),
+			msgLabel, layout.NewSpacer(), updateBtns, widget.NewLabel(" "),
 		)
 
 		card := widget.NewCard("", "", container.NewPadded(content))
@@ -412,9 +400,7 @@ func main() {
 	showErrorPopup := func(msg string) {
 		w.Canvas().Refresh(w.Content())
 		
-		btnExit := widget.NewButton("EXIT", func() {
-			os.Exit(0) 
-		})
+		btnExit := widget.NewButton("EXIT", func() { os.Exit(0) })
 		btnExit.Importance = widget.DangerImportance
 
 		btnContainer := container.NewCenter(container.NewGridWrap(fyne.NewSize(140, 40), btnExit))
@@ -428,13 +414,8 @@ func main() {
 		msgLabel.Wrapping = fyne.TextWrapWord
 
 		content := container.NewVBox(
-			widget.NewLabel(" "),
-			container.NewCenter(title),
-			widget.NewLabel(" "),
-			msgLabel,
-			layout.NewSpacer(),
-			btnContainer,
-			widget.NewLabel(" "),
+			widget.NewLabel(" "), container.NewCenter(title), widget.NewLabel(" "),
+			msgLabel, layout.NewSpacer(), btnContainer, widget.NewLabel(" "),
 		)
 
 		card := widget.NewCard("", "", container.NewPadded(content))
@@ -446,7 +427,6 @@ func main() {
 		updateOverlay.Refresh()
 	}
 
-	// [UPDATE LOGIC - NO ENCRYPTION, URL HIDDEN]
 	go func() {
 		time.Sleep(2 * time.Second)
 
@@ -461,7 +441,6 @@ func main() {
 		resp, err := client.Get(ConfigURL)
 		
 		if err != nil {
-			// [SECURE LOG] Hides the actual URL error
 			term.Write([]byte("\x1b[31m[ERR] Connection Failed (Network/Server)\x1b[0m\n"))
 			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
@@ -469,7 +448,6 @@ func main() {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			// [SECURE LOG] Hides potential leaking info
 			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Remote Server Error: %d\x1b[0m\n", resp.StatusCode)))
 			showErrorPopup(fmt.Sprintf("Server Error (%d).\nPlease try again later.", resp.StatusCode))
 			return
@@ -481,7 +459,6 @@ func main() {
 
 		var config OnlineConfig
 		
-		// Parsing JSON Biasa (Tanpa Dekripsi)
 		if err := json.Unmarshal(body, &config); err == nil {
 			if config.Version != "" {
 				if config.Version != AppVersion {
@@ -581,31 +558,67 @@ func main() {
 		defer reader.Close()
 		term.Clear()
 		status.SetText("Status: Processing...")
-		data, _ := io.ReadAll(reader)
-		target := "/data/local/tmp/temp_exec"
-		// Cek apakah file adalah Binary (ELF) - Ini berlaku juga untuk file hasil kompilasi Go
-		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n"))
+			return
+		}
+
+		// [FIX BINARY EXECUTION]
+		// Cek apakah file ELF (Binary)
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		target := "/data/local/tmp/temp_exec"
+
 		go func() {
+			// 1. Tulis ke file temporary di folder App (Cache) - Aman untuk Binary
+			tmpFile, err := os.CreateTemp("", "exec_tmp")
+			if err != nil {
+				term.Write([]byte("\x1b[31m[ERR] Temp Write Failed\x1b[0m\n"))
+				return
+			}
+			tmpFile.Write(data)
+			tmpPath := tmpFile.Name()
+			tmpFile.Close()
+
+			// 2. Pindahkan ke /data/local/tmp menggunakan 'cp' via Root (Menjaga integritas data)
 			exec.Command("su", "-c", "rm -f "+target).Run()
-			// Salin dan beri izin eksekusi penuh (chmod 777)
-			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
-			in, _ := copyCmd.StdinPipe()
-			go func() { defer in.Close(); in.Write(data) }()
-			copyCmd.Run()
 			
+			moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, target, target))
+			if err := moveCmd.Run(); err != nil {
+				term.Write([]byte("\x1b[31m[ERR] Copy to System Failed (Root?)\x1b[0m\n"))
+				os.Remove(tmpPath)
+				return
+			}
+			os.Remove(tmpPath) // Hapus file cache
+
+			// 3. Eksekusi
 			var cmd *exec.Cmd
 			if isBinary {
-				// Jika file kompilasi Go (Binary), jalankan langsung
+				// Jika Binary -> ./temp_exec
 				cmd = exec.Command("su", "-c", target)
 			} else {
-				// Jika script text biasa, jalankan dengan sh
+				// Jika Script -> sh temp_exec
 				cmd = exec.Command("su", "-c", "sh "+target)
 			}
+			
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			stdin, _ = cmd.StdinPipe()
-			cmd.Stdout = term; cmd.Stderr = term
-			cmd.Run()
+			
+			// Hubungkan Output agar Real-time
+			stdout, _ := cmd.StdoutPipe()
+			stderr, _ := cmd.StderrPipe()
+			stdin, _ = cmd.StdinPipe() // Set global stdin agar bisa kirim perintah
+
+			if err := cmd.Start(); err != nil {
+				term.Write([]byte("\x1b[31m[ERR] Execution Failed\x1b[0m\n"))
+				return
+			}
+
+			// Streaming output
+			go io.Copy(term, stdout)
+			go io.Copy(term, stderr)
+
+			cmd.Wait()
 			status.SetText("Status: Idle")
 			stdin = nil
 		}()
