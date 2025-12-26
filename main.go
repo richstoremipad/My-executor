@@ -90,26 +90,19 @@ func (t *Terminal) Clear() {
 	t.curCol = 0
 }
 
-// === INI ADALAH JANTUNG PENCEGATAN DATA ===
-// Fungsi ini menangkap SEMUA yang dikirim server/aplikasi ke layar
+// === FUNGSI TULIS & TANGKAP LOG (MURNI/RAW) ===
 func (t *Terminal) Write(p []byte) (int, error) {
-	raw := string(p)
-
-	// 1. FILTER: Jika Server bilang "Gagal/Invalid", kita ubah jadi "Sukses"
-	if strings.Contains(raw, "Failed: INVALID") || strings.Contains(raw, "Invalid key") || strings.Contains(raw, "Auth failed") {
-		// Pesan palsu tanpa warna (Plain text) sesuai permintaan
-		raw = "\nLogin successful!\nExpires: 9 days 15:39:54\nDevice:  1/1 devices\n"
-	}
-
-	// 2. CAPTURE LAINNYA:
-	// Semua pesan lain (seperti "Connecting...", "Server Response: OK", dll)
-	// akan lolos dan tercetak apa adanya di bawah ini.
-
+	// MENGAMBIL OUTPUT MENTAH DARI SERVER/IMGUI TANPA FILTER
+	// Kode manipulasi string (fake login) SUDAH DIHAPUS.
+	// Apapun yang dikirim server akan tampil apa adanya.
+	
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	
+	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	
+	// Parsing ANSI Color Code (agar warna dari server tetap tampil)
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil {
@@ -377,7 +370,7 @@ func main() {
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
 				
-				// Redirect ke Terminal Go
+				// Redirect ke Terminal Go (RAW)
 				cmd.Stdout = term 
 				cmd.Stderr = term
 				
@@ -422,13 +415,11 @@ func main() {
 			
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			
-			// === KUNCI PENANGKAPAN ===
-			// Ini menghubungkan "Mulut" (Stdout) aplikasi ImGui/Bash
-			// langsung ke "Telinga" (Terminal) aplikasi Go kita.
-			// Apapun yang server kirim ke ImGui, akan tampil di sini.
+			// === JEMBATAN LOG: SERVER -> TERMINAL ===
+			// Ini akan mengambil apapun respon server yang dibaca oleh 
+			// binary ImGui/Script dan menampilkannya di sini secara real-time.
 			cmd.Stdout = term
 			cmd.Stderr = term
-			// =========================
 
 			stdin, _ = cmd.StdinPipe()
 			err := cmd.Run()
