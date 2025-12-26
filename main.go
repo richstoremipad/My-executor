@@ -689,7 +689,7 @@ func main() {
 	}
 	input.OnSubmitted = func(_ string) { send() }
 
-	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
+	titleText := canvas.NewText("EXECUTOR PRO BY TANGSAN", theme.ForegroundColor())
 	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	headerLeft := container.NewVBox(
