@@ -24,14 +24,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG
+   CONFIG (HYBRID DETECTION)
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC (BASE CODE)
 ========================================== */
 
 type Terminal struct {
@@ -72,7 +72,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100}
+	case "90": return color.Gray{Y: 150}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -195,21 +195,14 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
+// [BARU] Fungsi Cek SELinux
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
-	if err != nil { return "Unknown" }
-	return strings.TrimSpace(string(out))
-}
-
-func VerifySuccessAndCreateFlag() bool {
-	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
-	if err := cmd.Run(); err == nil {
-		exec.Command("su", "-c", "touch "+FlagFile).Run()
-		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
-		return true
+	if err != nil {
+		return "UNKNOWN"
 	}
-	return false
+	return strings.TrimSpace(string(out))
 }
 
 func downloadFile(url string, filepath string) (error, string) {
@@ -261,44 +254,62 @@ func main() {
 	w.SetMaster()
 
 	term := NewTerminal()
-	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
+	
+	// Definisi Warna Kuning Cerah
+	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
+	
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
+	// --- SETUP LABEL DETEKTOR (KUNING DI JUDUL) ---
+
+	// 1. Kernel Label (Dipisah agar "KERNEL:" kuning)
 	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
+	
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
+	// 2. SELinux Label (Dipisah agar "SELINUX:" kuning) [BARU]
 	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
+
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
+	// FUNGSI UPDATE STATUS GABUNGAN
 	updateAllStatus := func() {
 		go func() {
-			if CheckKernelDriver() {
-				lblKernelValue.Text = "DETECTED"; lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
+			// Cek Kernel
+			isLoaded := CheckKernelDriver()
+			if isLoaded {
+				lblKernelValue.Text = "DETECTED"
+				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
 			} else {
-				lblKernelValue.Text = "NOT FOUND"; lblKernelValue.Color = color.RGBA{255, 50, 50, 255} 
+				lblKernelValue.Text = "NOT FOUND"
+				lblKernelValue.Color = color.RGBA{255, 50, 50, 255} 
 			}
 			lblKernelValue.Refresh()
 
-			seStatus := CheckSELinux()
-			lblSELinuxValue.Text = seStatus
-			if seStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255}
+			// Cek SELinux [BARU]
+			selinuxStatus := CheckSELinux()
+			lblSELinuxValue.Text = selinuxStatus
+			if selinuxStatus == "Enforcing" {
+				lblSELinuxValue.Color = color.RGBA{255, 100, 100, 255} // Merah jika Enforcing
+			} else if selinuxStatus == "Permissive" {
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // Hijau jika Permissive
 			} else {
-				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255}
+				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
 			lblSELinuxValue.Refresh()
 		}()
 	}
 	updateAllStatus()
 
+	/* --- LOGIKA AUTO INSTALL --- */
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
@@ -336,11 +347,58 @@ func main() {
 				term.Write([]byte("\n"))
 			}
 
+			// 1. Cek Full Version
+			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
+			simulateProcess("Connecting...")
+			
 			url1 := GitHubRepo + rawVersion + ".sh"
 			err, _ = downloadFile(url1, downloadPath)
 			if err == nil {
-				downloadUrl = url1
+				downloadUrl = "Variant 1 (Precise)"
 				found = true
+				term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+			} else {
+				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+			}
+
+			// 2. Cek Short Version
+			if !found {
+				parts := strings.Split(rawVersion, "-")
+				if len(parts) > 0 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+					
+					shortVersion := parts[0]
+					url2 := GitHubRepo + shortVersion + ".sh"
+					err, _ = downloadFile(url2, downloadPath)
+					if err == nil {
+						downloadUrl = "Variant 2 (Universal)"
+						found = true
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+					} else {
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+					}
+				}
+			}
+
+			// 3. Cek Major Version
+			if !found {
+				parts := strings.Split(rawVersion, ".")
+				if len(parts) >= 2 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 3)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+
+					majorVersion := parts[0] + "." + parts[1]
+					url3 := GitHubRepo + majorVersion + ".sh"
+					err, _ = downloadFile(url3, downloadPath)
+					if err == nil {
+						downloadUrl = "Variant 3 (Legacy)"
+						found = true
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+					} else {
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+					}
+				}
 			}
 
 			if !found {
@@ -369,10 +427,12 @@ func main() {
 				
 				err = cmd.Run()
 				
-				if err != nil || !VerifySuccessAndCreateFlag() {
-					term.Write([]byte("\n\x1b[31m[INSTALLATION FAILED OR DRIVER NOT LOADED]\x1b[0m\n"))
-					exec.Command("su", "-c", "rm -f "+FlagFile).Run()
+				if err != nil {
+					term.Write([]byte(fmt.Sprintf("\n\x1b[31m[EXIT ERROR: %v]\x1b[0m\n", err)))
 				} else {
+					exec.Command("su", "-c", "touch "+FlagFile).Run()
+					exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
 				pipeStdin.Close()
@@ -384,12 +444,14 @@ func main() {
 		}()
 	}
 
+	/* --- FUNGSI RUN FILE LOCAL --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
 		status.SetText("Status: Processing...")
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		go func() {
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
@@ -398,15 +460,22 @@ func main() {
 			copyCmd.Run()
 			
 			var cmd *exec.Cmd
-			cmd = exec.Command("su", "-c", "sh "+target)
+			if isBinary { cmd = exec.Command("su", "-c", target)
+			} else { cmd = exec.Command("su", "-c", "sh "+target) }
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term; cmd.Stderr = term
-			cmd.Run()
+			err := cmd.Run()
+
+			if err == nil {
+				exec.Command("su", "-c", "touch "+FlagFile).Run()
+				exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
+			}
 			
-			VerifySuccessAndCreateFlag()
+			term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
 			status.SetText("Status: Idle")
 			stdin = nil
+			
 			time.Sleep(500 * time.Millisecond)
 			updateAllStatus()
 		}()
@@ -421,19 +490,30 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
+	/* --- UI LAYOUT CONSTRUCTION --- */
+	
+	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
+	titleText.TextSize = 16
+	titleText.TextStyle = fyne.TextStyle{Bold: true}
+
+	// Header Kiri: Judul + Kernel Check + SELinux Check
 	headerLeft := container.NewVBox(
-		canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor()),
+		titleText,
 		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux ditambahkan disini
 	)
 
-	// GANTI SCAN BUTTON MENJADI SELINUX SWITCH
-	switchBtn := widget.NewButtonWithIcon("SELinux Switch", theme.InfoIcon(), func() {
+	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
+		term.Write([]byte("\n\x1b[36m[*] Scanning Kernel Modules...\x1b[0m\n"))
 		go func() {
-			target := "1"
-			if CheckSELinux() == "Enforcing" { target = "0" }
-			exec.Command("su", "-c", "setenforce "+target).Run()
-			updateAllStatus()
+			cmd := exec.Command("su", "-c", "lsmod")
+			output, err := cmd.CombinedOutput()
+			if err != nil || len(output) < 5 {
+				cmd = exec.Command("su", "-c", "ls /sys/module/")
+				output, _ = cmd.CombinedOutput()
+			}
+			term.Write(output)
+			term.Write([]byte("\n\x1b[32m[Scan Complete]\x1b[0m\n"))
 		}()
 	})
 
@@ -444,38 +524,55 @@ func main() {
 	})
 	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
-	headerRight := container.NewHBox(installBtn, switchBtn, clearBtn)
+	headerRight := container.NewHBox(installBtn, checkBtn, clearBtn)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
 	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
+	// FOOTER: ROOT STATUS (DIPISAH AGAR "SYSTEM:" KUNING)
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
-	bigInput := container.NewPadded(input) 
+
+	// [PERBESAR UI & JARAK] INPUT & TOMBOL KIRIM
+	// Menggunakan Padded untuk memperbesar area, dan HBox dengan Spacer untuk jarak.
+	bigInput := container.NewPadded(input)
+	bigSendBtn := container.NewPadded(sendBtn)
+	
 	inputArea := container.NewBorder(nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("   "), bigSendBtn),
+		container.NewHBox(widget.NewLabel("  "), bigSendBtn), // Spacer di kiri tombol kirim
 		bigInput,
 	)
-	inputContainer := container.NewPadded(container.NewPadded(inputArea))
-	
+	inputContainer := container.NewPadded(inputArea)
+
 	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
+	// [PERBESAR UI] TOMBOL FILE (FAB)
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
-	hugeFab := container.NewGridWrap(fyne.NewSize(100, 100), fabBtn)
+	bigFabBtn := container.NewPadded(fabBtn) // Perbesar FAB dengan padding
 
-	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), hugeFab, widget.NewLabel(" ")), widget.NewLabel(" "), widget.NewLabel(" "))
-	
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewHBox(
+			layout.NewSpacer(),
+			bigFabBtn,
+			widget.NewLabel(" "), 
+		),
+		widget.NewLabel("      "), 
+		widget.NewLabel("      "), 
+	)
+
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
