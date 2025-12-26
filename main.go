@@ -31,17 +31,17 @@ import (
 )
 
 /* ==========================================
-   CONFIG & SECURITY SYSTEM
+   CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.12" 
+const AppVersion = "1.0" 
 const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/driver/"
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// MASUKKAN LINK RAW PASTEBIN YANG ISINYA KODE TERENKRIPSI (BUKAN JSON BIASA)
-const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt" 
+// URL File Config (Isinya Kode Enkripsi dari Generator)
+const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 
-// KUNCI INI HARUS SAMA PERSIS DENGAN GENERATOR (32 Bytes)
+// KUNCI RAHASIA (32 Karakter)
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir" 
 
 type OnlineConfig struct {
@@ -57,17 +57,14 @@ var fdPng []byte
 var bgPng []byte
 
 /* ==========================================
-   SECURITY LOGIC (DECRYPTION)
+   SECURITY LOGIC (DECRYPT)
 ========================================== */
-
 func decryptConfig(encryptedStr string) ([]byte, error) {
-	// Pastikan Key 32 Bytes
 	key := []byte(CryptoKey)
-	if len(key) != 32 {
-		newKey := make([]byte, 32)
-		copy(newKey, key)
-		key = newKey
-	}
+	if len(key) != 32 { return nil, errors.New("key error") }
+
+	// Hapus spasi/enter yang mungkin terbawa dari GitHub
+	encryptedStr = strings.TrimSpace(encryptedStr)
 
 	data, err := base64.StdEncoding.DecodeString(encryptedStr)
 	if err != nil { return nil, err }
@@ -79,13 +76,10 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 	if err != nil { return nil, err }
 
 	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize { return nil, errors.New("data corrupt") }
+	if len(data) < nonceSize { return nil, errors.New("corrupt") }
 
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil { return nil, err }
-
-	return plaintext, nil
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 /* ==========================================
@@ -388,7 +382,7 @@ func main() {
 	}()
 
 	// -------------------------------------------------------------
-	//   ONLINE VERSION CHECKER (OTA - ENCRYPTED)
+	//   ONLINE VERSION CHECKER (OTA - ENCRYPTED + NO CACHE)
 	// -------------------------------------------------------------
 	
 	var updateOverlay *fyne.Container
@@ -396,12 +390,16 @@ func main() {
 	showUpdatePopup := func(msg string, link string) {
 		w.Canvas().Refresh(w.Content())
 		
-		btnNo := widget.NewButton("CANCEL", func() { os.Exit(0) })
+		btnNo := widget.NewButton("CANCEL", func() {
+			os.Exit(0) 
+		})
 		btnNo.Importance = widget.DangerImportance
 
 		btnYes := widget.NewButton("UPDATE", func() {
 			u, err := url.Parse(link)
-			if err == nil { app.New().OpenURL(u) }
+			if err == nil {
+				app.New().OpenURL(u)
+			}
 		})
 		btnYes.Importance = widget.HighImportance
 
@@ -438,7 +436,9 @@ func main() {
 	showErrorPopup := func(msg string) {
 		w.Canvas().Refresh(w.Content())
 		
-		btnExit := widget.NewButton("EXIT", func() { os.Exit(0) })
+		btnExit := widget.NewButton("EXIT", func() {
+			os.Exit(0) 
+		})
 		btnExit.Importance = widget.DangerImportance
 
 		btnContainer := container.NewCenter(container.NewGridWrap(fyne.NewSize(140, 40), btnExit))
@@ -468,55 +468,63 @@ func main() {
 	go func() {
 		time.Sleep(2 * time.Second)
 
-		if strings.Contains(ConfigURL, "LINK_ENKRIPSI_ANDA") {
-			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL (Encrypted) belum diganti!\x1b[0m\n"))
+		if strings.Contains(ConfigURL, "GANTI_DENGAN_LINK") {
+			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
 			return
 		}
 
 		term.Write([]byte("\n\x1b[90m[*] Authenticating...\x1b[0m\n"))
 		
+		// [FIX CACHE] Tambahkan timestamp agar GitHub tidak mengirim file cache
+		// URL akan menjadi: .../executor.txt?v=1708889911
+		freshURL := fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix())
+
 		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(ConfigURL)
+		resp, err := client.Get(freshURL)
 		
 		if err != nil {
+			// [SECURE] Pesan error tidak menampilkan URL
 			term.Write([]byte("\x1b[31m[ERR] Connection Failed\x1b[0m\n"))
-			showErrorPopup("Unable to secure connection to server.\nPlease check your internet.")
+			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Auth Error: %d\x1b[0m\n", resp.StatusCode)))
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Server Error: %d\x1b[0m\n", resp.StatusCode)))
 			showErrorPopup(fmt.Sprintf("Server Error (%d).\nPlease try again later.", resp.StatusCode))
 			return
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		// Bersihkan whitespace
-		body = bytes.TrimSpace(body)
-		
-		// [DEKRIPSI DATA]
+		body = bytes.TrimSpace(body) // Bersihkan spasi/enter di awal/akhir
+
+		// [DECRYPT DATA]
 		decrypted, err := decryptConfig(string(body))
 		if err != nil {
-			// Jika dekripsi gagal = Data telah dimanipulasi Sniffer
-			term.Write([]byte("\x1b[31m[ERR] Security Integrity Fail\x1b[0m\n"))
-			showErrorPopup("Data integrity check failed.\nConnection may be compromised.")
+			// Jika gagal decrypt (key beda / data dimanipulasi)
+			term.Write([]byte("\x1b[31m[ERR] Integrity Check Failed\x1b[0m\n"))
+			showErrorPopup("Security check failed.\nApp configuration is invalid.")
 			return
 		}
 
+		// Bersihkan hasil decrypt
+		decrypted = bytes.TrimSpace(decrypted)
+
 		var config OnlineConfig
+		// Parse JSON dari data yang sudah didekripsi
 		if err := json.Unmarshal(decrypted, &config); err == nil {
 			if config.Version != "" {
 				if config.Version != AppVersion {
-					term.Write([]byte("\x1b[33m[!] New Version Found: " + config.Version + "\x1b[0m\n"))
+					term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
 					showUpdatePopup(config.Message, config.Link)
 				} else {
-					term.Write([]byte("\x1b[32m[V] Authenticated. System Ready.\x1b[0m\n"))
+					term.Write([]byte("\x1b[32m[V] System Authenticated.\x1b[0m\n"))
 				}
 			}
 		} else {
-			term.Write([]byte("\x1b[31m[ERR] Payload Error.\x1b[0m\n"))
-			showErrorPopup("Invalid configuration data.")
+			term.Write([]byte("\x1b[31m[ERR] Data Format Error.\x1b[0m\n"))
+			showErrorPopup("Invalid configuration data received.")
 		}
 	}()
 
@@ -600,6 +608,8 @@ func main() {
 		}()
 	}
 
+	// [FIX: SUPPORT FILE GO/BINARY]
+	// Bagian ini diperbarui sedikit agar bisa membaca file Binary tanpa "blink/error"
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -611,38 +621,41 @@ func main() {
 			return
 		}
 
-		// [FIX BINARY EXECUTION - CP METHOD]
+		// Deteksi apakah file Binary (ELF/Go) atau Script biasa
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		target := "/data/local/tmp/temp_exec"
 
 		go func() {
-			// 1. Simpan di Cache Lokal App (Aman untuk Binary)
+			// 1. Simpan ke Cache Aplikasi (Aman, tidak butuh root)
+			// Ini penting agar data binary TIDAK RUSAK
 			tmpFile, err := os.CreateTemp("", "exec_tmp")
 			if err != nil {
-				term.Write([]byte("\x1b[31m[ERR] Cache Write Failed\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m[ERR] Cache Failed\x1b[0m\n"))
 				return
 			}
 			tmpFile.Write(data)
 			tmpPath := tmpFile.Name()
 			tmpFile.Close()
 
-			// 2. Pindahkan ke System via CP + ROOT (Menjaga integritas)
+			// 2. Pindahkan ke System menggunakan 'cp' (via Root)
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			
 			// Perintah CP menjamin data biner tidak rusak seperti CAT
 			moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, target, target))
 			if err := moveCmd.Run(); err != nil {
-				term.Write([]byte("\x1b[31m[ERR] System Copy Failed (Root Required)\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m[ERR] Copy Failed (Check Root)\x1b[0m\n"))
 				os.Remove(tmpPath)
 				return
 			}
-			os.Remove(tmpPath) // Hapus cache
+			os.Remove(tmpPath) // Bersihkan cache
 
-			// 3. Eksekusi
+			// 3. Jalankan
 			var cmd *exec.Cmd
 			if isBinary {
+				// Jalankan langsung (./temp_exec)
 				cmd = exec.Command("su", "-c", target)
 			} else {
+				// Jalankan sebagai script (sh temp_exec)
 				cmd = exec.Command("su", "-c", "sh "+target)
 			}
 			
@@ -650,13 +663,14 @@ func main() {
 			
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
-			stdin, _ = cmd.StdinPipe() 
+			stdin, _ = cmd.StdinPipe()
 
 			if err := cmd.Start(); err != nil {
 				term.Write([]byte("\x1b[31m[ERR] Execution Failed\x1b[0m\n"))
 				return
 			}
 
+			// Streaming output real-time
 			go io.Copy(term, stdout)
 			go io.Copy(term, stderr)
 
