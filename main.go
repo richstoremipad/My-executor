@@ -24,14 +24,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG (HYBRID DETECTION)
+   CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12" 
 
 /* ==========================================
-   TERMINAL LOGIC (BASE CODE)
+   TERMINAL LOGIC
 ========================================== */
 
 type Terminal struct {
@@ -195,18 +195,20 @@ func CheckKernelDriver() bool {
 	return false 
 }
 
+// FUNGSI CEK SELINUX (BARU)
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
-	if err != nil {
-		return "UNKNOWN"
-	}
+	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
 }
 
+// FUNGSI VERIFIKASI AKHIR (BARU - Agar tidak tertipu log sukses palsu)
 func VerifySuccessAndCreateFlag() bool {
+	// 1. Cek apakah folder module benar-benar ada di sistem
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil {
+		// Jika driver ada, PAKSA BUAT FLAG
 		exec.Command("su", "-c", "touch "+FlagFile).Run()
 		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
 		return true
@@ -263,30 +265,33 @@ func main() {
 	w.SetMaster()
 
 	term := NewTerminal()
+	
+	// --- WARNA KUNING CERAH ---
+	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
+
+	// --- INPUT & BUTTON JUMBO ---
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 	
-	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
-	statusLabel := widget.NewLabel("System: Ready")
-	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
+	status := widget.NewLabel("System: Ready")
+	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
+	// --- HEADER LABEL (KERNEL & SELINUX) ---
+	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow) // KUNING
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
-	
 	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
+	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow) // KUNING
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
-
 	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
 	updateAllStatus := func() {
 		go func() {
-			isLoaded := CheckKernelDriver()
-			if isLoaded {
+			// Update Kernel
+			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
 				lblKernelValue.Color = color.RGBA{0, 255, 0, 255} 
 			} else {
@@ -295,21 +300,25 @@ func main() {
 			}
 			lblKernelValue.Refresh()
 
-			selinuxStatus := CheckSELinux()
-			lblSELinuxValue.Text = selinuxStatus
-			if selinuxStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // Hijau
+			// Update SELinux (HIJAU=Enforcing, MERAH=Permissive)
+			seStatus := CheckSELinux()
+			lblSELinuxValue.Text = seStatus
+			if seStatus == "Enforcing" {
+				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255} // HIJAU
+			} else if seStatus == "Permissive" {
+				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255} // MERAH
 			} else {
-				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255} // Merah
+				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
 			lblSELinuxValue.Refresh()
 		}()
 	}
 	updateAllStatus()
 
+	/* --- AUTO INSTALL --- */
 	autoInstallKernel := func() {
 		term.Clear()
-		statusLabel.SetText("System: Installing...")
+		status.SetText("System: Installing...")
 		
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
@@ -322,16 +331,21 @@ func main() {
 			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
 			time.Sleep(500 * time.Millisecond)
 
-			out, _ := exec.Command("uname", "-r").Output()
+			out, err := exec.Command("uname", "-r").Output()
+			if err != nil {
+				term.Write([]byte("\x1b[31m[X] Critical Error: Cannot read kernel.\x1b[0m\n"))
+				return
+			}
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" -> Target: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
 
 			downloadPath := "/data/local/tmp/temp_kernel_dl" 
 			targetFile := "/data/local/tmp/kernel_installer.sh"
 			
+			var downloadUrl string
 			var found bool = false
 
-			simulateProgress := func(label string) {
+			simulateProcess := func(label string) {
 				for i := 0; i <= 100; i+=10 {
 					drawProgressBar(term, label, i, "\x1b[36m")
 					time.Sleep(50 * time.Millisecond)
@@ -339,55 +353,116 @@ func main() {
 				term.Write([]byte("\n"))
 			}
 
-			term.Write([]byte("\x1b[97m[*] Checking Repository...\x1b[0m\n"))
-			simulateProgress("Connecting...")
+			// 1. Cek Full Version
+			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
+			simulateProcess("Connecting...")
 			
 			url1 := GitHubRepo + rawVersion + ".sh"
-			err, _ := downloadFile(url1, downloadPath)
+			err, _ = downloadFile(url1, downloadPath)
 			if err == nil {
+				downloadUrl = "Variant 1 (Precise)"
 				found = true
+				term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+			} else {
+				term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+			}
+
+			// 2. Cek Short Version
+			if !found {
+				parts := strings.Split(rawVersion, "-")
+				if len(parts) > 0 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+					
+					shortVersion := parts[0]
+					url2 := GitHubRepo + shortVersion + ".sh"
+					err, _ = downloadFile(url2, downloadPath)
+					if err == nil {
+						downloadUrl = "Variant 2 (Universal)"
+						found = true
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+					} else {
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+					}
+				}
+			}
+
+			// 3. Cek Major Version
+			if !found {
+				parts := strings.Split(rawVersion, ".")
+				if len(parts) >= 2 {
+					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 3)...\x1b[0m\n"))
+					simulateProcess("Connecting...")
+
+					majorVersion := parts[0] + "." + parts[1]
+					url3 := GitHubRepo + majorVersion + ".sh"
+					err, _ = downloadFile(url3, downloadPath)
+					if err == nil {
+						downloadUrl = "Variant 3 (Legacy)"
+						found = true
+						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
+					} else {
+						term.Write([]byte("\x1b[31m[X] Not Available.\x1b[0m\n"))
+					}
+				}
 			}
 
 			if !found {
-				term.Write([]byte("\n\x1b[31m[X] Not Available.\x1b[0m\n"))
-				statusLabel.SetText("System: Failed")
+				term.Write([]byte("\n\x1b[31m╔══════════════════════════════════╗\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m║     FATAL: DRIVER NOT FOUND      ║\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m╚══════════════════════════════════╝\x1b[0m\n"))
+				status.SetText("System: Failed")
 			} else {
-				term.Write([]byte("\n\x1b[92m[*] Downloading Script...\x1b[0m\n"))
+				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + downloadUrl + "\x1b[0m\n"))
 				for i := 0; i <= 100; i+=5 {
-					drawProgressBar(term, "Downloading", i, "\x1b[92m")
+					drawProgressBar(term, "Downloading Payload", i, "\x1b[92m")
 					time.Sleep(30 * time.Millisecond)
 				}
+				term.Write([]byte("\n\n\x1b[97m[*] Executing Root Installer...\x1b[0m\n"))
 				
-				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile+" && chmod 777 "+targetFile).Run()
+				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
+				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
+
 				cmd := exec.Command("su", "-c", "sh "+targetFile)
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 				
-				pStdin, _ := cmd.StdinPipe()
+				var pipeStdin io.WriteCloser
+				pipeStdin, _ = cmd.StdinPipe()
 				cmd.Stdout = term
 				cmd.Stderr = term
+				
 				err = cmd.Run()
 				
-				if err != nil || !VerifySuccessAndCreateFlag() {
+				// [PERBAIKAN LOGIKA]
+				// Cek apakah driver BENAR-BENAR terpasang di sistem
+				success := VerifySuccessAndCreateFlag()
+
+				if err != nil || !success {
+					// Jika Script Error ATAU Driver tidak ditemukan setelah script jalan
 					term.Write([]byte("\n\x1b[31m[INSTALLATION FAILED OR DRIVER NOT LOADED]\x1b[0m\n"))
+					// Hapus flag jika ada (karena gagal)
 					exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 				} else {
+					// Jika Script Sukses DAN Driver ditemukan
 					term.Write([]byte("\n\x1b[32m[SUCCESS] Driver Injected Successfully.\x1b[0m\n"))
 				}
-				pStdin.Close()
+				pipeStdin.Close()
 				
 				time.Sleep(1 * time.Second)
 				updateAllStatus()
-				statusLabel.SetText("System: Online")
+				status.SetText("System: Online")
 			}
 		}()
 	}
 
+	/* --- RUN FILE --- */
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
-		statusLabel.SetText("Status: Processing...")
+		status.SetText("Status: Processing...")
 		data, _ := io.ReadAll(reader)
 		target := "/data/local/tmp/temp_exec"
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		go func() {
 			exec.Command("su", "-c", "rm -f "+target).Run()
 			copyCmd := exec.Command("su", "-c", "cat > "+target+" && chmod 777 "+target)
@@ -395,14 +470,22 @@ func main() {
 			go func() { defer in.Close(); in.Write(data) }()
 			copyCmd.Run()
 			
-			cmd := exec.Command("su", "-c", "sh "+target)
+			var cmd *exec.Cmd
+			if isBinary { cmd = exec.Command("su", "-c", target)
+			} else { cmd = exec.Command("su", "-c", "sh "+target) }
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ = cmd.StdinPipe()
 			cmd.Stdout = term; cmd.Stderr = term
 			cmd.Run()
 			
-			VerifySuccessAndCreateFlag()
-			statusLabel.SetText("Status: Idle")
+			// [VERIFIKASI] Cek apakah driver ada setelah install manual
+			if VerifySuccessAndCreateFlag() {
+				term.Write([]byte("\n\x1b[32m[Execution Success: Driver Detected]\x1b[0m\n"))
+			} else {
+				term.Write([]byte("\n\x1b[32m[Execution Finished]\x1b[0m\n"))
+			}
+			
+			status.SetText("Status: Idle")
 			stdin = nil
 			time.Sleep(500 * time.Millisecond)
 			updateAllStatus()
@@ -418,22 +501,27 @@ func main() {
 	}
 	input.OnSubmitted = func(string) { send() }
 
+	/* --- UI LAYOUT (JUMBO SIZE 5X) --- */
+	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
+	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
+
 	headerLeft := container.NewVBox(
-		canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor()),
+		titleText,
 		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
+		container.NewHBox(lblSELinuxTitle, lblSELinuxValue), // SELinux Ditambahkan
 	)
 
-	switchBtn := widget.NewButtonWithIcon("SELinux Switch", theme.InfoIcon(), func() {
+	checkBtn := widget.NewButtonWithIcon("Scan", theme.SearchIcon(), func() {
+		term.Write([]byte("\n\x1b[36m[*] Scanning Kernel Modules...\x1b[0m\n"))
 		go func() {
-			target := "1"
-			if CheckSELinux() == "Enforcing" {
-				target = "0"
+			cmd := exec.Command("su", "-c", "lsmod")
+			output, err := cmd.CombinedOutput()
+			if err != nil || len(output) < 5 {
+				cmd = exec.Command("su", "-c", "ls /sys/module/")
+				output, _ = cmd.CombinedOutput()
 			}
-			exec.Command("su", "-c", "setenforce "+target).Run()
-			term.Write([]byte("\n\x1b[33m[*] Toggling SELinux mode...\x1b[0m\n"))
-			time.Sleep(200 * time.Millisecond)
-			updateAllStatus()
+			term.Write(output)
+			term.Write([]byte("\n\x1b[32m[Scan Complete]\x1b[0m\n"))
 		}()
 	})
 
@@ -444,51 +532,63 @@ func main() {
 	})
 	
 	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { term.Clear() })
-	headerRight := container.NewHBox(installBtn, switchBtn, clearBtn)
+	headerRight := container.NewHBox(installBtn, checkBtn, clearBtn)
 	
 	headerBar := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
-	topSection := container.NewVBox(headerBar, container.NewPadded(statusLabel), widget.NewSeparator())
+	topSection := container.NewVBox(headerBar, container.NewPadded(status), widget.NewSeparator())
 	
+	// FOOTER: ROOT STATUS (SYSTEM: KUNING)
 	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
 	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-	
 	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
+	// [UI JUMBO] TOMBOL KIRIM & INPUT
+	// Menggunakan GridWrap untuk memaksa ukuran fixed besar pada tombol
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-
-	bigInput := container.NewPadded(input)
-	bigSendBtn := container.NewPadded(sendBtn)
 	
+	// Ukuran Tombol Kirim: 120x60 (Sangat Besar)
+	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
+	
+	// Input Field dibuat lebih tinggi dengan Container GridWrap juga
+	// Ukuran Input: Lebar Dinamis (Expand), Tinggi 60
+	// Karena Input butuh lebar dinamis, kita pakai Border Layout tapi Inputnya dibungkus container
+	bigInput := container.NewPadded(input) 
+	
+	// Container Input Area
 	inputArea := container.NewBorder(nil, nil, nil, 
-		container.NewHBox(widget.NewLabel("  "), bigSendBtn),
+		container.NewHBox(widget.NewLabel("   "), bigSendBtn), // Spacer agar tidak mepet
 		bigInput,
 	)
-	inputContainer := container.NewPadded(inputArea)
-
+	
+	// Tambahkan padding ekstra agar terlihat "Gemuk"
+	inputContainer := container.NewPadded(container.NewPadded(inputArea))
+	
 	bottomSection := container.NewVBox(footerStatusBox, inputContainer)
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
+	// [UI JUMBO] TOMBOL FILE (FAB) - 5x LEBIH BESAR
 	fabBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
 	fabBtn.Importance = widget.HighImportance
+	
+	// Ukuran FAB: 100x100 (Sangat Besar)
 	hugeFab := container.NewGridWrap(fyne.NewSize(100, 100), fabBtn)
 
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(
 			layout.NewSpacer(),
-			container.NewPadded(hugeFab),
+			hugeFab,
 			widget.NewLabel(" "), 
 		),
 		widget.NewLabel("      "), 
 		widget.NewLabel("      "), 
 	)
-
+	
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
