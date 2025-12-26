@@ -33,13 +33,13 @@ import (
 /* ==========================================
    CONFIG & SECURITY SYSTEM
 ========================================== */
-const AppVersion = "1.0" 
-const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
+const AppVersion = "1.12" 
+const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/driver/"
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
 // MASUKKAN LINK RAW PASTEBIN YANG ISINYA KODE TERENKRIPSI (BUKAN JSON BIASA)
-const ConfigURL = "https://pastebin.com/raw/rtcdArRS" 
+const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt" 
 
 // KUNCI INI HARUS SAMA PERSIS DENGAN GENERATOR (32 Bytes)
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir" 
