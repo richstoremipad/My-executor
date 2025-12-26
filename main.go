@@ -38,7 +38,7 @@ const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Dr
 const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
-// URL Github Anda (Pastikan isi file di sana adalah HASIL ENKRIPSI BARU)
+// URL Github Anda
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 
 // KUNCI RAHASIA (32 Karakter)
@@ -63,7 +63,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 	key := []byte(CryptoKey)
 	if len(key) != 32 { return nil, errors.New("key length error") }
 
-	// [FIX] Membersihkan spasi/enter dari GitHub agar tidak error "Invalid Data"
+	// Membersihkan spasi agar tidak Invalid Data
 	encryptedStr = strings.TrimSpace(encryptedStr)
 
 	data, err := base64.StdEncoding.DecodeString(encryptedStr)
@@ -347,9 +347,9 @@ func main() {
 	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
 	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
-	// [FIX KHUSUS REALME] Menambahkan Jeda 4 Detik sebelum Cek Root
+	// [FIX CRASH REALME] Menambahkan Jeda Awal agar HP tidak kaget
 	go func() {
-		time.Sleep(4 * time.Second) // Tunggu UI Stabil baru cek root
+		time.Sleep(3 * time.Second) // Tunggu UI tampil stabil
 		for {
 			isRoot := CheckRoot()
 			if isRoot {
@@ -484,24 +484,23 @@ func main() {
 	}
 
 	go func() {
-		// [FIX CRASH] Jeda 4 Detik sebelum connect internet
-		time.Sleep(4 * time.Second)
+		// [FIX CACHE] Jeda Sinkronisasi agar GitHub tidak lemot
+		time.Sleep(5 * time.Second)
 
 		if strings.Contains(ConfigURL, "GANTI_DENGAN_LINK") {
 			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
 			return
 		}
 
-		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
+		term.Write([]byte("\n\x1b[90m[*] Authenticating...\x1b[0m\n"))
 		
-		// [FIX CACHE] Tambah Timestamp agar GitHub kirim file terbaru
+		// [ANTI CACHE] Tambah parameter timestamp di URL
 		freshURL := fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix())
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Get(freshURL)
 		
 		if err != nil {
-			// [SECURE] Error tanpa URL
 			term.Write([]byte("\x1b[31m[ERR] Connection Failed\x1b[0m\n"))
 			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
@@ -516,16 +515,15 @@ func main() {
 
 		body, _ := io.ReadAll(resp.Body)
 		body = bytes.TrimSpace(body)
-		
-		// [DECRYPT]
+
+		// [DECRYPT DATA]
 		decrypted, err := decryptConfig(string(body))
 		if err != nil {
 			term.Write([]byte("\x1b[31m[ERR] Integrity Check Failed\x1b[0m\n"))
-			showErrorPopup("Security check failed.\nApp configuration is invalid.")
+			showErrorPopup("Security check failed.\nConfiguration is invalid.")
 			return
 		}
 
-		// Bersihkan hasil decrypt
 		decrypted = bytes.TrimSpace(decrypted)
 
 		var config OnlineConfig
@@ -535,12 +533,12 @@ func main() {
 					term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
 					showUpdatePopup(config.Message, config.Link)
 				} else {
-					term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
+					term.Write([]byte("\x1b[32m[V] System Authenticated.\x1b[0m\n"))
 				}
 			}
 		} else {
-			term.Write([]byte("\x1b[31m[ERR] Invalid Config.\x1b[0m\n"))
-			showErrorPopup("Invalid configuration data received.")
+			term.Write([]byte("\x1b[31m[ERR] Payload Error.\x1b[0m\n"))
+			showErrorPopup("Invalid configuration data.")
 		}
 	}()
 
@@ -624,7 +622,7 @@ func main() {
 		}()
 	}
 
-	// [FIX RUN BINARY]
+	// [FIX BINARY EXECUTION]
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -642,7 +640,7 @@ func main() {
 		go func() {
 			tmpFile, err := os.CreateTemp("", "exec_tmp")
 			if err != nil {
-				term.Write([]byte("\x1b[31m[ERR] Cache Write Failed\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m[ERR] Cache Failed\x1b[0m\n"))
 				return
 			}
 			tmpFile.Write(data)
@@ -650,8 +648,6 @@ func main() {
 			tmpFile.Close()
 
 			exec.Command("su", "-c", "rm -f "+target).Run()
-			
-			// [FIX] Menggunakan CP via Root (Aman untuk Binary)
 			moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, target, target))
 			if err := moveCmd.Run(); err != nil {
 				term.Write([]byte("\x1b[31m[ERR] Copy Failed (Check Root)\x1b[0m\n"))
@@ -668,7 +664,6 @@ func main() {
 			}
 			
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
 			stdin, _ = cmd.StdinPipe()
