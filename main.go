@@ -39,7 +39,7 @@ const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 // MASUKKAN LINK RAW PASTEBIN YANG ISINYA KODE TERENKRIPSI (BUKAN JSON BIASA)
-const ConfigURL = "https://docs.google.com/document/d/1D1J3Vg21ftUaZPLOiVgOAN-mysy7P3L55IE5aNfU_OE/export?format=txt" 
+const ConfigURL = "https://pastebin.com/raw/rtcdArRS" 
 
 // KUNCI INI HARUS SAMA PERSIS DENGAN GENERATOR (32 Bytes)
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir" 
