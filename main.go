@@ -28,14 +28,14 @@ import (
    CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
-const FlagFile = "/dev/status_driver_aktif"
+// Flag file hanya untuk indikator sukses install, bukan deteksi real
+const FlagFile = "/dev/status_driver_aktif" 
 const TargetDriverName = "5.10_A12"
 
 //go:embed fd.png
 var fdPng []byte
 
-// [BARU] Embed background image untuk terminal
-// PASTIKAN file 'bg.png' ada di folder project Anda
+// PASTIKAN ada file 'bg.png' di folder yang sama
 //go:embed bg.png
 var bgPng []byte
 
@@ -179,7 +179,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   ANIMATION & HELPERS (TIDAK DIUBAH)
+   ANIMATION & HELPERS
 ================================ */
 
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
@@ -197,18 +197,29 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 	term.Write([]byte(msg))
 }
 
+// [PERBAIKAN] Cek Kernel Valid (Cek folder modul langsung)
 func CheckKernelDriver() bool {
-	if _, err := os.Stat(FlagFile); err == nil { return true }
+	// Cek langsung ke system modules, jangan cuma cek flag file
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
 	if err := cmd.Run(); err == nil { return true }
-	return false
+	return false 
 }
 
+// [PERBAIKAN] Cek SELinux Valid
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
 	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
+}
+
+// [BARU] Cek Root Valid
+func CheckRoot() bool {
+	cmd := exec.Command("su", "-c", "id -u")
+	out, err := cmd.Output()
+	if err != nil { return false }
+	// Jika output 0 berarti root
+	return strings.TrimSpace(string(out)) == "0"
 }
 
 func VerifySuccessAndCreateFlag() bool {
@@ -269,6 +280,8 @@ func main() {
 
 	term := NewTerminal()
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
+	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
+	failRed := color.RGBA{R: 255, G: 50, 50, 255}
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
@@ -277,53 +290,73 @@ func main() {
 	status.TextStyle = fyne.TextStyle{Bold: true}
 	var stdin io.WriteCloser
 
-	// [UBAH WARNA HEADER]
-	// Mengganti Emas menjadi Abu-abu Gelap (Dark Gray)
+	// [WARNA HEADER - ABU ABU]
 	grayHeaderColor := color.Gray{Y: 60}
 
 	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
 	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
-	lblKernelValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
+	lblKernelValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
 	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
 
 	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
 	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
-	lblSELinuxValue := canvas.NewText("CHECKING...", color.RGBA{150, 150, 150, 255})
+	lblSELinuxValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
 	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
 
-	// [LOGIC ASLI - TIDAK DIUBAH]
-	updateAllStatus := func() {
-		go func() {
+	// [LABEL SYSTEM (ROOT) - DEFAULT]
+	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
+	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
+	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+
+	// [PERBAIKAN LOGIC MONITORING - REAL TIME LOOP]
+	go func() {
+		// Loop tak terbatas untuk mengecek status setiap 3 detik
+		for {
+			// 1. Cek Root
+			isRoot := CheckRoot()
+			if isRoot {
+				lblSystemValue.Text = "ROOT ACCESS GRANTED"
+				lblSystemValue.Color = successGreen
+			} else {
+				lblSystemValue.Text = "ROOT ACCESS DENIED"
+				lblSystemValue.Color = failRed
+			}
+			lblSystemValue.Refresh()
+
+			// 2. Cek Kernel Driver
 			if CheckKernelDriver() {
 				lblKernelValue.Text = "DETECTED"
-				lblKernelValue.Color = color.RGBA{0, 255, 0, 255}
+				lblKernelValue.Color = successGreen
 			} else {
 				lblKernelValue.Text = "NOT FOUND"
-				lblKernelValue.Color = color.RGBA{255, 50, 50, 255}
+				lblKernelValue.Color = failRed
 			}
 			lblKernelValue.Refresh()
 
+			// 3. Cek SELinux
 			seStatus := CheckSELinux()
-			lblSELinuxValue.Text = seStatus
+			lblSELinuxValue.Text = strings.ToUpper(seStatus)
 			if seStatus == "Enforcing" {
-				lblSELinuxValue.Color = color.RGBA{0, 255, 0, 255}
+				lblSELinuxValue.Color = successGreen
 			} else if seStatus == "Permissive" {
-				lblSELinuxValue.Color = color.RGBA{255, 50, 50, 255}
+				lblSELinuxValue.Color = failRed
 			} else {
 				lblSELinuxValue.Color = color.Gray{Y: 150}
 			}
 			lblSELinuxValue.Refresh()
-		}()
-	}
-	updateAllStatus()
 
-	// [LOGIC ASLI - TIDAK DIUBAH]
+			// Tunggu 3 detik sebelum cek lagi
+			time.Sleep(3 * time.Second)
+		}
+	}()
+
 	autoInstallKernel := func() {
 		term.Clear()
 		status.SetText("System: Installing...")
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
-			updateAllStatus()
+			// Status akan auto-update oleh loop monitoring
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
@@ -397,13 +430,11 @@ func main() {
 				VerifySuccessAndCreateFlag()
 				pipeStdin.Close()
 				time.Sleep(1 * time.Second)
-				updateAllStatus()
 				status.SetText("System: Online")
 			}
 		}()
 	}
 
-	// [LOGIC ASLI - TIDAK DIUBAH]
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
@@ -426,7 +457,6 @@ func main() {
 			cmd.Run()
 			status.SetText("Status: Idle")
 			stdin = nil
-			updateAllStatus()
 		}()
 	}
 
@@ -456,10 +486,11 @@ func main() {
 	// 1. SELinux Button
 	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
 		go func() {
+			// Toggle Logic
 			current := CheckSELinux()
 			if current == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run()
 			} else { exec.Command("su", "-c", "setenforce 1").Run() }
-			updateAllStatus()
+			// Loop monitoring akan otomatis mengupdate UI
 		}()
 	})
 	selinuxBtn.Importance = widget.MediumImportance
@@ -496,8 +527,6 @@ func main() {
 
 	// HEADER UTAMA (ABU-ABU BACKGROUND)
 	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
-	
-	// Menggunakan warna ABU-ABU yang baru
 	headerBgRect := canvas.NewRectangle(grayHeaderColor)
 	
 	headerBarWithBg := container.NewStack(
@@ -508,10 +537,6 @@ func main() {
 	topSection := container.NewVBox(headerBarWithBg, container.NewPadded(status), widget.NewSeparator())
 	
 	// [LAYOUT FOOTER & INPUT]
-	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
-	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-	lblSystemValue := canvas.NewText("ROOT ACCESS GRANTED", color.RGBA{R: 0, G: 255, B: 0, A: 255})
-	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
 	
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
@@ -520,17 +545,14 @@ func main() {
 	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
 
 	// [IMPLEMENTASI BACKGROUND TERMINAL DENGAN STACK]
-	// 1. Load gambar dari embed resource
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
-	bgImg.FillMode = canvas.ImageFillStretch // Stretch agar memenuhi area terminal
+	bgImg.FillMode = canvas.ImageFillStretch 
 
-	// 2. Tumpuk (Stack) gambar di belakang terminal scroll
 	terminalWithBg := container.NewStack(
 		bgImg,       // Lapisan bawah: Gambar Background
 		term.scroll, // Lapisan atas: Terminal
 	)
 
-	// 3. Gunakan stack tersebut di layer utama
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, terminalWithBg)
 	
 	// [POSISI FAB (FD) - UKURAN 60]
