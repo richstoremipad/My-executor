@@ -28,30 +28,29 @@ import (
 var resourceFiles embed.FS
 
 /* ==========================================
-   CONFIG & HELPERS (Tetap Sama)
+   CONFIG
 ========================================== */
 const GitHubRepo = "https://raw.githubusercontent.com/richstoremipad/My-executor/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
-const TargetDriverName = "5.10_A12"
+const TargetDriverName = "5.10_A12" 
 
-// Helper untuk membuat Tombol Gambar Tanpa Background
-func createIconButton(resName string, size fyne.Size, action func()) fyne.CanvasObject {
+/* ==========================================
+   HELPER UNTUK ICON CUSTOM (TANPA TEKS & BOX BIRU)
+========================================== */
+func createImgButton(resName string, size fyne.Size, action func()) fyne.CanvasObject {
 	data, _ := resourceFiles.ReadFile(resName)
 	res := fyne.NewStaticResource(resName, data)
-	
 	img := canvas.NewImageFromResource(res)
 	img.FillMode = canvas.ImageFillContain
 
 	btn := widget.NewButton("", action)
-	btn.Importance = widget.LowImportance // Menghilangkan background/border standar
+	btn.Importance = widget.LowImportance // Menghapus background biru
 
-	// Gabungkan gambar dan tombol transparan dalam satu kotak
-	content := container.NewMax(img, btn)
-	return container.NewGridWrap(size, content)
+	return container.NewGridWrap(size, container.NewMax(img, btn))
 }
 
 /* ==========================================
-   TERMINAL LOGIC (Tetap Sama)
+   TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
 	grid     *widget.TextGrid
@@ -68,7 +67,7 @@ func NewTerminal() *Terminal {
 	g.ShowLineNumbers = false
 	defStyle := &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent}
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
-	return &Terminal{grid: g, scroll: container.NewScroll(g), reAnsi: re, curStyle: defStyle}
+	return &Terminal{grid: g, scroll: container.NewScroll(g), curStyle: defStyle, reAnsi: re}
 }
 
 func (t *Terminal) Clear() { t.grid.SetText(""); t.curRow = 0; t.curCol = 0 }
@@ -125,78 +124,89 @@ func ansiToColor(code string) color.Color {
 	case "31": return theme.ErrorColor()
 	case "32": return theme.SuccessColor()
 	case "33": return theme.WarningColor()
-	case "34": return theme.PrimaryColor()
 	case "36": return color.RGBA{0, 255, 255, 255}
 	default: return nil
 	}
 }
 
 /* ==========================================
-   MAIN UI
+   LOGIC HELPERS (DOWNLOAD, CHECK, DLL)
 ========================================== */
+func CheckKernelDriver() bool {
+	if _, err := os.Stat(FlagFile); err == nil { return true }
+	return exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName).Run() == nil
+}
 
+func CheckSELinux() string {
+	out, err := exec.Command("su", "-c", "getenforce").Output()
+	if err != nil { return "Unknown" }
+	return strings.TrimSpace(string(out))
+}
+
+func downloadFile(url, path string) error {
+	resp, err := http.Get(url)
+	if err != nil { return err }
+	defer resp.Body.Close()
+	f, err := os.Create(path)
+	if err != nil { return err }
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+/* ===============================
+              MAIN UI
+================================ */
 func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 	w := a.NewWindow("Simple Exec by TANGSAN")
-	w.Resize(fyne.NewSize(800, 550))
+	w.Resize(fyne.NewSize(720, 520))
 
 	term := NewTerminal()
-	status := widget.NewLabel("System: Ready")
+	statusLabel := widget.NewLabel("System: Ready") // Digunakan agar tidak error "declared and not used"
 	var stdin io.WriteCloser
 
-	// Status Labels
+	// Header Status
 	lblKernel := canvas.NewText("KERNEL: CHECKING...", color.White)
 	lblSELinux := canvas.NewText("SELINUX: CHECKING...", color.White)
-	lblKernel.TextSize = 11; lblSELinux.TextSize = 11
+	lblKernel.TextSize = 10; lblSELinux.TextSize = 10
 
-	updateStatus := func() {
-		// Kernel check logic
-		if _, err := os.Stat(FlagFile); err == nil {
+	updateUI := func() {
+		if CheckKernelDriver() {
 			lblKernel.Text = "KERNEL: DETECTED"; lblKernel.Color = color.RGBA{0, 255, 0, 255}
 		} else {
 			lblKernel.Text = "KERNEL: NOT FOUND"; lblKernel.Color = color.RGBA{255, 0, 0, 255}
 		}
-		// SELinux check logic
-		out, _ := exec.Command("su", "-c", "getenforce").Output()
-		lblSELinux.Text = "SELINUX: " + strings.TrimSpace(string(out))
+		se := CheckSELinux()
+		lblSELinux.Text = "SELINUX: " + se
+		lblSELinux.Color = color.RGBA{255, 255, 0, 255}
 		lblKernel.Refresh(); lblSELinux.Refresh()
 	}
-	go func() { for { updateStatus(); time.Sleep(2 * time.Second) } }()
+	go func() { for { updateUI(); time.Sleep(2 * time.Second) } }()
 
-	// --- TOMBOL-TOMBOL DENGAN PNG BESAR ---
-	
-	// Inject Driver Button (id.png) - Ukuran 120x60 (bisa disesuaikan)
-	btnInject := createIconButton("id.png", fyne.NewSize(140, 50), func() {
-		dialog.ShowConfirm("Inject", "Mulai Inject Driver?", func(ok bool) {
-			if ok { term.Write([]byte("\x1b[36m[*] Starting Injection...\x1b[0m\n")) }
-		}, w)
+	// --- TOMBOL DENGAN PNG BESAR (PERMINTAAN USER) ---
+	btnInject := createImgButton("id.png", fyne.NewSize(140, 55), func() {
+		term.Write([]byte("\x1b[36m[*] Injecting Driver...\x1b[0m\n"))
 	})
 
-	// SELinux Switch Button (se.png)
-	btnSELinux := createIconButton("se.png", fyne.NewSize(140, 50), func() {
+	btnSELinux := createImgButton("se.png", fyne.NewSize(140, 55), func() {
 		exec.Command("su", "-c", "setenforce 0").Run()
-		term.Write([]byte("\x1b[33m[*] SELinux set to Permissive\x1b[0m\n"))
+		term.Write([]byte("\x1b[33m[*] SELinux Switched\x1b[0m\n"))
 	})
 
-	// Choice File Button (cf.png) - Ukuran JUMBO 100x100
-	btnChoiceFile := createIconButton("cf.png", fyne.NewSize(100, 100), func() {
+	btnChoiceFile := createImgButton("cf.png", fyne.NewSize(110, 110), func() {
 		dialog.ShowFileOpen(func(r fyne.URIReadCloser, _ error) {
-			if r != nil { term.Write([]byte("\x1b[32m[+] File Selected: " + r.URI().Name() + "\x1b[0m\n")) }
+			if r != nil { term.Write([]byte("\x1b[32m[+] Selected: " + r.URI().Name() + "\x1b[0m\n")) }
 		}, w)
 	})
 
-	// Header
-	headerLeft := container.NewVBox(
-		canvas.NewText("Simple Exec by TANGSAN", color.RGBA{255, 255, 0, 255}),
-		lblKernel, lblSELinux,
-	)
+	// Layouting
+	headerLeft := container.NewVBox(canvas.NewText("Simple Exec by TANGSAN", color.RGBA{255, 255, 0, 255}), lblKernel, lblSELinux)
 	headerRight := container.NewHBox(btnInject, btnSELinux)
-	top := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
+	top := container.NewVBox(container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight), statusLabel)
 
-	// Input Area
 	input := widget.NewEntry()
-	input.SetPlaceHolder("Enter command...")
 	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), func() {
 		if stdin != nil && input.Text != "" { fmt.Fprintln(stdin, input.Text); input.SetText("") }
 	})
@@ -206,16 +216,9 @@ func main() {
 		container.NewBorder(nil, nil, nil, container.NewGridWrap(fyne.NewSize(100, 45), sendBtn), container.NewPadded(input)),
 	)
 
-	// Floating Action Button (FAB) untuk Choice File
-	fabContainer := container.NewVBox(
-		layout.NewSpacer(),
-		container.NewHBox(layout.NewSpacer(), btnChoiceFile, widget.NewLabel("  ")),
-		widget.NewLabel("  "),
-	)
+	fab := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), btnChoiceFile, widget.NewLabel(" ")), widget.NewLabel(" "))
 
-	// Final Layout
-	mainContent := container.NewBorder(top, bottom, nil, nil, term.scroll)
-	w.SetContent(container.NewStack(mainContent, fabContainer))
+	w.SetContent(container.NewStack(container.NewBorder(top, bottom, nil, nil, term.scroll), fab))
 	w.ShowAndRun()
 }
 
