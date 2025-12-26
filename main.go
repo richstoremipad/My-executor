@@ -549,7 +549,7 @@ func main() {
 
 	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, term.scroll)
 	
-	// [UI BUTTON FILE CHOICE - PERBAIKAN]
+	// [UI BUTTON FILE CHOICE - UKURAN 100x100 & POSISI DINAIKKAN]
 	fdResource := &fyne.StaticResource{
 		StaticName: "fd.png",
 		StaticContent: fdPng,
@@ -558,29 +558,27 @@ func main() {
 	fabBtn := widget.NewButtonWithIcon("", fdResource, func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
-	// KITA HAPUS "HighImportance" AGAR TIDAK ADA KOTAK BIRU BACKGROUND
-	// fabBtn.Importance = widget.HighImportance <--- DIHAPUS
+	
+	// MENGGUNAKAN GRIDWRAP 100x100 SESUAI PERMINTAAN
+	// Ini membuat area sentuh dan tampilan icon membesar
+	sizedFab := container.NewGridWrap(fyne.NewSize(100, 100), fabBtn)
 
-	// BUNGKUS DENGAN GRIDWRAP AGAR UKURAN TOMBOL MENJADI BESAR (80x80)
-	// Ini membuat area sentuh luas dan kotak terlihat besar tanpa warna mencolok
-	largeFab := container.NewGridWrap(fyne.NewSize(80, 80), fabBtn)
-
-	// Container diposisikan di pojok kanan bawah
-	// Kita tambahkan Spacer di bawah tombol agar posisinya NAIK KE ATAS (tidak mepet tombol kirim)
+	// CONTAINER POSISI
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(), 
 		container.NewHBox(
 			layout.NewSpacer(),
-			largeFab, // Tombol Besar
-			widget.NewLabel(" "), 
+			sizedFab, 
+			widget.NewLabel("   "), // Padding kanan sedikit
 		),
-		// Tambahan jarak di bawah tombol untuk menaikkannya
-		widget.NewLabel(" "), // Jarak vertikal 1
-		widget.NewLabel(" "), // Jarak vertikal 2
-		widget.NewLabel(" "), // Jarak vertikal 3
+		// MENAMBAHKAN BANYAK SPACER AGAR POSISI NAIK KE ATAS (TIDAK MEPET)
+		widget.NewLabel(" "), 
+		widget.NewLabel(" "), 
+		widget.NewLabel(" "), 
+		widget.NewLabel(" "), 
+		widget.NewLabel(" "), 
 	)
 	
 	w.SetContent(container.NewStack(mainLayer, fabContainer))
 	w.ShowAndRun()
 }
-
