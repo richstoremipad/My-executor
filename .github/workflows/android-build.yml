@@ -15,12 +15,12 @@ jobs:
       - name: Install Dependencies
         run: |
           go mod tidy
-          go install github.com/fyne-io/fyne-cross/cmd/fyne-cross@latest
+          # PERBAIKAN: Menambahkan '/v2' agar sesuai dengan versi terbaru
+          go install github.com/fyne-io/fyne-cross/v2/cmd/fyne-cross@latest
 
       - name: Build APK (arm64)
         run: |
-          # PENTING: App ID harus sama dengan yang ada di kode Go (com.tangsan.executor)
-          # Permission & Metadata ditambahkan agar muncul di pengaturan HyperOS
+          # Perintah build dengan permission lengkap
           $HOME/go/bin/fyne-cross android \
             -app-id com.tangsan.executor \
             -name "Simple Exec" \
@@ -38,3 +38,4 @@ jobs:
         with:
           name: APK-executor
           path: fyne-cross/dist/**/*.apk
+
