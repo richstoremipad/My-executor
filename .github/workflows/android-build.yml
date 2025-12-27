@@ -25,11 +25,6 @@ jobs:
             -name "my executor" \
             -icon icon.png \
             -arch arm64 \
-            -metadata "android:requestLegacyExternalStorage=true" \
-            -permission "android.permission.MANAGE_EXTERNAL_STORAGE" \
-            -permission "android.permission.READ_EXTERNAL_STORAGE" \
-            -permission "android.permission.WRITE_EXTERNAL_STORAGE" \
-            -permission "android.permission.INTERNET" \
             -silent
 
       - name: Upload Artifact
