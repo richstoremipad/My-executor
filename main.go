@@ -251,12 +251,22 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// Request Permission Helper for Android 11+
-func RequestStoragePermission() {
-	// Try to open "Manage All Files Access" settings
-	// This command works on non-root devices to trigger the settings intent
-	cmd := exec.Command("am", "start", "-a", "android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
-	cmd.Run()
+// [FIX] Improved Permission Request Logic with Feedback
+func RequestStoragePermission(term *Terminal) {
+	if term != nil {
+		term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n"))
+	}
+	
+	// Method 1: AM via Shell (Standard)
+	cmd1 := exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
+	err1 := cmd1.Run()
+	
+	// Method 2: CMD Activity (Alternative for newer Androids)
+	if err1 != nil {
+		if term != nil { term.Write([]byte("\x1b[31m[!] Method 1 failed, trying Method 2...\x1b[0m\n")) }
+		cmd2 := exec.Command("sh", "-c", "cmd activity start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
+		cmd2.Run()
+	}
 }
 
 func downloadFile(url string, filepath string) (error, string) {
@@ -321,13 +331,11 @@ func main() {
 	go func() {
 		time.Sleep(1 * time.Second)
 		if !CheckRoot() {
-			RequestStoragePermission()
+			RequestStoragePermission(nil) // Silent on startup
 		}
 	}()
 
-	// Init Path
 	if !CheckRoot() {
-		// Default to sdcard for better UX on non-root
 		currentDir = "/sdcard"
 	}
 
@@ -399,7 +407,6 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					// Non-Root Smart Execute
 					if !isBinary {
 						cmd = exec.Command("sh", scriptPath)
 					} else {
@@ -410,25 +417,20 @@ func main() {
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
-					// Non-Root Command Logic with Hacks
 					runCmd := cmdText
-					
-					// FIX: Always use ls -a to force show hidden/all files
+					// [FIX] Force ls -a
 					if strings.HasPrefix(cmdText, "ls") {
 						if !strings.Contains(cmdText, "-a") {
 							runCmd = strings.Replace(cmdText, "ls", "ls -a", 1)
 						}
 					}
-
-					// FIX: Handle ./file execution
+					// [FIX] Handle ./file execution
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
-						
 						if strings.HasSuffix(fileName, ".sh") {
 							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
 						} else {
-							// Binary fallback
 							tmpBin := filepath.Join(os.TempDir(), fileName)
 							if err := copyFile(fullPath, tmpBin); err == nil {
 								os.Chmod(tmpBin, 0755)
@@ -438,7 +440,6 @@ func main() {
 							}
 						}
 					}
-
 					cmd = exec.Command("sh", "-c", runCmd)
 					cmd.Dir = currentDir
 				}
@@ -527,16 +528,13 @@ func main() {
 		term.Clear()
 		data, err := io.ReadAll(reader)
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
-		
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-		
 		tmpFile, err := os.CreateTemp("", "exec_tmp")
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Write Failed\x1b[0m\n")); return }
 		tmpPath := tmpFile.Name()
 		tmpFile.Write(data)
 		tmpFile.Close()
 		os.Chmod(tmpPath, 0755)
-		
 		executeTask("", true, tmpPath, isBinary)
 	}
 
@@ -588,30 +586,23 @@ func main() {
 			
 			dlPath := "/data/local/tmp/temp_kernel_dl"; target := "/data/local/tmp/installer.sh"
 			var dlUrl string; var found bool = false
-			
 			simulateProcess := func(label string) {
 				for i := 0; i <= 100; i += 10 { drawProgressBar(term, label, i, "\x1b[36m"); time.Sleep(50 * time.Millisecond) }
 				term.Write([]byte("\n"))
 			}
-
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
-			url1 := GitHubRepo + ver + ".sh"
-			
-			err, _ := downloadFile(url1, dlPath)
+			err, _ := downloadFile(GitHubRepo+ver+".sh", dlPath)
 			if err == nil { dlUrl = "Variant 1"; found = true }
-			
 			if !found {
 				parts := strings.Split(ver, "-"); 
 				if len(parts) > 0 {
 					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
 					simulateProcess("Connecting...")
-					url2 := GitHubRepo + parts[0] + ".sh"
-					err, _ = downloadFile(url2, dlPath)
+					err, _ = downloadFile(GitHubRepo+parts[0]+".sh", dlPath)
 					if err == nil { dlUrl = "Variant 2"; found = true }
 				}
 			}
-
 			if !found {
 				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n")); status.Text = "Failed"; status.Refresh()
 			} else {
@@ -632,11 +623,14 @@ func main() {
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	// ADD PERMISSION BUTTON
-	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() { RequestStoragePermission() })
+	// [FIX] Permission Button with Fallback Dialog
+	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
+		RequestStoragePermission(term)
+		// Fallback dialog info
+		dialog.ShowInformation("Permission Help", "Jika pengaturan tidak terbuka:\n1. Buka Settings HP\n2. Cari 'All Files Access'\n3. Aktifkan untuk aplikasi ini.", w)
+	})
 	btnPerm.Importance = widget.LowImportance
 	
-	// Header Adjusted
 	headerTop := container.NewBorder(nil, nil, nil, container.NewGridWrap(fyne.NewSize(40,30), btnPerm), container.NewPadded(titleText))
 	
 	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
