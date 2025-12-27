@@ -461,7 +461,6 @@ func main() {
 		btnCancel := widget.NewButton("CANCEL", func() {
 			overlayContainer.Hide()
 		})
-		// [MODIFIKASI] Tombol Cancel jadi Merah
 		btnCancel.Importance = widget.DangerImportance
 
 		btnConfirm := widget.NewButton(confirmText, func() {
@@ -477,15 +476,14 @@ func main() {
 			btnConfirm.Importance = widget.HighImportance
 		}
 
-		// [MODIFIKASI] Layout Tombol: Ukuran fix dan pakai spacer agar tidak mepet
-		btnSize := fyne.NewSize(110, 40) // Ukuran tombol sedikit diperkecil agar muat
+		btnSize := fyne.NewSize(110, 40)
 		cancelContainer := container.NewGridWrap(btnSize, btnCancel)
 		confirmContainer := container.NewGridWrap(btnSize, btnConfirm)
 
 		btnGrid := container.NewHBox(
 			layout.NewSpacer(),
 			cancelContainer,
-			widget.NewLabel("      "), // Jarak (gap) antara tombol
+			widget.NewLabel("      "),
 			confirmContainer,
 			layout.NewSpacer(),
 		)
@@ -507,7 +505,7 @@ func main() {
 		content := container.NewVBox(
 			container.NewPadded(container.NewCenter(lblTitle)),
 			lblMsg,
-			widget.NewLabel(""), // Spacer Vertical
+			widget.NewLabel(""),
 			btnGrid,
 		)
 
@@ -670,7 +668,9 @@ func main() {
 		}
 
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-		target := "/data/local/tmp/temp_exec"
+		// [MODIFIKASI] Target path menggunakan cache internal app (aman untuk non-root)
+		// Namun kita perlu logika untuk root vs non-root
+		targetRoot := "/data/local/tmp/temp_exec"
 
 		go func() {
 			tmpFile, err := os.CreateTemp("", "exec_tmp")
@@ -681,22 +681,39 @@ func main() {
 			tmpFile.Write(data)
 			tmpPath := tmpFile.Name()
 			tmpFile.Close()
-
-			exec.Command("su", "-c", "rm -f "+target).Run()
-
-			moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, target, target))
-			if err := moveCmd.Run(); err != nil {
-				term.Write([]byte("\x1b[31m[ERR] Copy Failed (Check Root)\x1b[0m\n"))
-				os.Remove(tmpPath)
-				return
-			}
-			os.Remove(tmpPath)
+			
+			// Pastikan file executable (penting untuk non-root)
+			os.Chmod(tmpPath, 0755)
 
 			var cmd *exec.Cmd
-			if isBinary {
-				cmd = exec.Command("su", "-c", target)
+
+			// [MODIFIKASI UTAMA] Cek apakah Root tersedia?
+			if CheckRoot() {
+				// JALUR ROOT (Seperti sebelumnya)
+				exec.Command("su", "-c", "rm -f "+targetRoot).Run()
+				moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, targetRoot, targetRoot))
+				if err := moveCmd.Run(); err != nil {
+					term.Write([]byte("\x1b[31m[ERR] Root Copy Failed\x1b[0m\n"))
+					os.Remove(tmpPath)
+					return
+				}
+				os.Remove(tmpPath)
+
+				if isBinary {
+					cmd = exec.Command("su", "-c", targetRoot)
+				} else {
+					cmd = exec.Command("su", "-c", "sh "+targetRoot)
+				}
 			} else {
-				cmd = exec.Command("su", "-c", "sh "+target)
+				// JALUR NON-ROOT (User biasa)
+				// Jalankan langsung dari cache path
+				term.Write([]byte("\x1b[33m[*] Running in Non-Root Mode...\x1b[0m\n"))
+				
+				if isBinary {
+					cmd = exec.Command(tmpPath)
+				} else {
+					cmd = exec.Command("sh", tmpPath)
+				}
 			}
 
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
@@ -717,6 +734,11 @@ func main() {
 			status.Text = "Status: Idle"
 			status.Refresh()
 			stdin = nil
+			
+			// Cleanup cache if non-root used it
+			if !CheckRoot() {
+				os.Remove(tmpPath)
+			}
 		}()
 	}
 
@@ -804,7 +826,7 @@ func main() {
 		term.scroll,
 	)
 
-	// 5. FAB
+	// 5. FAB (Floating Action Button)
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
@@ -822,11 +844,16 @@ func main() {
 		layout.NewSpacer(),
 		container.NewGridWrap(fyne.NewSize(65, 65), fabContent),
 	)
+	
+	// [MODIFIKASI] Menambahkan spacer ekstra agar tombol naik lebih tinggi
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(),
 		container.NewPadded(fabWrapper),
-		widget.NewLabel(" "),
-		widget.NewLabel(" "),
+		widget.NewLabel(" "), // Spacer 1
+		widget.NewLabel(" "), // Spacer 2
+		widget.NewLabel(" "), // Spacer 3 (Extra)
+		widget.NewLabel(" "), // Spacer 4 (Extra)
+		widget.NewLabel(" "), // Spacer 5 (Extra untuk clear input area)
 	)
 
 	// --- FINAL ASSEMBLY ---
