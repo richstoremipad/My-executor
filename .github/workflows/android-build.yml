@@ -16,7 +16,7 @@ jobs:
         run: |
           go mod tidy
           # PERBAIKAN: Menambahkan '/v2' agar sesuai dengan versi terbaru
-          go install github.com/fyne-io/fyne-cross/v2/cmd/fyne-cross@latest
+          go go install github.com/fyne-io/fyne-cross@latest
 
       - name: Build APK (arm64)
         run: |
