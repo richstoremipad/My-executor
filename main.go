@@ -112,7 +112,7 @@ type Terminal struct {
 	curStyle     *widget.CustomTextGridStyle
 	mutex        sync.Mutex
 	reAnsi       *regexp.Regexp
-	needsRefresh bool // Penanda jika ada data baru
+	needsRefresh bool
 }
 
 func NewTerminal() *Terminal {
@@ -134,9 +134,7 @@ func NewTerminal() *Terminal {
 		needsRefresh: false,
 	}
 
-	// [OPTIMISASI UTAMA]
 	// Render Loop: Hanya refresh layar setiap 50ms (20 FPS)
-	// Ini mencegah UI lag saat output sangat cepat
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		for range ticker.C {
@@ -205,8 +203,6 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		raw = raw[loc[1]:]
 	}
 	
-	// Kita tandai butuh refresh, tapi JANGAN panggil Refresh() disini.
-	// Biarkan Ticker yang mengerjakannya agar UI tidak macet.
 	t.needsRefresh = true
 	return len(p), nil
 }
@@ -249,14 +245,11 @@ func (t *Terminal) printText(text string) {
 			t.curCol = 0
 			continue
 		}
-		// Expand row if needed
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
-		// Expand col if needed (manual append is faster than copying array)
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
-			// Grow capacity
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
@@ -489,7 +482,6 @@ func main() {
 				return
 			}
 			
-			// Menggunakan Goroutine terpisah untuk membaca output agar tidak blocking
 			var wg sync.WaitGroup
 			wg.Add(2)
 			go func() { defer wg.Done(); io.Copy(term, stdout) }()
@@ -642,11 +634,105 @@ func main() {
 		}()
 	}
 
-	titleText := canvas.NewText("SIMPLE EXEC", color.White); titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}; titleText.Alignment = fyne.TextAlignCenter
-	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
-	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false) }); btnInject.Importance = widget.HighImportance
-	btnSwitch := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux() == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run() } else { exec.Command("su", "-c", "setenforce 1").Run() } }() }); btnSwitch.Importance = widget.HighImportance
-	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClear.Importance = widget.DangerImportance
-	headerStack := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)), container.NewPadded(status), widget.NewSeparator()))
+	// UI Layout Construction
+	titleText := canvas.NewText("SIMPLE EXEC", color.White)
+	titleText.TextSize = 16
+	titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	titleText.Alignment = fyne.TextAlignCenter
+
+	infoGrid := container.NewGridWithColumns(3,
+		container.NewVBox(lblKernelTitle, lblKernelValue),
+		container.NewVBox(lblSELinuxTitle, lblSELinuxValue),
+		container.NewVBox(lblSystemTitle, lblSystemValue),
+	)
+
+	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() {
+		showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false)
+	})
+	btnInject.Importance = widget.HighImportance
+
+	btnSwitch := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() {
+		go func() {
+			if CheckSELinux() == "Enforcing" {
+				exec.Command("su", "-c", "setenforce 0").Run()
+			} else {
+				exec.Command("su", "-c", "setenforce 1").Run()
+			}
+		}()
+	})
+	btnSwitch.Importance = widget.HighImportance
+
+	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
+	btnClear.Importance = widget.DangerImportance
+
+	headerStack := container.NewStack(
+		canvas.NewRectangle(color.Gray{Y: 45}),
+		container.NewVBox(
+			container.NewPadded(titleText),
+			container.NewPadded(infoGrid),
+			container.NewPadded(container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)),
+			container.NewPadded(status),
+			widget.NewSeparator(),
+		),
+	)
 	
-	sendBtn := widget.NewButtonWithIcon("", theme
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
+	cpyLbl := canvas.NewText("Code by TANGSAN", silverColor)
+	cpyLbl.TextSize = 10
+	cpyLbl.Alignment = fyne.TextAlignCenter
+	
+	bottomContainer := container.NewVBox(
+		container.NewPadded(cpyLbl),
+		container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)),
+	)
+	
+	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
+	bgImg.FillMode = canvas.ImageFillStretch
+	
+	termArea := container.NewStack(
+		canvas.NewRectangle(color.Black),
+		bgImg,
+		canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180}),
+		term.scroll,
+	)
+	
+	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
+	img.FillMode = canvas.ImageFillContain
+	
+	fabBtn := widget.NewButton("", func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
+	})
+	fabBtn.Importance = widget.LowImportance
+	
+	// FIX: Penulisan fabContainer dibuat multi-line agar tidak error syntax
+	fabWrapper := container.NewHBox(
+		layout.NewSpacer(),
+		container.NewGridWrap(
+			fyne.NewSize(65, 65),
+			container.NewStack(
+				container.NewPadded(img),
+				fabBtn,
+			),
+		),
+	)
+
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(),
+		container.NewPadded(fabWrapper),
+		widget.NewLabel(" "),
+		widget.NewLabel(" "),
+		widget.NewLabel(" "),
+		widget.NewLabel(" "),
+		widget.NewLabel(" "),
+	)
+	
+	overlayContainer = container.NewStack()
+	overlayContainer.Hide()
+	
+	w.SetContent(container.NewStack(
+		container.NewBorder(headerStack, bottomContainer, nil, nil, termArea),
+		fabContainer,
+		overlayContainer,
+	))
+	w.ShowAndRun()
+}
