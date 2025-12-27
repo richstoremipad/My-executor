@@ -35,14 +35,16 @@ import (
    CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
-const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/driver/"
+const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// Global Variable
-var currentDir string = "/sdcard" // Default ke sdcard agar user langsung lihat file
+// BATAS MAX BARIS AGAR TIDAK LEMOT/CRASH
+const MaxScrollback = 100 
+
+var currentDir string = "/sdcard" 
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
@@ -62,9 +64,7 @@ var bgPng []byte
    SECURITY LOGIC
 ========================================== */
 func decryptConfig(encryptedStr string) ([]byte, error) {
-	defer func() {
-		if r := recover(); r != nil {}
-	}()
+	defer func() { if r := recover(); r != nil {} }()
 	key := []byte(CryptoKey)
 	if len(key) != 32 { return nil, errors.New("key length error") }
 	encryptedStr = strings.TrimSpace(encryptedStr)
@@ -83,7 +83,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (HIGH PERFORMANCE)
+   TERMINAL LOGIC (ULTRA LIGHTWEIGHT)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -113,7 +113,8 @@ func NewTerminal() *Terminal {
 		reAnsi:       re,
 		needsRefresh: false,
 	}
-	// Render Throttling (20 FPS)
+	// Render Loop: Hanya refresh layar setiap 50ms (20 FPS)
+	// Ini mencegah UI Freeze saat data masuk deras
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		for range ticker.C {
@@ -162,8 +163,11 @@ func (t *Terminal) Clear() {
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	
+	// Pre-clean input
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil { t.printText(raw); break }
@@ -197,17 +201,38 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	}
 }
 
+// [OPTIMIZED] Logika ini mencegah aplikasi crash karena memory full
 func (t *Terminal) printText(text string) {
 	for _, char := range text {
-		if char == '\n' { t.curRow++; t.curCol = 0; continue }
+		if char == '\n' { 
+			t.curRow++
+			t.curCol = 0
+			
+			// AUTO-CLEANER: Hapus baris lama jika melebihi batas
+			if len(t.grid.Rows) > MaxScrollback {
+				// Hapus baris teratas (FIFO)
+				t.grid.Rows = t.grid.Rows[1:]
+				// Kursor mundur 1 baris
+				t.curRow-- 
+			}
+			continue 
+		}
+		
 		if char == '\r' { t.curCol = 0; continue }
-		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
+		
+		// Expand Rows
+		for t.curRow >= len(t.grid.Rows) { 
+			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) 
+		}
+		
+		// Expand Cols
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
+		
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
 		t.curCol++
@@ -251,21 +276,13 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [FIX] Permission Request - Runs in Goroutine to prevent FREEZING
 func RequestStoragePermission(term *Terminal) {
-	if term != nil {
-		term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n"))
-	}
-	
-	// Method 1: AM via Shell (Standard)
-	cmd1 := exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
-	err1 := cmd1.Run()
-	
-	// Method 2: CMD Activity (Alternative for newer Androids like HyperOS)
-	if err1 != nil {
-		if term != nil { term.Write([]byte("\x1b[31m[!] Method 1 failed, trying Method 2...\x1b[0m\n")) }
-		cmd2 := exec.Command("sh", "-c", "cmd activity start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
-		cmd2.Run()
+	if term != nil { term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n")) }
+	pkgName := "com.tangsan.executor"
+	cmd1 := exec.Command("sh", "-c", fmt.Sprintf("am start -a android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION -d package:%s", pkgName))
+	if cmd1.Run() != nil {
+		if term != nil { term.Write([]byte("\x1b[33m[!] Trying generic settings...\x1b[0m\n")) }
+		exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
 	}
 }
 
@@ -274,12 +291,10 @@ func downloadFile(url string, filepath string) (error, string) {
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
-	
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil { return nil, "Success" }
 	}
-	
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
@@ -327,17 +342,12 @@ func main() {
 
 	term := NewTerminal()
 	
-	// Force Permission Request on Startup (Background)
 	go func() {
 		time.Sleep(1 * time.Second)
-		if !CheckRoot() {
-			// RequestStoragePermission(nil) // Optional on startup
-		}
+		if !CheckRoot() { /* Optional Auto Request */ }
 	}()
 
-	if !CheckRoot() {
-		currentDir = "/sdcard"
-	}
+	if !CheckRoot() { currentDir = "/sdcard" }
 
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
@@ -407,24 +417,16 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					if !isBinary {
-						cmd = exec.Command("sh", scriptPath)
-					} else {
-						cmd = exec.Command(scriptPath)
-					}
+					if !isBinary { cmd = exec.Command("sh", scriptPath) } else { cmd = exec.Command(scriptPath) }
 				}
 			} else {
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
 					runCmd := cmdText
-					// [FIX] Force ls -a
 					if strings.HasPrefix(cmdText, "ls") {
-						if !strings.Contains(cmdText, "-a") {
-							runCmd = strings.Replace(cmdText, "ls", "ls -a", 1)
-						}
+						if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) }
 					}
-					// [FIX] Handle ./file execution
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
@@ -432,12 +434,7 @@ func main() {
 							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
 						} else {
 							tmpBin := filepath.Join(os.TempDir(), fileName)
-							if err := copyFile(fullPath, tmpBin); err == nil {
-								os.Chmod(tmpBin, 0755)
-								runCmd = tmpBin 
-							} else {
-								runCmd = fullPath
-							}
+							if err := copyFile(fullPath, tmpBin); err == nil { os.Chmod(tmpBin, 0755); runCmd = tmpBin } else { runCmd = fullPath }
 						}
 					}
 					cmd = exec.Command("sh", "-c", runCmd)
@@ -471,10 +468,7 @@ func main() {
 			cmdMutex.Lock()
 			activeStdin = nil
 			cmdMutex.Unlock()
-			
-			status.Text = "Status: Idle"
-			status.Refresh()
-			
+			status.Text = "Status: Idle"; status.Refresh()
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
 	}
@@ -524,17 +518,13 @@ func main() {
 	input.OnSubmitted = func(_ string) { send() }
 
 	runFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close()
-		term.Clear()
+		defer reader.Close(); term.Clear()
 		data, err := io.ReadAll(reader)
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		tmpFile, err := os.CreateTemp("", "exec_tmp")
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Write Failed\x1b[0m\n")); return }
-		tmpPath := tmpFile.Name()
-		tmpFile.Write(data)
-		tmpFile.Close()
-		os.Chmod(tmpPath, 0755)
+		tmpPath := tmpFile.Name(); tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
 		executeTask("", true, tmpPath, isBinary)
 	}
 
@@ -583,7 +573,6 @@ func main() {
 			out, _ := exec.Command("uname", "-r").Output()
 			ver := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf("Target: \x1b[33m%s\x1b[0m\n", ver)))
-			
 			dlPath := "/data/local/tmp/temp_kernel_dl"; target := "/data/local/tmp/installer.sh"
 			var dlUrl string; var found bool = false
 			simulateProcess := func(label string) {
@@ -616,28 +605,22 @@ func main() {
 		}()
 	}
 
-	// ================= EDIT HERE =================
-	// MENGUBAH JUDUL DAN MENGHAPUS TOMBOL GERIGI
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
-	
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
-	
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Start injection?", "START", autoInstallKernel, false) }); btnInj.Importance = widget.HighImportance
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	// LAYOUT HEADER SEDERHANA (JUDUL DI TENGAH PRESISI)
 	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
-		container.NewPadded(titleText), // Judul langsung di-pad, otomatis tengah
+		container.NewPadded(titleText),
 		container.NewPadded(infoGrid),
 		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	))
-	// =============================================
 
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := createLabel("CODE BY TANGSAN", silverColor, 10, false)
+	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
 	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
 	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
 	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
