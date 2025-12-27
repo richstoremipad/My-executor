@@ -293,7 +293,6 @@ func main() {
 
 	term := NewTerminal()
 	
-	// Init Current Directory
 	if !CheckRoot() {
 		if h, err := os.UserHomeDir(); err == nil { currentDir = h }
 	}
@@ -315,7 +314,6 @@ func main() {
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// Status Monitoring
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
@@ -342,12 +340,9 @@ func main() {
 		}
 	}()
 
-	// --- CORE FUNCTION: EXECUTE COMMAND / SCRIPT ---
 	executeTask := func(cmdText string, isScript bool, scriptPath string) {
 		status.Text = "Status: Processing..."
 		status.Refresh()
-
-		// Tampilkan Prompt jika ini command manual
 		if !isScript {
 			displayDir := currentDir
 			if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }
@@ -359,9 +354,7 @@ func main() {
 			isRoot := CheckRoot()
 
 			if isScript {
-				// LOGIC KHUSUS SCRIPT (.sh / binary)
 				if isRoot {
-					// Root harus copy ke /data/local/tmp agar bisa execute
 					target := "/data/local/tmp/temp_exec"
 					exec.Command("su", "-c", "rm -f "+target).Run()
 					exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", scriptPath, target, target)).Run()
@@ -371,7 +364,6 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					// Non-root langsung execute dari cache
 					if strings.HasPrefix(scriptPath, "sh") || strings.HasSuffix(scriptPath, ".sh") {
 						cmd = exec.Command("sh", scriptPath)
 					} else {
@@ -379,7 +371,6 @@ func main() {
 					}
 				}
 			} else {
-				// LOGIC COMMAND BIASA (ls, cd, dll)
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
@@ -388,15 +379,13 @@ func main() {
 				}
 			}
 
-			// SETUP INTERACTIVE STDIN
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
 
-			// AKTIFKAN MODE INPUT INTERAKTIF
 			cmdMutex.Lock()
-			activeStdin = stdin // Kunci input global ke proses ini
+			activeStdin = stdin
 			cmdMutex.Unlock()
 
 			if err := cmd.Start(); err != nil {
@@ -405,7 +394,6 @@ func main() {
 				return
 			}
 
-			// Streaming output
 			var wg sync.WaitGroup
 			wg.Add(2)
 			go func() { defer wg.Done(); io.Copy(term, stdout) }()
@@ -414,39 +402,28 @@ func main() {
 			wg.Wait()
 			cmd.Wait()
 
-			// MATIKAN MODE INPUT INTERAKTIF
 			cmdMutex.Lock()
 			activeStdin = nil
 			cmdMutex.Unlock()
 			
 			status.Text = "Status: Idle"
 			status.Refresh()
-			
-			// Cleanup temp file jika root script
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
 	}
 
-	// --- INPUT HANDLER (SMART SEND) ---
 	send := func() {
 		text := input.Text
 		input.SetText("")
-
-		// 1. Cek: Apakah ada script berjalan yang butuh input?
 		cmdMutex.Lock()
 		if activeStdin != nil {
-			// Jika YA: Kirim teks ke script tersebut
 			io.WriteString(activeStdin, text+"\n")
-			term.Write([]byte(text + "\n")) // Echo ke layar agar user lihat apa yg diketik
+			term.Write([]byte(text + "\n"))
 			cmdMutex.Unlock()
 			return
 		}
 		cmdMutex.Unlock()
-
-		// 2. Jika TIDAK: Proses sebagai Command Baru
 		if strings.TrimSpace(text) == "" { return }
-		
-		// Handle "cd" khusus disini agar path terupdate
 		if strings.HasPrefix(text, "cd") {
 			parts := strings.Fields(text)
 			newPath := currentDir
@@ -457,18 +434,14 @@ func main() {
 				if filepath.IsAbs(arg) { newPath = arg } else { newPath = filepath.Join(currentDir, arg) }
 			}
 			newPath = filepath.Clean(newPath)
-			
-			// Cek eksistensi folder
 			exist := false
 			if CheckRoot() {
 				if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { exist = true }
 			} else {
 				if info, err := os.Stat(newPath); err == nil && info.IsDir() { exist = true }
 			}
-
 			if exist {
 				currentDir = newPath
-				// Tampilkan prompt baru saja agar user tahu cd berhasil
 				displayDir := currentDir
 				if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }
 				term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", displayDir, parts[1])))
@@ -477,46 +450,35 @@ func main() {
 			}
 			return
 		}
-
-		// Jalankan command biasa
 		executeTask(text, false, "")
 	}
 
 	input.OnSubmitted = func(_ string) { send() }
 
-	// --- FILE RUNNER ---
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
 		data, err := io.ReadAll(reader)
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
-
-		// Simpan ke temp file lokal
 		tmpFile, err := os.CreateTemp("", "exec_tmp")
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Write Failed\x1b[0m\n")); return }
 		tmpPath := tmpFile.Name()
 		tmpFile.Write(data)
 		tmpFile.Close()
 		os.Chmod(tmpPath, 0755)
-
-		// Jalankan sebagai Script Mode
 		executeTask("", true, tmpPath)
 	}
 
-	// --- UI COMPONENTS ---
 	var overlayContainer *fyne.Container
-
 	showModal := func(title, msg, confirm string, action func(), isErr bool) {
 		w.Canvas().Refresh(w.Content())
 		btnCancel := widget.NewButton("CANCEL", func() { overlayContainer.Hide() })
 		btnCancel.Importance = widget.DangerImportance
 		btnOk := widget.NewButton(confirm, func() { overlayContainer.Hide(); if action != nil { action() } })
 		if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
-		
 		btnBox := container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btnCancel), widget.NewLabel("   "), container.NewGridWrap(fyne.NewSize(110,40), btnOk), layout.NewSpacer())
 		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
 		if isErr { lblTitle.Color = theme.ErrorColor() }
-		
 		content := container.NewVBox(container.NewPadded(container.NewCenter(lblTitle)), widget.NewLabel(msg), widget.NewLabel(""), btnBox)
 		card := widget.NewCard("", "", container.NewPadded(content))
 		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
@@ -524,7 +486,6 @@ func main() {
 		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
-	// Update Checker
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
@@ -557,49 +518,37 @@ func main() {
 			dlPath := "/data/local/tmp/temp_kernel_dl"; target := "/data/local/tmp/installer.sh"
 			url := GitHubRepo + ver + ".sh"
 			term.Write([]byte("Downloading...\n"))
-			if downloadFile(url, dlPath) != nil {
+			
+			// [FIXED] Handling Error Correctly
+			err, _ := downloadFile(url, dlPath)
+			if err != nil {
 				parts := strings.Split(ver, "-"); url = GitHubRepo + parts[0] + ".sh"
-				if downloadFile(url, dlPath) != nil {
+				err, _ = downloadFile(url, dlPath)
+				if err != nil {
 					term.Write([]byte("\x1b[31m[FAIL] Driver Not Found\x1b[0m\n")); status.Text = "Failed"; status.Refresh(); return
 				}
 			}
 			exec.Command("su", "-c", "mv "+dlPath+" "+target).Run()
 			exec.Command("su", "-c", "chmod 777 "+target).Run()
-			executeTask("", true, target) // Gunakan logic executeTask agar output rapi
+			executeTask("", true, target)
 			VerifySuccessAndCreateFlag()
 		}()
 	}
 
-	// Layout
 	titleText := createLabel("SIMPLE EXEC", color.White, 16, true)
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
-	
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Start injection?", "START", autoInstallKernel, false) }); btnInj.Importance = widget.HighImportance
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
-	
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
-		container.NewPadded(titleText),
-		container.NewPadded(infoGrid),
-		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
-		container.NewPadded(status),
-		widget.NewSeparator(),
-	))
-
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), container.NewPadded(status), widget.NewSeparator()))
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
-	
 	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
-	
 	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
 	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
-
 	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); fdImg.FillMode = canvas.ImageFillContain
 	fdBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show() }); fdBtn.Importance = widget.LowImportance
-	
-	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), 
-		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
-
+	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
 	w.ShowAndRun()
