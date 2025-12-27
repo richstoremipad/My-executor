@@ -33,16 +33,16 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.0" 
+const AppVersion = "1.0"
 const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
-const FlagFile = "/dev/status_driver_aktif" 
+const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 
 // URL File Config
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 
 // KUNCI RAHASIA (32 Karakter)
-const CryptoKey = "RahasiaNegaraJanganSampaiBocorir" 
+const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 type OnlineConfig struct {
 	Version string `json:"version"`
@@ -60,28 +60,44 @@ var bgPng []byte
    SECURITY LOGIC
 ========================================== */
 func decryptConfig(encryptedStr string) ([]byte, error) {
-	defer func() { if r := recover(); r != nil { fmt.Println("Recovered from decrypt panic") } }() // Anti Crash
-	
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered from decrypt panic")
+		}
+	}() // Anti Crash
+
 	key := []byte(CryptoKey)
-	if len(key) != 32 { return nil, errors.New("key length error") }
+	if len(key) != 32 {
+		return nil, errors.New("key length error")
+	}
 
 	encryptedStr = strings.TrimSpace(encryptedStr)
 
 	data, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	block, err := aes.NewCipher(key)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	gcm, err := cipher.NewGCM(block)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize { return nil, errors.New("data corrupt") }
+	if len(data) < nonceSize {
+		return nil, errors.New("data corrupt")
+	}
 
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	return plaintext, nil
 }
@@ -119,23 +135,40 @@ func NewTerminal() *Terminal {
 
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30": return color.Gray{Y: 100}
-	case "31": return theme.ErrorColor()
-	case "32": return theme.SuccessColor()
-	case "33": return theme.WarningColor()
-	case "34": return theme.PrimaryColor()
-	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100}
-	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
-	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
-	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
-	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
-	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
-	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
-	case "97": return color.White
-	default: return nil
+	case "30":
+		return color.Gray{Y: 100}
+	case "31":
+		return theme.ErrorColor()
+	case "32":
+		return theme.SuccessColor()
+	case "33":
+		return theme.WarningColor()
+	case "34":
+		return theme.PrimaryColor()
+	case "35":
+		return color.RGBA{R: 200, G: 0, B: 200, A: 255}
+	case "36":
+		return color.RGBA{R: 0, G: 255, B: 255, A: 255}
+	case "37":
+		return theme.ForegroundColor()
+	case "90":
+		return color.Gray{Y: 100}
+	case "91":
+		return color.RGBA{R: 255, G: 100, B: 100, A: 255}
+	case "92":
+		return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "93":
+		return color.RGBA{R: 255, G: 255, B: 100, A: 255}
+	case "94":
+		return color.RGBA{R: 100, G: 100, B: 255, A: 255}
+	case "95":
+		return color.RGBA{R: 255, G: 100, B: 255, A: 255}
+	case "96":
+		return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "97":
+		return color.White
+	default:
+		return nil
 	}
 }
 
@@ -169,7 +202,9 @@ func (t *Terminal) Write(p []byte) (int, error) {
 }
 
 func (t *Terminal) handleAnsiCode(codeSeq string) {
-	if len(codeSeq) < 3 { return }
+	if len(codeSeq) < 3 {
+		return
+	}
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
 	switch command {
@@ -243,27 +278,29 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 	term.Write([]byte(msg))
 }
 
-// [FIX] CheckRoot dengan Error Handling agar tidak Force Close
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
 	if err != nil {
-		return false // Jika error/denied, kembalikan false (JANGAN CRASH)
+		return false
 	}
 	return strings.TrimSpace(string(out)) == "0"
 }
 
-// [FIX] Kernel Check Aman
 func CheckKernelDriver() bool {
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
-	if err := cmd.Run(); err == nil { return true }
-	return false 
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
 }
 
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
-	if err != nil { return "Unknown" }
+	if err != nil {
+		return "Unknown"
+	}
 	return strings.TrimSpace(string(out))
 }
 
@@ -293,21 +330,31 @@ func downloadFile(url string, filepath string) (error, string) {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
-	if err != nil { return err, "Init Fail" }
+	if err != nil {
+		return err, "Init Fail"
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
 
 	resp, err := client.Do(req)
-	if err != nil { return err, "Net Err" }
+	if err != nil {
+		return err, "Net Err"
+	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err"
+	}
 
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
-	if err != nil { return err, "Pipe Err" }
+	if err != nil {
+		return err, "Pipe Err"
+	}
 	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
 
-	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
+	if err := writeCmd.Run(); err != nil {
+		return err, "Write Err"
+	}
 	return nil, "Success"
 }
 
@@ -315,12 +362,24 @@ func downloadFile(url string, filepath string) (error, string) {
               MAIN UI
 ================================ */
 
+// Helper to create centered text labels quickly
+func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
+	lbl := canvas.NewText(text, color)
+	lbl.TextSize = size
+	lbl.Alignment = fyne.TextAlignCenter
+	if bold {
+		lbl.TextStyle = fyne.TextStyle{Bold: true}
+	}
+	return lbl
+}
+
 func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	w := a.NewWindow("Simple Exec by TANGSAN")
-	w.Resize(fyne.NewSize(720, 520))
+	// Resize awal agak lebar agar nyaman di desktop, tapi UI akan adaptif di HP
+	w.Resize(fyne.NewSize(400, 700)) 
 	w.SetMaster()
 
 	term := NewTerminal()
@@ -333,53 +392,45 @@ func main() {
 
 	status := widget.NewLabel("System: Ready")
 	status.TextStyle = fyne.TextStyle{Bold: true}
+	status.Alignment = fyne.TextAlignCenter // Center status message
+
 	var stdin io.WriteCloser
 
-	grayHeaderColor := color.Gray{Y: 60}
+	// --- Status Labels ---
+	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
+	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	lblKernelTitle := canvas.NewText("KERNEL: ", brightYellow)
-	lblKernelTitle.TextSize = 10; lblKernelTitle.TextStyle = fyne.TextStyle{Bold: true}
-	lblKernelValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
-	lblKernelValue.TextSize = 10; lblKernelValue.TextStyle = fyne.TextStyle{Bold: true}
+	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
+	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	lblSELinuxTitle := canvas.NewText("SELINUX: ", brightYellow)
-	lblSELinuxTitle.TextSize = 10; lblSELinuxTitle.TextStyle = fyne.TextStyle{Bold: true}
-	lblSELinuxValue := canvas.NewText("CHECKING...", color.Gray{Y: 150})
-	lblSELinuxValue.TextSize = 10; lblSELinuxValue.TextStyle = fyne.TextStyle{Bold: true}
+	// Pindahkan Root Status ke Header agar dashboard lebih lengkap
+	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
+	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	lblSystemTitle := canvas.NewText("SYSTEM: ", brightYellow)
-	lblSystemTitle.TextSize = 10; lblSystemTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-	lblSystemValue := canvas.NewText("CHECKING ROOT...", color.Gray{Y: 150})
-	lblSystemValue.TextSize = 10; lblSystemValue.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-
-	// [FIX UTAMA] Jeda hanya 1 detik, lalu monitoring dengan Anti-Panic
 	go func() {
-		time.Sleep(1 * time.Second) // Cukup 1 detik untuk render UI
-		
+		time.Sleep(1 * time.Second)
 		for {
-			// Anti-Crash Wrapper: Jika CheckRoot panic, loop tetap jalan
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						// Jika crash, diam saja dan coba lagi nanti
 					}
 				}()
 
 				isRoot := CheckRoot()
 				if isRoot {
-					lblSystemValue.Text = "ROOT ACCESS GRANTED"
+					lblSystemValue.Text = "GRANTED"
 					lblSystemValue.Color = successGreen
 				} else {
-					lblSystemValue.Text = "ROOT ACCESS DENIED"
+					lblSystemValue.Text = "DENIED"
 					lblSystemValue.Color = failRed
 				}
 				lblSystemValue.Refresh()
 
 				if CheckKernelDriver() {
-					lblKernelValue.Text = "DETECTED"
+					lblKernelValue.Text = "ACTIVE"
 					lblKernelValue.Color = successGreen
 				} else {
-					lblKernelValue.Text = "NOT FOUND"
+					lblKernelValue.Text = "MISSING"
 					lblKernelValue.Color = failRed
 				}
 				lblKernelValue.Refresh()
@@ -395,121 +446,96 @@ func main() {
 				}
 				lblSELinuxValue.Refresh()
 			}()
-
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
 	// -------------------------------------------------------------
-	//   ONLINE VERSION CHECKER
+	//   ONLINE VERSION CHECKER & POPUPS (Unchanged logic, cleaner UI)
 	// -------------------------------------------------------------
-	
-	var updateOverlay *fyne.Container
-	
-	showUpdatePopup := func(msg string, link string) {
-		w.Canvas().Refresh(w.Content())
-		
-		btnNo := widget.NewButton("CANCEL", func() {
-			os.Exit(0) 
-		})
-		btnNo.Importance = widget.DangerImportance
 
-		btnYes := widget.NewButton("UPDATE", func() {
-			u, err := url.Parse(link)
-			if err == nil {
-				app.New().OpenURL(u)
+	var overlayContainer *fyne.Container // Container untuk semua overlay (update/inject)
+
+	// Helper function for popups
+	showModal := func(titleText string, msgText string, confirmText string, onConfirm func(), isError bool) {
+		w.Canvas().Refresh(w.Content())
+
+		btnCancel := widget.NewButton("CANCEL", func() {
+			overlayContainer.Hide()
+		})
+		btnCancel.Importance = widget.LowImportance
+
+		btnConfirm := widget.NewButton(confirmText, func() {
+			overlayContainer.Hide()
+			if onConfirm != nil {
+				onConfirm()
 			}
 		})
-		btnYes.Importance = widget.HighImportance
-
-		popupBtnSize := fyne.NewSize(140, 40)
-		noWrapper := container.NewGridWrap(popupBtnSize, btnNo)
-		yesWrapper := container.NewGridWrap(popupBtnSize, btnYes)
-
-		updateBtns := container.NewHBox(
-			layout.NewSpacer(), noWrapper, widget.NewLabel("        "), yesWrapper, layout.NewSpacer(),
-		)
-
-		title := canvas.NewText("UPDATE REQUIRED", theme.WarningColor())
-		title.TextSize = 20; title.TextStyle = fyne.TextStyle{Bold: true}
-		title.Alignment = fyne.TextAlignCenter
 		
-		msgLabel := widget.NewLabel(msg)
-		msgLabel.Alignment = fyne.TextAlignCenter
-		msgLabel.Wrapping = fyne.TextWrapWord
+		if isError {
+			btnConfirm.Importance = widget.DangerImportance
+		} else {
+			btnConfirm.Importance = widget.HighImportance
+		}
+
+		// Responsive Button Grid
+		btnGrid := container.NewGridWithColumns(2, btnCancel, btnConfirm)
+
+		txtColor := theme.ForegroundColor()
+		if isError {
+			txtColor = theme.ErrorColor()
+		}
+
+		lblTitle := canvas.NewText(titleText, txtColor)
+		lblTitle.TextSize = 18
+		lblTitle.TextStyle = fyne.TextStyle{Bold: true}
+		lblTitle.Alignment = fyne.TextAlignCenter
+
+		lblMsg := widget.NewLabel(msgText)
+		lblMsg.Alignment = fyne.TextAlignCenter
+		lblMsg.Wrapping = fyne.TextWrapWord
 
 		content := container.NewVBox(
-			widget.NewLabel(" "), container.NewCenter(title), widget.NewLabel(" "),
-			msgLabel, layout.NewSpacer(), updateBtns, widget.NewLabel(" "),
+			container.NewPadded(container.NewCenter(lblTitle)),
+			lblMsg,
+			widget.NewLabel(""), // Spacer
+			btnGrid,
 		)
 
 		card := widget.NewCard("", "", container.NewPadded(content))
-		box := container.NewGridWrap(fyne.NewSize(550, 240), card)
-		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240})
-
-		updateOverlay.Objects = []fyne.CanvasObject{bg, container.NewCenter(box)}
-		updateOverlay.Show()
-		updateOverlay.Refresh()
-	}
-
-	showErrorPopup := func(msg string) {
-		w.Canvas().Refresh(w.Content())
+		// Use Max Layout centered with padding for mobile responsiveness
+		box := container.NewPadded(card)
 		
-		btnExit := widget.NewButton("EXIT", func() {
-			os.Exit(0) 
-		})
-		btnExit.Importance = widget.DangerImportance
-
-		btnContainer := container.NewCenter(container.NewGridWrap(fyne.NewSize(140, 40), btnExit))
-
-		title := canvas.NewText("CONNECTION ERROR", theme.ErrorColor())
-		title.TextSize = 20; title.TextStyle = fyne.TextStyle{Bold: true}
-		title.Alignment = fyne.TextAlignCenter
+		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 220})
 		
-		msgLabel := widget.NewLabel(msg)
-		msgLabel.Alignment = fyne.TextAlignCenter
-		msgLabel.Wrapping = fyne.TextWrapWord
+		// Create a constrained container for the modal box so it doesn't fill whole screen
+		modalWrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), box))
 
-		content := container.NewVBox(
-			widget.NewLabel(" "), container.NewCenter(title), widget.NewLabel(" "),
-			msgLabel, layout.NewSpacer(), btnContainer, widget.NewLabel(" "),
-		)
-
-		card := widget.NewCard("", "", container.NewPadded(content))
-		box := container.NewGridWrap(fyne.NewSize(550, 240), card)
-		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 240})
-
-		updateOverlay.Objects = []fyne.CanvasObject{bg, container.NewCenter(box)}
-		updateOverlay.Show()
-		updateOverlay.Refresh()
+		overlayContainer.Objects = []fyne.CanvasObject{bg, modalWrapper}
+		overlayContainer.Show()
+		overlayContainer.Refresh()
 	}
 
 	go func() {
-		// Tunggu sebentar saja (1.5 detik) sebelum cek internet
 		time.Sleep(1500 * time.Millisecond)
-
 		if strings.Contains(ConfigURL, "GANTI_DENGAN_LINK") {
 			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
 			return
 		}
 
 		term.Write([]byte("\n\x1b[90m[*] Checking for updates...\x1b[0m\n"))
-		
 		freshURL := fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix())
-
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(freshURL)
-		
+
 		if err != nil {
 			term.Write([]byte("\x1b[31m[ERR] Connection Failed\x1b[0m\n"))
-			showErrorPopup("Unable to reach update server.\nPlease check your internet connection.")
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
 			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Server Error: %d\x1b[0m\n", resp.StatusCode)))
-			showErrorPopup(fmt.Sprintf("Server Error (%d).\nPlease try again later.", resp.StatusCode))
 			return
 		}
 
@@ -519,25 +545,26 @@ func main() {
 		decrypted, err := decryptConfig(string(body))
 		if err != nil {
 			term.Write([]byte("\x1b[31m[ERR] Integrity Check Failed\x1b[0m\n"))
-			showErrorPopup("Security check failed.\nApp configuration is invalid.")
 			return
 		}
 
 		decrypted = bytes.TrimSpace(decrypted)
-
 		var config OnlineConfig
 		if err := json.Unmarshal(decrypted, &config); err == nil {
 			if config.Version != "" {
 				if config.Version != AppVersion {
 					term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
-					showUpdatePopup(config.Message, config.Link)
+					// Show Update Modal
+					showModal("UPDATE AVAILABLE", config.Message, "UPDATE", func() {
+						u, err := url.Parse(config.Link)
+						if err == nil {
+							app.New().OpenURL(u)
+						}
+					}, false)
 				} else {
 					term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
 				}
 			}
-		} else {
-			term.Write([]byte("\x1b[31m[ERR] Invalid Data.\x1b[0m\n"))
-			showErrorPopup("Invalid configuration data received.")
 		}
 	}()
 
@@ -566,7 +593,7 @@ func main() {
 			var found bool = false
 
 			simulateProcess := func(label string) {
-				for i := 0; i <= 100; i+=10 {
+				for i := 0; i <= 100; i += 10 {
 					drawProgressBar(term, label, i, "\x1b[36m")
 					time.Sleep(50 * time.Millisecond)
 				}
@@ -611,7 +638,8 @@ func main() {
 				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 				var pipeStdin io.WriteCloser
 				pipeStdin, _ = cmd.StdinPipe()
-				cmd.Stdout = term; cmd.Stderr = term
+				cmd.Stdout = term
+				cmd.Stderr = term
 				cmd.Run()
 				VerifySuccessAndCreateFlag()
 				pipeStdin.Close()
@@ -625,7 +653,7 @@ func main() {
 		defer reader.Close()
 		term.Clear()
 		status.SetText("Status: Processing...")
-		
+
 		data, err := io.ReadAll(reader)
 		if err != nil {
 			term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n"))
@@ -646,7 +674,7 @@ func main() {
 			tmpFile.Close()
 
 			exec.Command("su", "-c", "rm -f "+target).Run()
-			
+
 			moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, target, target))
 			if err := moveCmd.Run(); err != nil {
 				term.Write([]byte("\x1b[31m[ERR] Copy Failed (Check Root)\x1b[0m\n"))
@@ -661,9 +689,9 @@ func main() {
 			} else {
 				cmd = exec.Command("su", "-c", "sh "+target)
 			}
-			
+
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			
+
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
 			stdin, _ = cmd.StdinPipe()
@@ -691,125 +719,110 @@ func main() {
 	}
 	input.OnSubmitted = func(_ string) { send() }
 
-	titleText := canvas.NewText("Simple Exec by TANGSAN", theme.ForegroundColor())
-	titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true}
+	// --- UI COMPOSITION (New Layout) ---
 
-	headerLeft := container.NewVBox(
-		titleText,
-		container.NewHBox(lblKernelTitle, lblKernelValue),
-		container.NewHBox(lblSELinuxTitle, lblSELinuxValue),
+	// 1. HEADER (Title + Status Grid)
+	titleText := canvas.NewText("SIMPLE EXEC", theme.ForegroundColor())
+	titleText.TextSize = 14
+	titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	titleText.Alignment = fyne.TextAlignCenter
+
+	// Info Grid (3 Columns) - Ini bagian yang membuat UI responsif di HP
+	infoGrid := container.NewGridWithColumns(3,
+		container.NewVBox(lblKernelTitle, lblKernelValue),
+		container.NewVBox(lblSELinuxTitle, lblSELinuxValue),
+		container.NewVBox(lblSystemTitle, lblSystemValue),
 	)
 
-	const btnWidth = 130
-	const btnHeight = 40
-	btnSize := fyne.NewSize(btnWidth, btnHeight)
+	// 2. BUTTONS (Grid Layout instead of Fixed Size)
+	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() {
+		showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false)
+	})
+	btnInject.Importance = widget.HighImportance
 
-	selinuxBtn := widget.NewButtonWithIcon("SELinux Switch", theme.ViewRefreshIcon(), func() {
+	btnSwitch := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() {
 		go func() {
 			current := CheckSELinux()
-			if current == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run()
-			} else { exec.Command("su", "-c", "setenforce 1").Run() }
+			if current == "Enforcing" {
+				exec.Command("su", "-c", "setenforce 0").Run()
+			} else {
+				exec.Command("su", "-c", "setenforce 1").Run()
+			}
 		}()
 	})
-	selinuxBtn.Importance = widget.MediumImportance
 
-	realClearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() { term.Clear() })
-	realClearBtn.Importance = widget.LowImportance 
-	clearBg := canvas.NewRectangle(color.RGBA{R: 200, G: 0, B: 0, A: 100})
-	clearBg.CornerRadius = theme.InputRadiusSize()
-	clearStack := container.NewStack(clearBg, realClearBtn)
-
-	var popupOverlay *fyne.Container
-
-	popupBtnNo := widget.NewButton("NO", func() { popupOverlay.Hide() })
-	popupBtnNo.Importance = widget.DangerImportance 
-	popupBtnYes := widget.NewButton("YES", func() {
-		popupOverlay.Hide()
-		autoInstallKernel()
-	})
-	popupBtnYes.Importance = widget.HighImportance 
-
-	popupBtnSize := fyne.NewSize(140, 40)
-	noWrapper := container.NewGridWrap(popupBtnSize, popupBtnNo)
-	yesWrapper := container.NewGridWrap(popupBtnSize, popupBtnYes)
-
-	popupBtns := container.NewHBox(
-		layout.NewSpacer(), 
-		noWrapper, 
-		widget.NewLabel("        "), 
-		yesWrapper, 
-		layout.NewSpacer(),
-	)
-
-	popupTitle := canvas.NewText("Inject Driver", theme.ForegroundColor())
-	popupTitle.TextSize = 20; popupTitle.TextStyle = fyne.TextStyle{Bold: true}
-	popupTitle.Alignment = fyne.TextAlignCenter
-	popupMsg := widget.NewLabel("Start automatic injection process?")
-	popupMsg.Alignment = fyne.TextAlignCenter
-
-	popupContent := container.NewVBox(
-		widget.NewLabel(" "), container.NewCenter(popupTitle), widget.NewLabel(" "),
-		popupMsg, layout.NewSpacer(), popupBtns, widget.NewLabel(" "),
-	)
-
-	popupCard := widget.NewCard("", "", container.NewPadded(popupContent))
-	popupBox := container.NewGridWrap(fyne.NewSize(550, 240), popupCard)
-	dimmedBg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 200})
-
-	popupOverlay = container.NewStack(dimmedBg, container.NewCenter(popupBox))
-	popupOverlay.Hide() 
-
-	installBtn := widget.NewButtonWithIcon("Inject Driver", theme.DownloadIcon(), func() {
-		popupOverlay.Show()
-	})
-	installBtn.Importance = widget.MediumImportance
-
-	updateOverlay = container.NewStack()
-	updateOverlay.Hide()
-
-	selinuxContainer := container.NewGridWrap(btnSize, selinuxBtn)
-	installContainer := container.NewGridWrap(btnSize, installBtn)
-	clearContainer := container.NewGridWrap(btnSize, clearStack)
-
-	headerRight := container.NewHBox(
-		installContainer, widget.NewLabel(" "), 
-		selinuxContainer, widget.NewLabel(" "), 
-		clearContainer,
-	)
-
-	headerContent := container.NewBorder(nil, nil, container.NewPadded(headerLeft), headerRight)
-	headerBgRect := canvas.NewRectangle(grayHeaderColor)
-	headerBarWithBg := container.NewStack(headerBgRect, container.NewPadded(headerContent))
-	topSection := container.NewVBox(headerBarWithBg, container.NewPadded(status), widget.NewSeparator())
+	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
 	
-	footerStatusBox := container.NewHBox(layout.NewSpacer(), lblSystemTitle, lblSystemValue, layout.NewSpacer())
-	sendBtn := widget.NewButtonWithIcon("Kirim", theme.MailSendIcon(), send)
-	bigSendBtn := container.NewGridWrap(fyne.NewSize(120, 60), sendBtn)
-	inputArea := container.NewBorder(nil, nil, nil, container.NewHBox(widget.NewLabel("   "), bigSendBtn), container.NewPadded(input))
-	bottomSection := container.NewVBox(footerStatusBox, container.NewPadded(container.NewPadded(inputArea)))
+	// Tombol disusun dalam Grid 3 Kolom
+	actionGrid := container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)
 
+	// Gabungkan semua komponen atas dalam satu Container Vertical
+	headerContainer := container.NewVBox(
+		container.NewPadded(titleText),
+		container.NewPadded(infoGrid),
+		container.NewPadded(actionGrid),
+		container.NewPadded(status),
+		widget.NewSeparator(),
+	)
+	
+	// Background untuk Header (Dark Gray)
+	headerBg := canvas.NewRectangle(color.Gray{Y: 45})
+	headerStack := container.NewStack(headerBg, headerContainer)
+
+	// 3. BOTTOM SECTION (Input)
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
+	inputArea := container.NewBorder(nil, nil, nil, sendBtn, input)
+	bottomContainer := container.NewPadded(inputArea)
+
+	// 4. MAIN TERMINAL AREA (With Background)
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
-	bgImg.FillMode = canvas.ImageFillStretch 
-	terminalWithBg := container.NewStack(bgImg, term.scroll)
-	mainLayer := container.NewBorder(topSection, bottomSection, nil, nil, terminalWithBg)
+	bgImg.FillMode = canvas.ImageFillStretch
+	bgImg.Alpha = 0.3 // Sedikit transparan agar tulisan terminal terbaca jelas
 	
+	termArea := container.NewStack(
+		canvas.NewRectangle(color.Black), // Solid black background behind image
+		bgImg, 
+		term.scroll,
+	)
+
+	// 5. FLOATING ACTION BUTTON (Folder Icon)
+	// Kita gunakan Layout Overlay agar ikon mengambang di pojok kanan bawah
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
-	clickableIcon := container.NewStack(
-		container.NewGridWrap(fyne.NewSize(60, 60), img),
-		widget.NewButton("", func() {
-			dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
-		}),
-	)
-	clickableIcon.Objects[1].(*widget.Button).Importance = widget.LowImportance
+	
+	fabButton := widget.NewButton("", func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
+	})
+	fabButton.Importance = widget.LowImportance
 
-	fabContainer := container.NewVBox(
-		layout.NewSpacer(),
-		container.NewHBox(layout.NewSpacer(), clickableIcon, widget.NewLabel(" ")),
-		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
+	fabContent := container.NewStack(
+		container.NewPadded(img), // Gambar Folder
+		fabButton,                // Tombol transparan di atasnya
 	)
 	
-	w.SetContent(container.NewStack(mainLayer, fabContainer, popupOverlay, updateOverlay))
+	// Wrapper agar FAB ada di pojok kanan bawah dengan ukuran tetap (60x60)
+	fabWrapper := container.NewHBox(
+		layout.NewSpacer(),
+		container.NewGridWrap(fyne.NewSize(65, 65), fabContent),
+	)
+	fabContainer := container.NewVBox(
+		layout.NewSpacer(),
+		container.NewPadded(fabWrapper),
+		widget.NewLabel(" "), // Spacer kecil di bawah agar tidak terlalu mepet
+		widget.NewLabel(" "), 
+	)
+
+	// --- FINAL ASSEMBLY ---
+	
+	// Main Layout: Header di Atas, Input di Bawah, Terminal di Tengah
+	mainLayout := container.NewBorder(headerStack, bottomContainer, nil, nil, termArea)
+
+	// Overlay System: Main Layout ditumpuk dengan FAB dan Popup Overlay
+	overlayContainer = container.NewStack() // Init hidden overlay
+	overlayContainer.Hide()
+
+	finalContent := container.NewStack(mainLayout, fabContainer, overlayContainer)
+
+	w.SetContent(finalContent)
 	w.ShowAndRun()
 }
-
