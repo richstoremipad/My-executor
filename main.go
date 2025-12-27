@@ -777,11 +777,15 @@ func main() {
 	// 4. MAIN TERMINAL AREA (With Background)
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch
-	bgImg.Alpha = 0.3 // Sedikit transparan agar tulisan terminal terbaca jelas
 	
+	// FIX: Menggunakan overlay hitam transparan, bukan mengubah Alpha gambar langsung
+	// Ini mencegah error "cannot assign to bgImg.Alpha"
+	darkOverlay := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+
 	termArea := container.NewStack(
 		canvas.NewRectangle(color.Black), // Solid black background behind image
-		bgImg, 
+		bgImg,          // Gambar Full Brightness
+		darkOverlay,    // Overlay Gelap (Membuat efek redup)
 		term.scroll,
 	)
 
