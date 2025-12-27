@@ -33,6 +33,3 @@ jobs:
           name: APK-executor
           # Jalur diperluas agar mencakup semua sub-folder di dalam dist
           path: fyne-cross/dist/**/*.apk
-
-
-Tolong editkan
