@@ -378,7 +378,6 @@ func main() {
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	w := a.NewWindow("Simple Exec by TANGSAN")
-	// Resize awal agak lebar agar nyaman di desktop, tapi UI akan adaptif di HP
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
@@ -386,13 +385,15 @@ func main() {
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
+	silverColor := color.Gray{Y: 180} // Warna silver untuk status dan copyright
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 
-	status := widget.NewLabel("System: Ready")
-	status.TextStyle = fyne.TextStyle{Bold: true}
-	status.Alignment = fyne.TextAlignCenter // Center status message
+	// [MODIFIKASI] Status sekarang menggunakan canvas.Text agar warnanya bisa diatur ke Silver
+	status := canvas.NewText("System: Ready", silverColor)
+	status.TextSize = 12
+	status.Alignment = fyne.TextAlignCenter
 
 	var stdin io.WriteCloser
 
@@ -570,7 +571,9 @@ func main() {
 
 	autoInstallKernel := func() {
 		term.Clear()
-		status.SetText("System: Installing...")
+		// [MODIFIKASI] Update teks status pada canvas.Text
+		status.Text = "System: Installing..."
+		status.Refresh()
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
@@ -628,7 +631,9 @@ func main() {
 
 			if !found {
 				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n"))
-				status.SetText("System: Failed")
+				// [MODIFIKASI] Update teks status
+				status.Text = "System: Failed"
+				status.Refresh()
 			} else {
 				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + downloadUrl + "\x1b[0m\n"))
 				simulateProcess("Downloading Payload")
@@ -644,7 +649,9 @@ func main() {
 				VerifySuccessAndCreateFlag()
 				pipeStdin.Close()
 				time.Sleep(1 * time.Second)
-				status.SetText("System: Online")
+				// [MODIFIKASI] Update teks status
+				status.Text = "System: Online"
+				status.Refresh()
 			}
 		}()
 	}
@@ -652,7 +659,9 @@ func main() {
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
-		status.SetText("Status: Processing...")
+		// [MODIFIKASI] Update teks status
+		status.Text = "Status: Processing..."
+		status.Refresh()
 
 		data, err := io.ReadAll(reader)
 		if err != nil {
@@ -705,7 +714,9 @@ func main() {
 			go io.Copy(term, stderr)
 
 			cmd.Wait()
-			status.SetText("Status: Idle")
+			// [MODIFIKASI] Update teks status
+			status.Text = "Status: Idle"
+			status.Refresh()
 			stdin = nil
 		}()
 	}
@@ -722,8 +733,9 @@ func main() {
 	// --- UI COMPOSITION (New Layout) ---
 
 	// 1. HEADER (Title + Status Grid)
-	titleText := canvas.NewText("SIMPLE EXEC", theme.ForegroundColor())
-	titleText.TextSize = 14
+	// [MODIFIKASI] Judul "SIMPLE EXEC" menjadi Putih Tebal dan lebih besar
+	titleText := canvas.NewText("SIMPLE EXEC", color.White)
+	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	titleText.Alignment = fyne.TextAlignCenter
 
@@ -750,11 +762,9 @@ func main() {
 			}
 		}()
 	})
-	// [MODIFIKASI] Tombol SELinux diubah jadi HighImportance (Biru) agar sama dengan Inject
 	btnSwitch.Importance = widget.HighImportance
 
 	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	// [MODIFIKASI] Tombol Clear diubah jadi DangerImportance (Merah Gelap)
 	btnClear.Importance = widget.DangerImportance
 
 	// Tombol disusun dalam Grid 3 Kolom
@@ -765,6 +775,7 @@ func main() {
 		container.NewPadded(titleText),
 		container.NewPadded(infoGrid),
 		container.NewPadded(actionGrid),
+		// [MODIFIKASI] Status ditambahkan di sini (sekarang warnanya Silver)
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
@@ -773,17 +784,27 @@ func main() {
 	headerBg := canvas.NewRectangle(color.Gray{Y: 45})
 	headerStack := container.NewStack(headerBg, headerContainer)
 
-	// 3. BOTTOM SECTION (Input)
+	// 3. BOTTOM SECTION (Input & Copyright)
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	inputArea := container.NewBorder(nil, nil, nil, sendBtn, input)
-	bottomContainer := container.NewPadded(inputArea)
+
+	// [MODIFIKASI] Tambahkan Label Copyright Silver di atas input
+	copyrightLbl := canvas.NewText("Code by TANGSAN", silverColor)
+	copyrightLbl.TextSize = 10
+	copyrightLbl.Alignment = fyne.TextAlignCenter
+	copyrightContainer := container.NewPadded(copyrightLbl)
+
+	// Gabungkan Copyright dan Input Area
+	bottomContainer := container.NewVBox(
+		copyrightContainer,
+		container.NewPadded(inputArea),
+	)
 
 	// 4. MAIN TERMINAL AREA (With Background)
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch
 
 	// [FIX ERROR] Menggunakan overlay hitam transparan (180/255) alih-alih bgImg.Alpha
-	// Ini mencegah error "cannot assign to bgImg.Alpha" pada beberapa versi build
 	darkOverlay := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180})
 
 	termArea := container.NewStack(
