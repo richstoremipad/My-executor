@@ -251,7 +251,7 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [KEMBALI KE ASAL] Menggunakan metode curl via exec.Command seperti permintaan
+// [KEMBALI KE ASAL] Menggunakan metode curl via exec.Command
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
@@ -263,7 +263,7 @@ func downloadFile(url string, filepath string) (error, string) {
 		if checkCmd.Run() == nil { return nil, "Success" }
 	}
 	
-	// Fallback ke HTTP Client hanya jika curl gagal
+	// Fallback ke HTTP Client
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
@@ -286,6 +286,18 @@ func createLabel(text string, color color.Color, size float32, bold bool) *canva
 	lbl.TextSize = size; lbl.Alignment = fyne.TextAlignCenter
 	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
 	return lbl
+}
+
+// Helper untuk menyalin file (untuk eksekusi binary non-root)
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil { return err }
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil { return err }
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 /* ===============================
@@ -348,7 +360,7 @@ func main() {
 		}
 	}()
 
-	// [FIX UTAMA] Eksekusi Task dengan penanganan Non-Root yang benar
+	// [FIX UTAMA] Eksekusi Task
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
 		status.Refresh()
@@ -364,9 +376,8 @@ func main() {
 			isRoot := CheckRoot()
 
 			if isScript {
-				// MODE SCRIPT
+				// LOGIC SCRIPT/BINARY DARI TOMBOL FD
 				if isRoot {
-					// Root Logic: Copy ke /data/local/tmp untuk bypass mount flags
 					target := "/data/local/tmp/temp_exec"
 					exec.Command("su", "-c", "rm -f "+target).Run()
 					exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", scriptPath, target, target)).Run()
@@ -376,27 +387,48 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					// Non-Root Logic: Eksekusi LANGSUNG dengan sh untuk menghindari Permission Denied
-					// Jangan coba copy atau execute binary langsung
+					// NON-ROOT: Eksekusi langsung dari cache (sudah dicopy oleh runFile)
 					if !isBinary {
 						cmd = exec.Command("sh", scriptPath)
 					} else {
-						// Binary ELF di cache biasanya tidak bisa dijalankan non-root (W^X violation)
-						// Tapi kita coba saja panggil pathnya langsung
 						cmd = exec.Command(scriptPath)
 					}
 				}
 			} else {
-				// MODE COMMAND MANUAL (ls, cd, etc)
+				// LOGIC COMMAND MANUAL (ls, ./file, etc)
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
-					cmd = exec.Command("sh", "-c", cmdText)
-					cmd.Dir = currentDir // Set working directory agar ls membaca folder yang benar
+					// [FIX Non-Root ./ execution]
+					// Jika user mengetik ./file, kita harus ubah jadi 'sh file' atau copy binary
+					runCmd := cmdText
+					
+					if strings.HasPrefix(cmdText, "./") {
+						fileName := strings.TrimPrefix(cmdText, "./")
+						fullPath := filepath.Join(currentDir, fileName)
+						
+						// Cek apakah itu script .sh
+						if strings.HasSuffix(fileName, ".sh") {
+							// Exec dengan sh fullpath agar tidak permission denied
+							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
+						} else {
+							// Jika binary, kita harus copy ke temp agar bisa execute (workaround noexec sdcard)
+							tmpBin := filepath.Join(os.TempDir(), fileName)
+							if err := copyFile(fullPath, tmpBin); err == nil {
+								os.Chmod(tmpBin, 0755)
+								runCmd = tmpBin // Run dari cache
+							} else {
+								// Fallback: coba run langsung (siapa tahu di internal storage)
+								runCmd = fullPath
+							}
+						}
+					}
+
+					cmd = exec.Command("sh", "-c", runCmd)
+					cmd.Dir = currentDir
 				}
 			}
 
-			// Setup Environment & Pipes
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
@@ -427,7 +459,6 @@ func main() {
 			status.Text = "Status: Idle"
 			status.Refresh()
 			
-			// Cleanup Root Temp
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
 	}
@@ -445,7 +476,6 @@ func main() {
 		cmdMutex.Unlock()
 		if strings.TrimSpace(text) == "" { return }
 		
-		// Handle CD Command
 		if strings.HasPrefix(text, "cd") {
 			parts := strings.Fields(text)
 			newPath := currentDir
@@ -483,7 +513,6 @@ func main() {
 		data, err := io.ReadAll(reader)
 		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
 		
-		// Cek Binary sebelum save
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
 		
 		tmpFile, err := os.CreateTemp("", "exec_tmp")
@@ -554,7 +583,7 @@ func main() {
 			simulateProcess("Connecting...")
 			url1 := GitHubRepo + ver + ".sh"
 			
-			// [KEMBALI KE METODE CURL + EXEC COMMAND]
+			// [KEMBALI KE METODE CURL]
 			err, _ := downloadFile(url1, dlPath)
 			if err == nil { dlUrl = "Variant 1"; found = true }
 			
