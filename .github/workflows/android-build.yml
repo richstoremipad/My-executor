@@ -21,9 +21,6 @@ jobs:
         run: |
           # Memaksa penggunaan icon.png dari folder utama
           $HOME/go/bin/fyne-cross android \
-            -app-id com.exe.rich \
-            -name "my executor" \
-            -icon icon.png \
             -arch arm64 \
             -silent
 
