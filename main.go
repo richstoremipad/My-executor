@@ -42,7 +42,6 @@ const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/exe
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // Global Variable untuk menyimpan Posisi Folder (Directory) saat ini
-// Default kita set ke /data/local/tmp yang biasanya aman untuk user biasa & root
 var currentDir string = "/data/local/tmp"
 
 type OnlineConfig struct {
@@ -103,16 +102,17 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC (OPTIMIZED)
 ========================================== */
 type Terminal struct {
-	grid     *widget.TextGrid
-	scroll   *container.Scroll
-	curRow   int
-	curCol   int
-	curStyle *widget.CustomTextGridStyle
-	mutex    sync.Mutex
-	reAnsi   *regexp.Regexp
+	grid         *widget.TextGrid
+	scroll       *container.Scroll
+	curRow       int
+	curCol       int
+	curStyle     *widget.CustomTextGridStyle
+	mutex        sync.Mutex
+	reAnsi       *regexp.Regexp
+	needsRefresh bool // Penanda jika ada data baru
 }
 
 func NewTerminal() *Terminal {
@@ -123,14 +123,34 @@ func NewTerminal() *Terminal {
 		BGColor: color.Transparent,
 	}
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
-	return &Terminal{
-		grid:     g,
-		scroll:   container.NewScroll(g),
-		curRow:   0,
-		curCol:   0,
-		curStyle: defStyle,
-		reAnsi:   re,
+	
+	term := &Terminal{
+		grid:         g,
+		scroll:       container.NewScroll(g),
+		curRow:       0,
+		curCol:       0,
+		curStyle:     defStyle,
+		reAnsi:       re,
+		needsRefresh: false,
 	}
+
+	// [OPTIMISASI UTAMA]
+	// Render Loop: Hanya refresh layar setiap 50ms (20 FPS)
+	// Ini mencegah UI lag saat output sangat cepat
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		for range ticker.C {
+			term.mutex.Lock()
+			if term.needsRefresh {
+				term.grid.Refresh()
+				term.scroll.ScrollToBottom()
+				term.needsRefresh = false
+			}
+			term.mutex.Unlock()
+		}
+	}()
+
+	return term
 }
 
 func ansiToColor(code string) color.Color {
@@ -156,16 +176,21 @@ func ansiToColor(code string) color.Color {
 }
 
 func (t *Terminal) Clear() {
+	t.mutex.Lock()
 	t.grid.SetText("")
 	t.curRow = 0
 	t.curCol = 0
+	t.needsRefresh = true
+	t.mutex.Unlock()
 }
 
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil {
@@ -179,8 +204,10 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		t.handleAnsiCode(ansiCode)
 		raw = raw[loc[1]:]
 	}
-	t.grid.Refresh()
-	t.scroll.ScrollToBottom()
+	
+	// Kita tandai butuh refresh, tapi JANGAN panggil Refresh() disini.
+	// Biarkan Ticker yang mengerjakannya agar UI tidak macet.
+	t.needsRefresh = true
 	return len(p), nil
 }
 
@@ -200,7 +227,11 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 			}
 		}
 	case 'J':
-		if strings.Contains(content, "2") { t.Clear() }
+		if strings.Contains(content, "2") { 
+			t.grid.SetText("")
+			t.curRow = 0
+			t.curCol = 0
+		}
 	case 'H':
 		t.curRow = 0
 		t.curCol = 0
@@ -218,15 +249,19 @@ func (t *Terminal) printText(text string) {
 			t.curCol = 0
 			continue
 		}
+		// Expand row if needed
 		for t.curRow >= len(t.grid.Rows) {
 			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
+		// Expand col if needed (manual append is faster than copying array)
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
+			// Grow capacity
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
+		
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{
 			Rune:  char,
@@ -327,9 +362,6 @@ func main() {
 
 	term := NewTerminal()
 	
-	// Update awal posisi direktori
-	// Jika user tidak punya akses root, /data/local/tmp mungkin tidak bisa di list
-	// Jadi kita cek, jika tidak root kita fallback ke HOME directory aplikasi
 	if !CheckRoot() {
 		homeDir, err := os.UserHomeDir()
 		if err == nil {
@@ -349,7 +381,6 @@ func main() {
 	status.TextSize = 12
 	status.Alignment = fyne.TextAlignCenter
 
-	// Info Labels
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
@@ -357,7 +388,6 @@ func main() {
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// Monitoring System
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
@@ -395,13 +425,10 @@ func main() {
 		}
 	}()
 
-	// --- LOGIC SHELL (CD, LS, RM RF) ---
 	processCommand := func(cmdText string) {
 		cmdText = strings.TrimSpace(cmdText)
 		if cmdText == "" { return }
 
-		// Tampilkan Prompt "User > Command"
-		// Kita potong path jika terlalu panjang agar rapi
 		displayDir := currentDir
 		if len(displayDir) > 25 {
 			displayDir = "..." + displayDir[len(displayDir)-20:]
@@ -409,13 +436,10 @@ func main() {
 		prompt := fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0m%s\n", displayDir, cmdText)
 		term.Write([]byte(prompt))
 
-		// 1. Handle "cd" command (Change Directory)
 		if strings.HasPrefix(cmdText, "cd") {
 			parts := strings.Fields(cmdText)
 			newPath := currentDir
-			
 			if len(parts) == 1 {
-				// cd saja -> kembali ke default / data user home
 				if CheckRoot() {
 					newPath = "/data/local/tmp"
 				} else {
@@ -430,22 +454,15 @@ func main() {
 					newPath = filepath.Join(currentDir, arg)
 				}
 			}
-			
-			// Bersihkan path (hilangkan .. atau .)
 			newPath = filepath.Clean(newPath)
-
-			// Cek apakah folder tersebut ada?
 			var dirExists bool
 			if CheckRoot() {
-				// Cek pakai root shell
 				check := exec.Command("su", "-c", "[ -d \""+newPath+"\" ]")
 				if err := check.Run(); err == nil { dirExists = true }
 			} else {
-				// Cek pakai stat biasa
 				info, err := os.Stat(newPath)
 				if err == nil && info.IsDir() { dirExists = true }
 			}
-
 			if dirExists {
 				currentDir = newPath
 			} else {
@@ -454,21 +471,16 @@ func main() {
 			return
 		}
 
-		// 2. Handle Perintah Lain (ls, rm, dll)
 		go func() {
 			var cmd *exec.Cmd
-			
 			if CheckRoot() {
-				// ROOT MODE: Kita gabungkan cd && command agar berjalan di folder yang benar
 				fullCmd := fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText)
 				cmd = exec.Command("su", "-c", fullCmd)
 			} else {
-				// NON-ROOT MODE: Kita set cmd.Dir
 				cmd = exec.Command("sh", "-c", cmdText)
 				cmd.Dir = currentDir
 			}
-
-			// Capture output
+			
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
 			
@@ -476,11 +488,14 @@ func main() {
 				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
 				return
 			}
-
-			// Stream output ke terminal
-			go io.Copy(term, stdout)
-			go io.Copy(term, stderr)
-
+			
+			// Menggunakan Goroutine terpisah untuk membaca output agar tidak blocking
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); io.Copy(term, stdout) }()
+			go func() { defer wg.Done(); io.Copy(term, stderr) }()
+			
+			wg.Wait()
 			cmd.Wait()
 		}()
 	}
@@ -490,13 +505,11 @@ func main() {
 		input.SetText("")
 	}
 
-	// Button Action (Send)
 	send := func() {
 		processCommand(input.Text)
 		input.SetText("")
 	}
 
-	// --- UPDATE CHECKER & OVERLAY ---
 	var overlayContainer *fyne.Container
 
 	showModal := func(titleText string, msgText string, confirmText string, onConfirm func(), isError bool) {
@@ -629,7 +642,6 @@ func main() {
 		}()
 	}
 
-	// UI Layout Construction
 	titleText := canvas.NewText("SIMPLE EXEC", color.White); titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}; titleText.Alignment = fyne.TextAlignCenter
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
 	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false) }); btnInject.Importance = widget.HighImportance
@@ -637,18 +649,4 @@ func main() {
 	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClear.Importance = widget.DangerImportance
 	headerStack := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)), container.NewPadded(status), widget.NewSeparator()))
 	
-	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := canvas.NewText("Code by TANGSAN", silverColor); cpyLbl.TextSize = 10; cpyLbl.Alignment = fyne.TextAlignCenter
-	bottomContainer := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
-	
-	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bgImg.FillMode = canvas.ImageFillStretch
-	termArea := container.NewStack(canvas.NewRectangle(color.Black), bgImg, canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180}), term.scroll)
-	
-	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); img.FillMode = canvas.ImageFillContain
-	fabBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show() }); fabBtn.Importance = widget.LowImportance
-	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65, 65), container.NewStack(container.NewPadded(img), fabBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
-	
-	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(headerStack, bottomContainer, nil, nil, termArea), fabContainer, overlayContainer))
-	w.ShowAndRun()
-}
+	sendBtn := widget.NewButtonWithIcon("", theme
