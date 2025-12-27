@@ -35,14 +35,14 @@ import (
    CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
-const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
+const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // Global Variable
-var currentDir string = "/sdcard" // Default ke sdcard
+var currentDir string = "/sdcard" // Default ke sdcard agar user langsung lihat file
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
@@ -251,24 +251,21 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [FIX] Permission Request - Anti Freeze & HyperOS Compatible
+// [FIX] Permission Request - Runs in Goroutine to prevent FREEZING
 func RequestStoragePermission(term *Terminal) {
 	if term != nil {
 		term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n"))
 	}
 	
-	// Kita gunakan 'package:' agar langsung menyorot aplikasi ini di pengaturan
-	// HyperOS biasanya merespon lebih baik jika kita spesifik
-	pkgName := "com.tangsan.executor" // Pastikan ini sama dengan App ID saat compile!
-	
-	// Cara 1: Buka list permission spesifik aplikasi (Lebih aman untuk HyperOS)
-	cmd1 := exec.Command("sh", "-c", fmt.Sprintf("am start -a android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION -d package:%s", pkgName))
+	// Method 1: AM via Shell (Standard)
+	cmd1 := exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
 	err1 := cmd1.Run()
 	
+	// Method 2: CMD Activity (Alternative for newer Androids like HyperOS)
 	if err1 != nil {
-		// Cara 2: Buka list umum jika Cara 1 gagal
-		if term != nil { term.Write([]byte("\x1b[33m[!] Trying generic settings...\x1b[0m\n")) }
-		exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
+		if term != nil { term.Write([]byte("\x1b[31m[!] Method 1 failed, trying Method 2...\x1b[0m\n")) }
+		cmd2 := exec.Command("sh", "-c", "cmd activity start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
+		cmd2.Run()
 	}
 }
 
@@ -277,10 +274,12 @@ func downloadFile(url string, filepath string) (error, string) {
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
+	
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil { return nil, "Success" }
 	}
+	
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
@@ -332,7 +331,7 @@ func main() {
 	go func() {
 		time.Sleep(1 * time.Second)
 		if !CheckRoot() {
-			// Jangan panggil ini di startup agar tidak spam, biarkan user klik tombol gerigi
+			// RequestStoragePermission(nil) // Optional on startup
 		}
 	}()
 
@@ -419,11 +418,13 @@ func main() {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
 					runCmd := cmdText
+					// [FIX] Force ls -a
 					if strings.HasPrefix(cmdText, "ls") {
 						if !strings.Contains(cmdText, "-a") {
 							runCmd = strings.Replace(cmdText, "ls", "ls -a", 1)
 						}
 					}
+					// [FIX] Handle ./file execution
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
@@ -615,36 +616,28 @@ func main() {
 		}()
 	}
 
-	titleText := createLabel("SIMPLE EXEC", color.White, 16, true)
+	// ================= EDIT HERE =================
+	// MENGUBAH JUDUL DAN MENGHAPUS TOMBOL GERIGI
+	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
+	
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
 	
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Start injection?", "START", autoInstallKernel, false) }); btnInj.Importance = widget.HighImportance
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	// [FIX] Anti-Freeze Permission Button (Runs in Goroutine)
-	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
-		// Run in background to prevent UI Freeze
-		go func() {
-			RequestStoragePermission(term)
-		}()
-		// Show dialog immediately
-		dialog.ShowInformation("Permission Help", "Jika tidak terbuka otomatis:\n\n1. Buka Pengaturan HP\n2. Cari 'Akses Semua File'\n3. Aktifkan untuk aplikasi ini.", w)
-	})
-	btnPerm.Importance = widget.LowImportance
-	
-	headerTop := container.NewBorder(nil, nil, nil, container.NewGridWrap(fyne.NewSize(40,30), btnPerm), container.NewPadded(titleText))
-	
+	// LAYOUT HEADER SEDERHANA (JUDUL DI TENGAH PRESISI)
 	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
-		headerTop,
+		container.NewPadded(titleText), // Judul langsung di-pad, otomatis tengah
 		container.NewPadded(infoGrid),
 		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	))
+	// =============================================
 
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
+	cpyLbl := createLabel("CODE BY TANGSAN", silverColor, 10, false)
 	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
 	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
 	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
