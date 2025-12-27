@@ -42,7 +42,7 @@ const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/exe
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // Global Variable
-var currentDir string = "/data/local/tmp"
+var currentDir string = "/sdcard" // Default ke sdcard agar user langsung lihat file
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
@@ -251,7 +251,14 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [KEMBALI KE ASAL] Menggunakan metode curl via exec.Command
+// Request Permission Helper for Android 11+
+func RequestStoragePermission() {
+	// Try to open "Manage All Files Access" settings
+	// This command works on non-root devices to trigger the settings intent
+	cmd := exec.Command("am", "start", "-a", "android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
+	cmd.Run()
+}
+
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
@@ -263,7 +270,6 @@ func downloadFile(url string, filepath string) (error, string) {
 		if checkCmd.Run() == nil { return nil, "Success" }
 	}
 	
-	// Fallback ke HTTP Client
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
@@ -272,7 +278,6 @@ func downloadFile(url string, filepath string) (error, string) {
 	if err != nil { return err, "Net Err" }
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
-	
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
 	if err != nil { return err, "Pipe Err" }
@@ -288,7 +293,6 @@ func createLabel(text string, color color.Color, size float32, bold bool) *canva
 	return lbl
 }
 
-// Helper untuk menyalin file (untuk eksekusi binary non-root)
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil { return err }
@@ -313,8 +317,18 @@ func main() {
 
 	term := NewTerminal()
 	
+	// Force Permission Request on Startup
+	go func() {
+		time.Sleep(1 * time.Second)
+		if !CheckRoot() {
+			RequestStoragePermission()
+		}
+	}()
+
+	// Init Path
 	if !CheckRoot() {
-		if h, err := os.UserHomeDir(); err == nil { currentDir = h }
+		// Default to sdcard for better UX on non-root
+		currentDir = "/sdcard"
 	}
 
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
@@ -360,7 +374,6 @@ func main() {
 		}
 	}()
 
-	// [FIX UTAMA] Eksekusi Task
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
 		status.Refresh()
@@ -376,7 +389,6 @@ func main() {
 			isRoot := CheckRoot()
 
 			if isScript {
-				// LOGIC SCRIPT/BINARY DARI TOMBOL FD
 				if isRoot {
 					target := "/data/local/tmp/temp_exec"
 					exec.Command("su", "-c", "rm -f "+target).Run()
@@ -387,7 +399,7 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					// NON-ROOT: Eksekusi langsung dari cache (sudah dicopy oleh runFile)
+					// Non-Root Smart Execute
 					if !isBinary {
 						cmd = exec.Command("sh", scriptPath)
 					} else {
@@ -395,30 +407,33 @@ func main() {
 					}
 				}
 			} else {
-				// LOGIC COMMAND MANUAL (ls, ./file, etc)
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
-					// [FIX Non-Root ./ execution]
-					// Jika user mengetik ./file, kita harus ubah jadi 'sh file' atau copy binary
+					// Non-Root Command Logic with Hacks
 					runCmd := cmdText
 					
+					// FIX: Always use ls -a to force show hidden/all files
+					if strings.HasPrefix(cmdText, "ls") {
+						if !strings.Contains(cmdText, "-a") {
+							runCmd = strings.Replace(cmdText, "ls", "ls -a", 1)
+						}
+					}
+
+					// FIX: Handle ./file execution
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
 						
-						// Cek apakah itu script .sh
 						if strings.HasSuffix(fileName, ".sh") {
-							// Exec dengan sh fullpath agar tidak permission denied
 							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
 						} else {
-							// Jika binary, kita harus copy ke temp agar bisa execute (workaround noexec sdcard)
+							// Binary fallback
 							tmpBin := filepath.Join(os.TempDir(), fileName)
 							if err := copyFile(fullPath, tmpBin); err == nil {
 								os.Chmod(tmpBin, 0755)
-								runCmd = tmpBin // Run dari cache
+								runCmd = tmpBin 
 							} else {
-								// Fallback: coba run langsung (siapa tahu di internal storage)
 								runCmd = fullPath
 							}
 						}
@@ -583,7 +598,6 @@ func main() {
 			simulateProcess("Connecting...")
 			url1 := GitHubRepo + ver + ".sh"
 			
-			// [KEMBALI KE METODE CURL]
 			err, _ := downloadFile(url1, dlPath)
 			if err == nil { dlUrl = "Variant 1"; found = true }
 			
@@ -613,10 +627,26 @@ func main() {
 
 	titleText := createLabel("SIMPLE EXEC", color.White, 16, true)
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
+	
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Start injection?", "START", autoInstallKernel, false) }); btnInj.Importance = widget.HighImportance
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), container.NewPadded(status), widget.NewSeparator()))
+	
+	// ADD PERMISSION BUTTON
+	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() { RequestStoragePermission() })
+	btnPerm.Importance = widget.LowImportance
+	
+	// Header Adjusted
+	headerTop := container.NewBorder(nil, nil, nil, container.NewGridWrap(fyne.NewSize(40,30), btnPerm), container.NewPadded(titleText))
+	
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
+		headerTop,
+		container.NewPadded(infoGrid),
+		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
+		container.NewPadded(status),
+		widget.NewSeparator(),
+	))
+
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
 	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
