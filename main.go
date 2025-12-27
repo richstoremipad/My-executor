@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,12 +38,12 @@ const AppVersion = "1.0"
 const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
 const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
-
-// URL File Config
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
-
-// KUNCI RAHASIA (32 Karakter)
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
+
+// Global Variable untuk menyimpan Posisi Folder (Directory) saat ini
+// Default kita set ke /data/local/tmp yang biasanya aman untuk user biasa & root
+var currentDir string = "/data/local/tmp"
 
 type OnlineConfig struct {
 	Version string `json:"version"`
@@ -64,7 +65,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 		if r := recover(); r != nil {
 			fmt.Println("Recovered from decrypt panic")
 		}
-	}() // Anti Crash
+	}()
 
 	key := []byte(CryptoKey)
 	if len(key) != 32 {
@@ -72,7 +73,6 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 	}
 
 	encryptedStr = strings.TrimSpace(encryptedStr)
-
 	data, err := base64.StdEncoding.DecodeString(encryptedStr)
 	if err != nil {
 		return nil, err
@@ -135,40 +135,23 @@ func NewTerminal() *Terminal {
 
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30":
-		return color.Gray{Y: 100}
-	case "31":
-		return theme.ErrorColor()
-	case "32":
-		return theme.SuccessColor()
-	case "33":
-		return theme.WarningColor()
-	case "34":
-		return theme.PrimaryColor()
-	case "35":
-		return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36":
-		return color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	case "37":
-		return theme.ForegroundColor()
-	case "90":
-		return color.Gray{Y: 100}
-	case "91":
-		return color.RGBA{R: 255, G: 100, B: 100, A: 255}
-	case "92":
-		return color.RGBA{R: 100, G: 255, B: 100, A: 255}
-	case "93":
-		return color.RGBA{R: 255, G: 255, B: 100, A: 255}
-	case "94":
-		return color.RGBA{R: 100, G: 100, B: 255, A: 255}
-	case "95":
-		return color.RGBA{R: 255, G: 100, B: 255, A: 255}
-	case "96":
-		return color.RGBA{R: 100, G: 255, B: 255, A: 255}
-	case "97":
-		return color.White
-	default:
-		return nil
+	case "30": return color.Gray{Y: 100}
+	case "31": return theme.ErrorColor()
+	case "32": return theme.SuccessColor()
+	case "33": return theme.WarningColor()
+	case "34": return theme.PrimaryColor()
+	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
+	case "37": return theme.ForegroundColor()
+	case "90": return color.Gray{Y: 100}
+	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
+	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
+	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "97": return color.White
+	default: return nil
 	}
 }
 
@@ -202,9 +185,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 }
 
 func (t *Terminal) handleAnsiCode(codeSeq string) {
-	if len(codeSeq) < 3 {
-		return
-	}
+	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
 	switch command {
@@ -215,15 +196,11 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 				t.curStyle.FGColor = theme.ForegroundColor()
 			} else {
 				col := ansiToColor(part)
-				if col != nil {
-					t.curStyle.FGColor = col
-				}
+				if col != nil { t.curStyle.FGColor = col }
 			}
 		}
 	case 'J':
-		if strings.Contains(content, "2") {
-			t.Clear()
-		}
+		if strings.Contains(content, "2") { t.Clear() }
 	case 'H':
 		t.curRow = 0
 		t.curCol = 0
@@ -268,11 +245,7 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 	filledLength := (percent * barLength) / 100
 	bar := ""
 	for i := 0; i < barLength; i++ {
-		if i < filledLength {
-			bar += "█"
-		} else {
-			bar += "░"
-		}
+		if i < filledLength { bar += "█" } else { bar += "░" }
 	}
 	msg := fmt.Sprintf("\r%s %s [%s] %d%%", colorCode, label, bar, percent)
 	term.Write([]byte(msg))
@@ -281,26 +254,20 @@ func drawProgressBar(term *Terminal, label string, percent int, colorCode string
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
+	if err != nil { return false }
 	return strings.TrimSpace(string(out)) == "0"
 }
 
 func CheckKernelDriver() bool {
 	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
-	if err := cmd.Run(); err == nil {
-		return true
-	}
+	if err := cmd.Run(); err == nil { return true }
 	return false
 }
 
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
 	out, err := cmd.Output()
-	if err != nil {
-		return "Unknown"
-	}
+	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
 }
 
@@ -316,60 +283,37 @@ func VerifySuccessAndCreateFlag() bool {
 
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
-
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
-
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
-		if checkCmd.Run() == nil {
-			return nil, "Success"
-		}
+		if checkCmd.Run() == nil { return nil, "Success" }
 	}
-
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err, "Init Fail"
-	}
+	if err != nil { return err, "Init Fail" }
 	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
-
 	resp, err := client.Do(req)
-	if err != nil {
-		return err, "Net Err"
-	}
+	if err != nil { return err, "Net Err" }
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err"
-	}
-
+	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
 	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
 	stdin, err := writeCmd.StdinPipe()
-	if err != nil {
-		return err, "Pipe Err"
-	}
+	if err != nil { return err, "Pipe Err" }
 	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
-
-	if err := writeCmd.Run(); err != nil {
-		return err, "Write Err"
-	}
+	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
 	return nil, "Success"
 }
 
 /* ===============================
               MAIN UI
 ================================ */
-
-// Helper to create centered text labels quickly
 func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
 	lbl := canvas.NewText(text, color)
 	lbl.TextSize = size
 	lbl.Alignment = fyne.TextAlignCenter
-	if bold {
-		lbl.TextStyle = fyne.TextStyle{Bold: true}
-	}
+	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
 	return lbl
 }
 
@@ -382,6 +326,17 @@ func main() {
 	w.SetMaster()
 
 	term := NewTerminal()
+	
+	// Update awal posisi direktori
+	// Jika user tidak punya akses root, /data/local/tmp mungkin tidak bisa di list
+	// Jadi kita cek, jika tidak root kita fallback ke HOME directory aplikasi
+	if !CheckRoot() {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			currentDir = homeDir
+		}
+	}
+
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
@@ -394,27 +349,20 @@ func main() {
 	status.TextSize = 12
 	status.Alignment = fyne.TextAlignCenter
 
-	var stdin io.WriteCloser
-
-	// --- Status Labels ---
+	// Info Labels
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
-
 	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
 	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
-
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
+	// Monitoring System
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
 			func() {
-				defer func() {
-					if r := recover(); r != nil {
-					}
-				}()
-
+				defer func() { if r := recover(); r != nil {} }()
 				isRoot := CheckRoot()
 				if isRoot {
 					lblSystemValue.Text = "GRANTED"
@@ -424,7 +372,6 @@ func main() {
 					lblSystemValue.Color = failRed
 				}
 				lblSystemValue.Refresh()
-
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"
 					lblKernelValue.Color = successGreen
@@ -433,7 +380,6 @@ func main() {
 					lblKernelValue.Color = failRed
 				}
 				lblKernelValue.Refresh()
-
 				seStatus := CheckSELinux()
 				lblSELinuxValue.Text = strings.ToUpper(seStatus)
 				if seStatus == "Enforcing" {
@@ -449,75 +395,134 @@ func main() {
 		}
 	}()
 
-	// -------------------------------------------------------------
-	//   ONLINE VERSION CHECKER & POPUPS
-	// -------------------------------------------------------------
+	// --- LOGIC SHELL (CD, LS, RM RF) ---
+	processCommand := func(cmdText string) {
+		cmdText = strings.TrimSpace(cmdText)
+		if cmdText == "" { return }
 
+		// Tampilkan Prompt "User > Command"
+		// Kita potong path jika terlalu panjang agar rapi
+		displayDir := currentDir
+		if len(displayDir) > 25 {
+			displayDir = "..." + displayDir[len(displayDir)-20:]
+		}
+		prompt := fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0m%s\n", displayDir, cmdText)
+		term.Write([]byte(prompt))
+
+		// 1. Handle "cd" command (Change Directory)
+		if strings.HasPrefix(cmdText, "cd") {
+			parts := strings.Fields(cmdText)
+			newPath := currentDir
+			
+			if len(parts) == 1 {
+				// cd saja -> kembali ke default / data user home
+				if CheckRoot() {
+					newPath = "/data/local/tmp"
+				} else {
+					h, _ := os.UserHomeDir()
+					newPath = h
+				}
+			} else {
+				arg := parts[1]
+				if filepath.IsAbs(arg) {
+					newPath = arg
+				} else {
+					newPath = filepath.Join(currentDir, arg)
+				}
+			}
+			
+			// Bersihkan path (hilangkan .. atau .)
+			newPath = filepath.Clean(newPath)
+
+			// Cek apakah folder tersebut ada?
+			var dirExists bool
+			if CheckRoot() {
+				// Cek pakai root shell
+				check := exec.Command("su", "-c", "[ -d \""+newPath+"\" ]")
+				if err := check.Run(); err == nil { dirExists = true }
+			} else {
+				// Cek pakai stat biasa
+				info, err := os.Stat(newPath)
+				if err == nil && info.IsDir() { dirExists = true }
+			}
+
+			if dirExists {
+				currentDir = newPath
+			} else {
+				term.Write([]byte(fmt.Sprintf("\x1b[31mcd: %s: No such directory\x1b[0m\n", parts[1])))
+			}
+			return
+		}
+
+		// 2. Handle Perintah Lain (ls, rm, dll)
+		go func() {
+			var cmd *exec.Cmd
+			
+			if CheckRoot() {
+				// ROOT MODE: Kita gabungkan cd && command agar berjalan di folder yang benar
+				fullCmd := fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText)
+				cmd = exec.Command("su", "-c", fullCmd)
+			} else {
+				// NON-ROOT MODE: Kita set cmd.Dir
+				cmd = exec.Command("sh", "-c", cmdText)
+				cmd.Dir = currentDir
+			}
+
+			// Capture output
+			stdout, _ := cmd.StdoutPipe()
+			stderr, _ := cmd.StderrPipe()
+			
+			if err := cmd.Start(); err != nil {
+				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
+				return
+			}
+
+			// Stream output ke terminal
+			go io.Copy(term, stdout)
+			go io.Copy(term, stderr)
+
+			cmd.Wait()
+		}()
+	}
+
+	input.OnSubmitted = func(text string) {
+		processCommand(text)
+		input.SetText("")
+	}
+
+	// Button Action (Send)
+	send := func() {
+		processCommand(input.Text)
+		input.SetText("")
+	}
+
+	// --- UPDATE CHECKER & OVERLAY ---
 	var overlayContainer *fyne.Container
 
 	showModal := func(titleText string, msgText string, confirmText string, onConfirm func(), isError bool) {
 		w.Canvas().Refresh(w.Content())
-
-		btnCancel := widget.NewButton("CANCEL", func() {
-			overlayContainer.Hide()
-		})
+		btnCancel := widget.NewButton("CANCEL", func() { overlayContainer.Hide() })
 		btnCancel.Importance = widget.DangerImportance
-
 		btnConfirm := widget.NewButton(confirmText, func() {
 			overlayContainer.Hide()
-			if onConfirm != nil {
-				onConfirm()
-			}
+			if onConfirm != nil { onConfirm() }
 		})
-
-		if isError {
-			btnConfirm.Importance = widget.DangerImportance
-		} else {
-			btnConfirm.Importance = widget.HighImportance
-		}
-
+		if isError { btnConfirm.Importance = widget.DangerImportance } else { btnConfirm.Importance = widget.HighImportance }
+		
 		btnSize := fyne.NewSize(110, 40)
-		cancelContainer := container.NewGridWrap(btnSize, btnCancel)
-		confirmContainer := container.NewGridWrap(btnSize, btnConfirm)
-
-		btnGrid := container.NewHBox(
-			layout.NewSpacer(),
-			cancelContainer,
-			widget.NewLabel("      "),
-			confirmContainer,
-			layout.NewSpacer(),
-		)
-
+		btnGrid := container.NewHBox(layout.NewSpacer(), container.NewGridWrap(btnSize, btnCancel), widget.NewLabel("      "), container.NewGridWrap(btnSize, btnConfirm), layout.NewSpacer())
+		
 		txtColor := theme.ForegroundColor()
-		if isError {
-			txtColor = theme.ErrorColor()
-		}
-
+		if isError { txtColor = theme.ErrorColor() }
 		lblTitle := canvas.NewText(titleText, txtColor)
-		lblTitle.TextSize = 18
-		lblTitle.TextStyle = fyne.TextStyle{Bold: true}
-		lblTitle.Alignment = fyne.TextAlignCenter
-
-		lblMsg := widget.NewLabel(msgText)
-		lblMsg.Alignment = fyne.TextAlignCenter
-		lblMsg.Wrapping = fyne.TextWrapWord
-
-		content := container.NewVBox(
-			container.NewPadded(container.NewCenter(lblTitle)),
-			lblMsg,
-			widget.NewLabel(""),
-			btnGrid,
-		)
-
-		card := widget.NewCard("", "", container.NewPadded(content))
-		box := container.NewPadded(card)
-
+		lblTitle.TextSize = 18; lblTitle.TextStyle = fyne.TextStyle{Bold: true}; lblTitle.Alignment = fyne.TextAlignCenter
+		lblMsg := widget.NewLabel(msgText); lblMsg.Alignment = fyne.TextAlignCenter; lblMsg.Wrapping = fyne.TextWrapWord
+		
+		content := container.NewVBox(container.NewPadded(container.NewCenter(lblTitle)), lblMsg, widget.NewLabel(""), btnGrid)
 		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 220})
-		modalWrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), box))
-
+		modalWrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(widget.NewCard("", "", container.NewPadded(content)))))
 		overlayContainer.Objects = []fyne.CanvasObject{bg, modalWrapper}
-		overlayContainer.Show()
-		overlayContainer.Refresh()
+		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
 	go func() {
@@ -526,343 +531,124 @@ func main() {
 			term.Write([]byte("\n\x1b[33m[WARN] ConfigURL belum diganti!\x1b[0m\n"))
 			return
 		}
-
 		term.Write([]byte("\n\x1b[90m[*] Checking for updates...\x1b[0m\n"))
 		freshURL := fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix())
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(freshURL)
-
-		if err != nil {
-			term.Write([]byte("\x1b[31m[ERR] Connection Failed\x1b[0m\n"))
-			return
-		}
+		if err != nil { term.Write([]byte("\x1b[31m[ERR] Connection Failed\x1b[0m\n")); return }
 		defer resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Server Error: %d\x1b[0m\n", resp.StatusCode)))
-			return
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		body = bytes.TrimSpace(body)
-
+		if resp.StatusCode != 200 { term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Server Error: %d\x1b[0m\n", resp.StatusCode))); return }
+		body, _ := io.ReadAll(resp.Body); body = bytes.TrimSpace(body)
 		decrypted, err := decryptConfig(string(body))
-		if err != nil {
-			term.Write([]byte("\x1b[31m[ERR] Integrity Check Failed\x1b[0m\n"))
-			return
-		}
-
-		decrypted = bytes.TrimSpace(decrypted)
+		if err != nil { term.Write([]byte("\x1b[31m[ERR] Integrity Check Failed\x1b[0m\n")); return }
 		var config OnlineConfig
-		if err := json.Unmarshal(decrypted, &config); err == nil {
-			if config.Version != "" {
-				if config.Version != AppVersion {
-					term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
-					showModal("UPDATE AVAILABLE", config.Message, "UPDATE", func() {
-						u, err := url.Parse(config.Link)
-						if err == nil {
-							app.New().OpenURL(u)
-						}
-					}, false)
-				} else {
-					term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
-				}
+		if err := json.Unmarshal(bytes.TrimSpace(decrypted), &config); err == nil {
+			if config.Version != "" && config.Version != AppVersion {
+				term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
+				showModal("UPDATE AVAILABLE", config.Message, "UPDATE", func() {
+					u, err := url.Parse(config.Link); if err == nil { app.New().OpenURL(u) }
+				}, false)
+			} else {
+				term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
+				term.Write([]byte(fmt.Sprintf("\x1b[36m[cwd] %s\x1b[0m\n", currentDir)))
 			}
 		}
 	}()
 
 	autoInstallKernel := func() {
-		term.Clear()
-		status.Text = "System: Installing..."
-		status.Refresh()
+		term.Clear(); status.Text = "System: Installing..."; status.Refresh()
 		go func() {
 			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			term.Write([]byte("\x1b[36m╔══════════════════════════════════════╗\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m║      KERNEL DRIVER INSTALLER         ║\x1b[0m\n"))
 			term.Write([]byte("\x1b[36m╚══════════════════════════════════════╝\x1b[0m\n"))
-			term.Write([]byte("\n\x1b[90m[*] Identifying Device Architecture...\x1b[0m\n"))
 			time.Sleep(500 * time.Millisecond)
-
 			out, err := exec.Command("uname", "-r").Output()
-			if err != nil {
-				term.Write([]byte("\x1b[31m[X] Critical Error: Cannot read kernel.\x1b[0m\n"))
-				return
-			}
+			if err != nil { term.Write([]byte("\x1b[31m[X] Critical Error: Cannot read kernel.\x1b[0m\n")); return }
 			rawVersion := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf(" -> Target: \x1b[33m%s\x1b[0m\n\n", rawVersion)))
-
-			downloadPath := "/data/local/tmp/temp_kernel_dl"
-			targetFile := "/data/local/tmp/kernel_installer.sh"
-			var downloadUrl string
-			var found bool = false
-
+			
+			dlPath := "/data/local/tmp/temp_kernel_dl"; targetFile := "/data/local/tmp/kernel_installer.sh"
+			var dlUrl string; var found bool = false
 			simulateProcess := func(label string) {
-				for i := 0; i <= 100; i += 10 {
-					drawProgressBar(term, label, i, "\x1b[36m")
-					time.Sleep(50 * time.Millisecond)
-				}
+				for i := 0; i <= 100; i += 10 { drawProgressBar(term, label, i, "\x1b[36m"); time.Sleep(50 * time.Millisecond) }
 				term.Write([]byte("\n"))
 			}
-
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
-			url1 := GitHubRepo + rawVersion + ".sh"
-			err, _ = downloadFile(url1, downloadPath)
-			if err == nil {
-				downloadUrl = "Variant 1 (Precise)"
-				found = true
-				term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
-			}
-
+			if err, _ := downloadFile(GitHubRepo+rawVersion+".sh", dlPath); err == nil { dlUrl = "Variant 1"; found = true }
 			if !found {
 				parts := strings.Split(rawVersion, "-")
 				if len(parts) > 0 {
 					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
 					simulateProcess("Connecting...")
-					shortVersion := parts[0]
-					url2 := GitHubRepo + shortVersion + ".sh"
-					err, _ = downloadFile(url2, downloadPath)
-					if err == nil {
-						downloadUrl = "Variant 2 (Universal)"
-						found = true
-						term.Write([]byte("\x1b[32m[V] Resources Found.\x1b[0m\n"))
-					}
+					if err, _ := downloadFile(GitHubRepo+parts[0]+".sh", dlPath); err == nil { dlUrl = "Variant 2"; found = true }
 				}
 			}
-
 			if !found {
-				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n"))
-				status.Text = "System: Failed"
-				status.Refresh()
+				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n")); status.Text = "System: Failed"; status.Refresh()
 			} else {
-				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + downloadUrl + "\x1b[0m\n"))
+				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + dlUrl + "\x1b[0m\n"))
 				simulateProcess("Downloading Payload")
-				exec.Command("su", "-c", "mv "+downloadPath+" "+targetFile).Run()
-				exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
-				cmd := exec.Command("su", "-c", "sh "+targetFile)
-				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-				var pipeStdin io.WriteCloser
-				pipeStdin, _ = cmd.StdinPipe()
-				cmd.Stdout = term
-				cmd.Stderr = term
+				exec.Command("su", "-c", "mv "+dlPath+" "+targetFile).Run(); exec.Command("su", "-c", "chmod 777 "+targetFile).Run()
+				cmd := exec.Command("su", "-c", "sh "+targetFile); cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+				cmd.Stdout = term; cmd.Stderr = term
 				cmd.Run()
 				VerifySuccessAndCreateFlag()
-				pipeStdin.Close()
-				time.Sleep(1 * time.Second)
-				status.Text = "System: Online"
-				status.Refresh()
+				status.Text = "System: Online"; status.Refresh()
 			}
 		}()
 	}
 
 	runFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close()
-		term.Clear()
-		status.Text = "Status: Processing..."
-		status.Refresh()
-
-		data, err := io.ReadAll(reader)
-		if err != nil {
-			term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n"))
-			return
-		}
-
+		defer reader.Close(); term.Clear(); status.Text = "Status: Processing..."; status.Refresh()
+		data, err := io.ReadAll(reader); if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-		// [MODIFIKASI] Target path menggunakan cache internal app (aman untuk non-root)
-		// Namun kita perlu logika untuk root vs non-root
 		targetRoot := "/data/local/tmp/temp_exec"
-
 		go func() {
-			tmpFile, err := os.CreateTemp("", "exec_tmp")
-			if err != nil {
-				term.Write([]byte("\x1b[31m[ERR] Cache Write Failed\x1b[0m\n"))
-				return
-			}
-			tmpFile.Write(data)
-			tmpPath := tmpFile.Name()
-			tmpFile.Close()
-			
-			// Pastikan file executable (penting untuk non-root)
-			os.Chmod(tmpPath, 0755)
-
+			tmpFile, err := os.CreateTemp("", "exec_tmp"); if err != nil { term.Write([]byte("\x1b[31m[ERR] Cache Write Failed\x1b[0m\n")); return }
+			tmpPath := tmpFile.Name(); tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
 			var cmd *exec.Cmd
-
-			// [MODIFIKASI UTAMA] Cek apakah Root tersedia?
 			if CheckRoot() {
-				// JALUR ROOT (Seperti sebelumnya)
 				exec.Command("su", "-c", "rm -f "+targetRoot).Run()
-				moveCmd := exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, targetRoot, targetRoot))
-				if err := moveCmd.Run(); err != nil {
-					term.Write([]byte("\x1b[31m[ERR] Root Copy Failed\x1b[0m\n"))
-					os.Remove(tmpPath)
-					return
+				if exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmpPath, targetRoot, targetRoot)).Run() != nil {
+					term.Write([]byte("\x1b[31m[ERR] Root Copy Failed\x1b[0m\n")); os.Remove(tmpPath); return
 				}
 				os.Remove(tmpPath)
-
-				if isBinary {
-					cmd = exec.Command("su", "-c", targetRoot)
-				} else {
-					cmd = exec.Command("su", "-c", "sh "+targetRoot)
-				}
+				if isBinary { cmd = exec.Command("su", "-c", targetRoot) } else { cmd = exec.Command("su", "-c", "sh "+targetRoot) }
 			} else {
-				// JALUR NON-ROOT (User biasa)
-				// Jalankan langsung dari cache path
 				term.Write([]byte("\x1b[33m[*] Running in Non-Root Mode...\x1b[0m\n"))
-				
-				if isBinary {
-					cmd = exec.Command(tmpPath)
-				} else {
-					cmd = exec.Command("sh", tmpPath)
-				}
+				if isBinary { cmd = exec.Command(tmpPath) } else { cmd = exec.Command("sh", tmpPath) }
 			}
-
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
-			stdout, _ := cmd.StdoutPipe()
-			stderr, _ := cmd.StderrPipe()
-			stdin, _ = cmd.StdinPipe()
-
-			if err := cmd.Start(); err != nil {
-				term.Write([]byte("\x1b[31m[ERR] Execution Failed\x1b[0m\n"))
-				return
-			}
-
-			go io.Copy(term, stdout)
-			go io.Copy(term, stderr)
-
-			cmd.Wait()
-			status.Text = "Status: Idle"
-			status.Refresh()
-			stdin = nil
-			
-			// Cleanup cache if non-root used it
-			if !CheckRoot() {
-				os.Remove(tmpPath)
-			}
+			stdout, _ := cmd.StdoutPipe(); stderr, _ := cmd.StderrPipe()
+			if err := cmd.Start(); err != nil { term.Write([]byte("\x1b[31m[ERR] Execution Failed\x1b[0m\n")); return }
+			go io.Copy(term, stdout); go io.Copy(term, stderr)
+			cmd.Wait(); status.Text = "Status: Idle"; status.Refresh()
+			if !CheckRoot() { os.Remove(tmpPath) }
 		}()
 	}
 
-	send := func() {
-		if stdin != nil && input.Text != "" {
-			fmt.Fprintln(stdin, input.Text)
-			term.Write([]byte(fmt.Sprintf("\x1b[36m> %s\x1b[0m\n", input.Text)))
-			input.SetText("")
-		}
-	}
-	input.OnSubmitted = func(_ string) { send() }
-
-	// --- UI COMPOSITION (New Layout) ---
-
-	// 1. HEADER
-	titleText := canvas.NewText("SIMPLE EXEC", color.White)
-	titleText.TextSize = 16
-	titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
-	titleText.Alignment = fyne.TextAlignCenter
-
-	infoGrid := container.NewGridWithColumns(3,
-		container.NewVBox(lblKernelTitle, lblKernelValue),
-		container.NewVBox(lblSELinuxTitle, lblSELinuxValue),
-		container.NewVBox(lblSystemTitle, lblSystemValue),
-	)
-
-	// 2. BUTTONS
-	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() {
-		showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false)
-	})
-	btnInject.Importance = widget.HighImportance
-
-	btnSwitch := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() {
-		go func() {
-			current := CheckSELinux()
-			if current == "Enforcing" {
-				exec.Command("su", "-c", "setenforce 0").Run()
-			} else {
-				exec.Command("su", "-c", "setenforce 1").Run()
-			}
-		}()
-	})
-	btnSwitch.Importance = widget.HighImportance
-
-	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	btnClear.Importance = widget.DangerImportance
-
-	actionGrid := container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)
-
-	headerContainer := container.NewVBox(
-		container.NewPadded(titleText),
-		container.NewPadded(infoGrid),
-		container.NewPadded(actionGrid),
-		container.NewPadded(status),
-		widget.NewSeparator(),
-	)
-
-	headerBg := canvas.NewRectangle(color.Gray{Y: 45})
-	headerStack := container.NewStack(headerBg, headerContainer)
-
-	// 3. BOTTOM SECTION
-	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	inputArea := container.NewBorder(nil, nil, nil, sendBtn, input)
-
-	copyrightLbl := canvas.NewText("Code by TANGSAN", silverColor)
-	copyrightLbl.TextSize = 10
-	copyrightLbl.Alignment = fyne.TextAlignCenter
-	copyrightContainer := container.NewPadded(copyrightLbl)
-
-	bottomContainer := container.NewVBox(
-		copyrightContainer,
-		container.NewPadded(inputArea),
-	)
-
-	// 4. MAIN TERMINAL AREA
-	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
-	bgImg.FillMode = canvas.ImageFillStretch
-
-	darkOverlay := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180})
-
-	termArea := container.NewStack(
-		canvas.NewRectangle(color.Black),
-		bgImg,
-		darkOverlay,
-		term.scroll,
-	)
-
-	// 5. FAB (Floating Action Button)
-	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
-	img.FillMode = canvas.ImageFillContain
-
-	fabButton := widget.NewButton("", func() {
-		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
-	})
-	fabButton.Importance = widget.LowImportance
-
-	fabContent := container.NewStack(
-		container.NewPadded(img),
-		fabButton,
-	)
-
-	fabWrapper := container.NewHBox(
-		layout.NewSpacer(),
-		container.NewGridWrap(fyne.NewSize(65, 65), fabContent),
-	)
+	// UI Layout Construction
+	titleText := canvas.NewText("SIMPLE EXEC", color.White); titleText.TextSize = 16; titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}; titleText.Alignment = fyne.TextAlignCenter
+	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
+	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false) }); btnInject.Importance = widget.HighImportance
+	btnSwitch := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux() == "Enforcing" { exec.Command("su", "-c", "setenforce 0").Run() } else { exec.Command("su", "-c", "setenforce 1").Run() } }() }); btnSwitch.Importance = widget.HighImportance
+	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClear.Importance = widget.DangerImportance
+	headerStack := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)), container.NewPadded(status), widget.NewSeparator()))
 	
-	// [MODIFIKASI] Menambahkan spacer ekstra agar tombol naik lebih tinggi
-	fabContainer := container.NewVBox(
-		layout.NewSpacer(),
-		container.NewPadded(fabWrapper),
-		widget.NewLabel(" "), // Spacer 1
-		widget.NewLabel(" "), // Spacer 2
-		widget.NewLabel(" "), // Spacer 3 (Extra)
-		widget.NewLabel(" "), // Spacer 4 (Extra)
-		widget.NewLabel(" "), // Spacer 5 (Extra untuk clear input area)
-	)
-
-	// --- FINAL ASSEMBLY ---
-	mainLayout := container.NewBorder(headerStack, bottomContainer, nil, nil, termArea)
-	overlayContainer = container.NewStack()
-	overlayContainer.Hide()
-
-	finalContent := container.NewStack(mainLayout, fabContainer, overlayContainer)
-
-	w.SetContent(finalContent)
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
+	cpyLbl := canvas.NewText("Code by TANGSAN", silverColor); cpyLbl.TextSize = 10; cpyLbl.Alignment = fyne.TextAlignCenter
+	bottomContainer := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
+	
+	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bgImg.FillMode = canvas.ImageFillStretch
+	termArea := container.NewStack(canvas.NewRectangle(color.Black), bgImg, canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180}), term.scroll)
+	
+	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); img.FillMode = canvas.ImageFillContain
+	fabBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show() }); fabBtn.Importance = widget.LowImportance
+	fabContainer := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65, 65), container.NewStack(container.NewPadded(img), fabBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
+	
+	overlayContainer = container.NewStack(); overlayContainer.Hide()
+	w.SetContent(container.NewStack(container.NewBorder(headerStack, bottomContainer, nil, nil, termArea), fabContainer, overlayContainer))
 	w.ShowAndRun()
 }
