@@ -385,12 +385,11 @@ func main() {
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
-	silverColor := color.Gray{Y: 180} // Warna silver untuk status dan copyright
+	silverColor := color.Gray{Y: 180}
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 
-	// [MODIFIKASI] Status sekarang menggunakan canvas.Text agar warnanya bisa diatur ke Silver
 	status := canvas.NewText("System: Ready", silverColor)
 	status.TextSize = 12
 	status.Alignment = fyne.TextAlignCenter
@@ -404,7 +403,6 @@ func main() {
 	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
 	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// Pindahkan Root Status ke Header agar dashboard lebih lengkap
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
@@ -452,19 +450,19 @@ func main() {
 	}()
 
 	// -------------------------------------------------------------
-	//   ONLINE VERSION CHECKER & POPUPS (Unchanged logic, cleaner UI)
+	//   ONLINE VERSION CHECKER & POPUPS
 	// -------------------------------------------------------------
 
-	var overlayContainer *fyne.Container // Container untuk semua overlay (update/inject)
+	var overlayContainer *fyne.Container
 
-	// Helper function for popups
 	showModal := func(titleText string, msgText string, confirmText string, onConfirm func(), isError bool) {
 		w.Canvas().Refresh(w.Content())
 
 		btnCancel := widget.NewButton("CANCEL", func() {
 			overlayContainer.Hide()
 		})
-		btnCancel.Importance = widget.LowImportance
+		// [MODIFIKASI] Tombol Cancel jadi Merah
+		btnCancel.Importance = widget.DangerImportance
 
 		btnConfirm := widget.NewButton(confirmText, func() {
 			overlayContainer.Hide()
@@ -479,8 +477,18 @@ func main() {
 			btnConfirm.Importance = widget.HighImportance
 		}
 
-		// Responsive Button Grid
-		btnGrid := container.NewGridWithColumns(2, btnCancel, btnConfirm)
+		// [MODIFIKASI] Layout Tombol: Ukuran fix dan pakai spacer agar tidak mepet
+		btnSize := fyne.NewSize(110, 40) // Ukuran tombol sedikit diperkecil agar muat
+		cancelContainer := container.NewGridWrap(btnSize, btnCancel)
+		confirmContainer := container.NewGridWrap(btnSize, btnConfirm)
+
+		btnGrid := container.NewHBox(
+			layout.NewSpacer(),
+			cancelContainer,
+			widget.NewLabel("      "), // Jarak (gap) antara tombol
+			confirmContainer,
+			layout.NewSpacer(),
+		)
 
 		txtColor := theme.ForegroundColor()
 		if isError {
@@ -499,17 +507,14 @@ func main() {
 		content := container.NewVBox(
 			container.NewPadded(container.NewCenter(lblTitle)),
 			lblMsg,
-			widget.NewLabel(""), // Spacer
+			widget.NewLabel(""), // Spacer Vertical
 			btnGrid,
 		)
 
 		card := widget.NewCard("", "", container.NewPadded(content))
-		// Use Max Layout centered with padding for mobile responsiveness
 		box := container.NewPadded(card)
 
 		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 220})
-
-		// Create a constrained container for the modal box so it doesn't fill whole screen
 		modalWrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), box))
 
 		overlayContainer.Objects = []fyne.CanvasObject{bg, modalWrapper}
@@ -555,7 +560,6 @@ func main() {
 			if config.Version != "" {
 				if config.Version != AppVersion {
 					term.Write([]byte("\x1b[33m[!] Update Found: " + config.Version + "\x1b[0m\n"))
-					// Show Update Modal
 					showModal("UPDATE AVAILABLE", config.Message, "UPDATE", func() {
 						u, err := url.Parse(config.Link)
 						if err == nil {
@@ -571,7 +575,6 @@ func main() {
 
 	autoInstallKernel := func() {
 		term.Clear()
-		// [MODIFIKASI] Update teks status pada canvas.Text
 		status.Text = "System: Installing..."
 		status.Refresh()
 		go func() {
@@ -631,7 +634,6 @@ func main() {
 
 			if !found {
 				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n"))
-				// [MODIFIKASI] Update teks status
 				status.Text = "System: Failed"
 				status.Refresh()
 			} else {
@@ -649,7 +651,6 @@ func main() {
 				VerifySuccessAndCreateFlag()
 				pipeStdin.Close()
 				time.Sleep(1 * time.Second)
-				// [MODIFIKASI] Update teks status
 				status.Text = "System: Online"
 				status.Refresh()
 			}
@@ -659,7 +660,6 @@ func main() {
 	runFile := func(reader fyne.URIReadCloser) {
 		defer reader.Close()
 		term.Clear()
-		// [MODIFIKASI] Update teks status
 		status.Text = "Status: Processing..."
 		status.Refresh()
 
@@ -714,7 +714,6 @@ func main() {
 			go io.Copy(term, stderr)
 
 			cmd.Wait()
-			// [MODIFIKASI] Update teks status
 			status.Text = "Status: Idle"
 			status.Refresh()
 			stdin = nil
@@ -732,21 +731,19 @@ func main() {
 
 	// --- UI COMPOSITION (New Layout) ---
 
-	// 1. HEADER (Title + Status Grid)
-	// [MODIFIKASI] Judul "SIMPLE EXEC" menjadi Putih Tebal dan lebih besar
+	// 1. HEADER
 	titleText := canvas.NewText("SIMPLE EXEC", color.White)
 	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	titleText.Alignment = fyne.TextAlignCenter
 
-	// Info Grid (3 Columns) - Ini bagian yang membuat UI responsif di HP
 	infoGrid := container.NewGridWithColumns(3,
 		container.NewVBox(lblKernelTitle, lblKernelValue),
 		container.NewVBox(lblSELinuxTitle, lblSELinuxValue),
 		container.NewVBox(lblSystemTitle, lblSystemValue),
 	)
 
-	// 2. BUTTONS (Grid Layout instead of Fixed Size)
+	// 2. BUTTONS
 	btnInject := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() {
 		showModal("INJECT DRIVER", "Start automatic injection process?", "START", autoInstallKernel, false)
 	})
@@ -767,55 +764,47 @@ func main() {
 	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
 	btnClear.Importance = widget.DangerImportance
 
-	// Tombol disusun dalam Grid 3 Kolom
 	actionGrid := container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)
 
-	// Gabungkan semua komponen atas dalam satu Container Vertical
 	headerContainer := container.NewVBox(
 		container.NewPadded(titleText),
 		container.NewPadded(infoGrid),
 		container.NewPadded(actionGrid),
-		// [MODIFIKASI] Status ditambahkan di sini (sekarang warnanya Silver)
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
 
-	// Background untuk Header (Dark Gray)
 	headerBg := canvas.NewRectangle(color.Gray{Y: 45})
 	headerStack := container.NewStack(headerBg, headerContainer)
 
-	// 3. BOTTOM SECTION (Input & Copyright)
+	// 3. BOTTOM SECTION
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	inputArea := container.NewBorder(nil, nil, nil, sendBtn, input)
 
-	// [MODIFIKASI] Tambahkan Label Copyright Silver di atas input
 	copyrightLbl := canvas.NewText("Code by TANGSAN", silverColor)
 	copyrightLbl.TextSize = 10
 	copyrightLbl.Alignment = fyne.TextAlignCenter
 	copyrightContainer := container.NewPadded(copyrightLbl)
 
-	// Gabungkan Copyright dan Input Area
 	bottomContainer := container.NewVBox(
 		copyrightContainer,
 		container.NewPadded(inputArea),
 	)
 
-	// 4. MAIN TERMINAL AREA (With Background)
+	// 4. MAIN TERMINAL AREA
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch
 
-	// [FIX ERROR] Menggunakan overlay hitam transparan (180/255) alih-alih bgImg.Alpha
 	darkOverlay := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180})
 
 	termArea := container.NewStack(
-		canvas.NewRectangle(color.Black), // Solid black background behind image
-		bgImg,       // Gambar Full Brightness
-		darkOverlay, // Overlay Gelap (Membuat efek redup)
+		canvas.NewRectangle(color.Black),
+		bgImg,
+		darkOverlay,
 		term.scroll,
 	)
 
-	// 5. FLOATING ACTION BUTTON (Folder Icon)
-	// Kita gunakan Layout Overlay agar ikon mengambang di pojok kanan bawah
+	// 5. FAB
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
 
@@ -825,11 +814,10 @@ func main() {
 	fabButton.Importance = widget.LowImportance
 
 	fabContent := container.NewStack(
-		container.NewPadded(img), // Gambar Folder
-		fabButton,                // Tombol transparan di atasnya
+		container.NewPadded(img),
+		fabButton,
 	)
 
-	// Wrapper agar FAB ada di pojok kanan bawah dengan ukuran tetap (60x60)
 	fabWrapper := container.NewHBox(
 		layout.NewSpacer(),
 		container.NewGridWrap(fyne.NewSize(65, 65), fabContent),
@@ -837,17 +825,13 @@ func main() {
 	fabContainer := container.NewVBox(
 		layout.NewSpacer(),
 		container.NewPadded(fabWrapper),
-		widget.NewLabel(" "), // Spacer kecil di bawah agar tidak terlalu mepet
+		widget.NewLabel(" "),
 		widget.NewLabel(" "),
 	)
 
 	// --- FINAL ASSEMBLY ---
-
-	// Main Layout: Header di Atas, Input di Bawah, Terminal di Tengah
 	mainLayout := container.NewBorder(headerStack, bottomContainer, nil, nil, termArea)
-
-	// Overlay System: Main Layout ditumpuk dengan FAB dan Popup Overlay
-	overlayContainer = container.NewStack() // Init hidden overlay
+	overlayContainer = container.NewStack()
 	overlayContainer.Hide()
 
 	finalContent := container.NewStack(mainLayout, fabContainer, overlayContainer)
