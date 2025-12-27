@@ -379,7 +379,7 @@ func main() {
 
 	w := a.NewWindow("Simple Exec by TANGSAN")
 	// Resize awal agak lebar agar nyaman di desktop, tapi UI akan adaptif di HP
-	w.Resize(fyne.NewSize(400, 700)) 
+	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
 	term := NewTerminal()
@@ -471,7 +471,7 @@ func main() {
 				onConfirm()
 			}
 		})
-		
+
 		if isError {
 			btnConfirm.Importance = widget.DangerImportance
 		} else {
@@ -505,9 +505,9 @@ func main() {
 		card := widget.NewCard("", "", container.NewPadded(content))
 		// Use Max Layout centered with padding for mobile responsiveness
 		box := container.NewPadded(card)
-		
+
 		bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 220})
-		
+
 		// Create a constrained container for the modal box so it doesn't fill whole screen
 		modalWrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), box))
 
@@ -750,9 +750,13 @@ func main() {
 			}
 		}()
 	})
+	// [MODIFIKASI] Tombol SELinux diubah jadi HighImportance (Biru) agar sama dengan Inject
+	btnSwitch.Importance = widget.HighImportance
 
 	btnClear := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	
+	// [MODIFIKASI] Tombol Clear diubah jadi DangerImportance (Merah Gelap)
+	btnClear.Importance = widget.DangerImportance
+
 	// Tombol disusun dalam Grid 3 Kolom
 	actionGrid := container.NewGridWithColumns(3, btnInject, btnSwitch, btnClear)
 
@@ -764,7 +768,7 @@ func main() {
 		container.NewPadded(status),
 		widget.NewSeparator(),
 	)
-	
+
 	// Background untuk Header (Dark Gray)
 	headerBg := canvas.NewRectangle(color.Gray{Y: 45})
 	headerStack := container.NewStack(headerBg, headerContainer)
@@ -777,15 +781,15 @@ func main() {
 	// 4. MAIN TERMINAL AREA (With Background)
 	bgImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
 	bgImg.FillMode = canvas.ImageFillStretch
-	
-	// FIX: Menggunakan overlay hitam transparan, bukan mengubah Alpha gambar langsung
-	// Ini mencegah error "cannot assign to bgImg.Alpha"
+
+	// [FIX ERROR] Menggunakan overlay hitam transparan (180/255) alih-alih bgImg.Alpha
+	// Ini mencegah error "cannot assign to bgImg.Alpha" pada beberapa versi build
 	darkOverlay := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 180})
 
 	termArea := container.NewStack(
 		canvas.NewRectangle(color.Black), // Solid black background behind image
-		bgImg,          // Gambar Full Brightness
-		darkOverlay,    // Overlay Gelap (Membuat efek redup)
+		bgImg,       // Gambar Full Brightness
+		darkOverlay, // Overlay Gelap (Membuat efek redup)
 		term.scroll,
 	)
 
@@ -793,7 +797,7 @@ func main() {
 	// Kita gunakan Layout Overlay agar ikon mengambang di pojok kanan bawah
 	img := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	img.FillMode = canvas.ImageFillContain
-	
+
 	fabButton := widget.NewButton("", func() {
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show()
 	})
@@ -803,7 +807,7 @@ func main() {
 		container.NewPadded(img), // Gambar Folder
 		fabButton,                // Tombol transparan di atasnya
 	)
-	
+
 	// Wrapper agar FAB ada di pojok kanan bawah dengan ukuran tetap (60x60)
 	fabWrapper := container.NewHBox(
 		layout.NewSpacer(),
@@ -813,11 +817,11 @@ func main() {
 		layout.NewSpacer(),
 		container.NewPadded(fabWrapper),
 		widget.NewLabel(" "), // Spacer kecil di bawah agar tidak terlalu mepet
-		widget.NewLabel(" "), 
+		widget.NewLabel(" "),
 	)
 
 	// --- FINAL ASSEMBLY ---
-	
+
 	// Main Layout: Header di Atas, Input di Bawah, Terminal di Tengah
 	mainLayout := container.NewBorder(headerStack, bottomContainer, nil, nil, termArea)
 
