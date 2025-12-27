@@ -99,8 +99,9 @@ type Terminal struct {
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
+	// Default text putih agar kontras dengan background
 	defStyle := &widget.CustomTextGridStyle{
-		FGColor: theme.ForegroundColor(),
+		FGColor: color.White,
 		BGColor: color.Transparent,
 	}
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
@@ -131,16 +132,17 @@ func NewTerminal() *Terminal {
 
 func ansiToColor(code string) color.Color {
 	switch code {
-	// Memastikan warna gelap terlihat di background gelap
-	case "30": return color.Gray{Y: 150} // Fix: Jangan terlalu gelap
+	case "1": return color.White
+	case "30": return color.Gray{Y: 150}
 	case "31": return theme.ErrorColor()
 	case "32": return theme.SuccessColor()
 	case "33": return theme.WarningColor()
 	case "34": return theme.PrimaryColor()
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 150} // Fix: Jangan terlalu gelap
+	case "37": return color.White
+	case "39": return color.White // Default FG force White
+	case "90": return color.Gray{Y: 150}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -185,7 +187,7 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
 			if part == "" || part == "0" {
-				t.curStyle.FGColor = theme.ForegroundColor()
+				t.curStyle.FGColor = color.White
 			} else {
 				col := ansiToColor(part)
 				if col != nil { t.curStyle.FGColor = col }
@@ -200,19 +202,28 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 
 func (t *Terminal) printText(text string) {
 	for _, char := range text {
-		if char == '\n' { t.curRow++; t.curCol = 0; continue }
-		if char == '\r' { t.curCol = 0; continue }
-		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
-		rowCells := t.grid.Rows[t.curRow].Cells
-		if t.curCol >= len(rowCells) {
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, rowCells)
-			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
+		// [FIX] Handle Tab agar layout rapi
+		if char == '\t' {
+			for i := 0; i < 4; i++ { t.printChar(' ') }
+			continue
 		}
-		cellStyle := *t.curStyle
-		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
-		t.curCol++
+		t.printChar(char)
 	}
+}
+
+func (t *Terminal) printChar(char rune) {
+	if char == '\n' { t.curRow++; t.curCol = 0; return }
+	if char == '\r' { t.curCol = 0; return }
+	for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
+	rowCells := t.grid.Rows[t.curRow].Cells
+	if t.curCol >= len(rowCells) {
+		newCells := make([]widget.TextGridCell, t.curCol+1)
+		copy(newCells, rowCells)
+		t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
+	}
+	cellStyle := *t.curStyle
+	t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
+	t.curCol++
 }
 
 /* ===============================
@@ -365,21 +376,26 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					// [FIX 1] Selalu gunakan 'sh' untuk menjalankan script non-root
-					// Android non-root tidak mengizinkan eksekusi langsung (exec format error / permission denied)
 					cmd = exec.Command("sh", scriptPath)
 				}
 			} else {
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
-					cmd = exec.Command("sh", "-c", cmdText)
+					// [FIX CRUCIAL] Deteksi perintah ls di user NO-ROOT
+					// Memaksa --color=never agar output ls menjadi teks polos (putih)
+					// Ini mengatasi masalah file "invisible" karena warna gelap di background gelap
+					finalCmd := cmdText
+					if strings.HasPrefix(strings.TrimSpace(cmdText), "ls") {
+						finalCmd = cmdText + " --color=never"
+					}
+					
+					cmd = exec.Command("sh", "-c", finalCmd)
 					cmd.Dir = currentDir
 				}
 			}
 
-			// [FIX 2] Gunakan "xterm" biasa, bukan "xterm-256color" agar ls tidak menggunakan kode warna aneh
-			// yang bisa menyebabkan teks file menjadi invisible atau tidak terformat dengan benar.
+			// Menggunakan TERM xterm agar kompatibel
 			cmd.Env = append(os.Environ(), "TERM=xterm")
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
@@ -554,3 +570,4 @@ func main() {
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
 	w.ShowAndRun()
 }
+
