@@ -42,7 +42,7 @@ const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/exe
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // Global Variable
-var currentDir string = "/sdcard" // Default ke sdcard agar user langsung lihat file
+var currentDir string = "/sdcard" // Default ke sdcard
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
@@ -251,21 +251,24 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [FIX] Permission Request - Runs in Goroutine to prevent FREEZING
+// [FIX] Permission Request - Anti Freeze & HyperOS Compatible
 func RequestStoragePermission(term *Terminal) {
 	if term != nil {
 		term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n"))
 	}
 	
-	// Method 1: AM via Shell (Standard)
-	cmd1 := exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
+	// Kita gunakan 'package:' agar langsung menyorot aplikasi ini di pengaturan
+	// HyperOS biasanya merespon lebih baik jika kita spesifik
+	pkgName := "com.tangsan.executor" // Pastikan ini sama dengan App ID saat compile!
+	
+	// Cara 1: Buka list permission spesifik aplikasi (Lebih aman untuk HyperOS)
+	cmd1 := exec.Command("sh", "-c", fmt.Sprintf("am start -a android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION -d package:%s", pkgName))
 	err1 := cmd1.Run()
 	
-	// Method 2: CMD Activity (Alternative for newer Androids like HyperOS)
 	if err1 != nil {
-		if term != nil { term.Write([]byte("\x1b[31m[!] Method 1 failed, trying Method 2...\x1b[0m\n")) }
-		cmd2 := exec.Command("sh", "-c", "cmd activity start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
-		cmd2.Run()
+		// Cara 2: Buka list umum jika Cara 1 gagal
+		if term != nil { term.Write([]byte("\x1b[33m[!] Trying generic settings...\x1b[0m\n")) }
+		exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
 	}
 }
 
@@ -274,12 +277,10 @@ func downloadFile(url string, filepath string) (error, string) {
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
 	err := cmd.Run()
-	
 	if err == nil {
 		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
 		if checkCmd.Run() == nil { return nil, "Success" }
 	}
-	
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err, "Init Fail" }
@@ -331,7 +332,7 @@ func main() {
 	go func() {
 		time.Sleep(1 * time.Second)
 		if !CheckRoot() {
-			RequestStoragePermission(nil) // Silent on startup
+			// Jangan panggil ini di startup agar tidak spam, biarkan user klik tombol gerigi
 		}
 	}()
 
@@ -418,13 +419,11 @@ func main() {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
 					runCmd := cmdText
-					// [FIX] Force ls -a
 					if strings.HasPrefix(cmdText, "ls") {
 						if !strings.Contains(cmdText, "-a") {
 							runCmd = strings.Replace(cmdText, "ls", "ls -a", 1)
 						}
 					}
-					// [FIX] Handle ./file execution
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
@@ -623,12 +622,14 @@ func main() {
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	// [FIX] Permission Button: Runs in Goroutine to prevent UI Freeze
+	// [FIX] Anti-Freeze Permission Button (Runs in Goroutine)
 	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
+		// Run in background to prevent UI Freeze
 		go func() {
 			RequestStoragePermission(term)
 		}()
-		dialog.ShowInformation("Permission Help", "Jika pengaturan tidak terbuka otomatis:\n\n1. Buka Pengaturan HP\n2. Cari 'Akses Semua File'\n3. Aktifkan untuk aplikasi ini.", w)
+		// Show dialog immediately
+		dialog.ShowInformation("Permission Help", "Jika tidak terbuka otomatis:\n\n1. Buka Pengaturan HP\n2. Cari 'Akses Semua File'\n3. Aktifkan untuk aplikasi ini.", w)
 	})
 	btnPerm.Importance = widget.LowImportance
 	
