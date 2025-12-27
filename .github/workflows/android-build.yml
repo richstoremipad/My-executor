@@ -19,7 +19,13 @@ jobs:
 
       - name: Build APK (arm64)
         run: |
-          HOME/go/bin/fyne-cross android -app-id com.exe.rich -name "My executor" -icon icon.png -arch arm64 -metadata "android:requestLegacyExternalStorage=true" -permission "android.permission.MANAGE_EXTERNAL_STORAGE" -permission "android.permission.READ_EXTERNAL_STORAGE" -permission "android.permission.WRITE_EXTERNAL_STORAGE" -permission "android.permission.INTERNET" -silent
+          # Memaksa penggunaan icon.png dari folder utama
+          $HOME/go/bin/fyne-cross android \
+            -app-id com.exe.rich \
+            -name "my executor" \
+            -icon icon.png \
+            -arch arm64 \
+            -silent
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -27,3 +33,6 @@ jobs:
           name: APK-executor
           # Jalur diperluas agar mencakup semua sub-folder di dalam dist
           path: fyne-cross/dist/**/*.apk
+
+
+Tolong editkan
