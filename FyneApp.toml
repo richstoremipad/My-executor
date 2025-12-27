@@ -1,0 +1,15 @@
+[Details]
+Icon = "icon.png"
+Name = "my executor"
+ID = "com.exe.rich"
+Version = "1.0.0"
+Build = 1
+
+[Android]
+# Menambahkan permission langsung disini
+Permissions = [
+    "android.permission.INTERNET",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.MANAGE_EXTERNAL_STORAGE"
+]
