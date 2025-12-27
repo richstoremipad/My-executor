@@ -1,4 +1,5 @@
-package main
+
+Package main
 
 import (
 	"bytes"
@@ -131,7 +132,8 @@ func NewTerminal() *Terminal {
 
 func ansiToColor(code string) color.Color {
 	switch code {
-	case "30": return color.Gray{Y: 100}
+	// Memastikan warna gelap terlihat di background gelap
+	case "30": return color.Gray{Y: 150} // Fix: Jangan terlalu gelap
 	case "31": return theme.ErrorColor()
 	case "32": return theme.SuccessColor()
 	case "33": return theme.WarningColor()
@@ -139,7 +141,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100}
+	case "90": return color.Gray{Y: 150} // Fix: Jangan terlalu gelap
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -364,11 +366,9 @@ func main() {
 						cmd = exec.Command("su", "-c", target)
 					}
 				} else {
-					if strings.HasPrefix(scriptPath, "sh") || strings.HasSuffix(scriptPath, ".sh") {
-						cmd = exec.Command("sh", scriptPath)
-					} else {
-						cmd = exec.Command(scriptPath)
-					}
+					// [FIX 1] Selalu gunakan 'sh' untuk menjalankan script non-root
+					// Android non-root tidak mengizinkan eksekusi langsung (exec format error / permission denied)
+					cmd = exec.Command("sh", scriptPath)
 				}
 			} else {
 				if isRoot {
@@ -379,7 +379,9 @@ func main() {
 				}
 			}
 
-			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			// [FIX 2] Gunakan "xterm" biasa, bukan "xterm-256color" agar ls tidak menggunakan kode warna aneh
+			// yang bisa menyebabkan teks file menjadi invisible atau tidak terformat dengan benar.
+			cmd.Env = append(os.Environ(), "TERM=xterm")
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
