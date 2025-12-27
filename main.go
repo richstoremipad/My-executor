@@ -251,7 +251,7 @@ func VerifySuccessAndCreateFlag() bool {
 	return false
 }
 
-// [FIX] Improved Permission Request Logic with Feedback
+// [FIX] Permission Request - Runs in Goroutine to prevent FREEZING
 func RequestStoragePermission(term *Terminal) {
 	if term != nil {
 		term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n"))
@@ -261,7 +261,7 @@ func RequestStoragePermission(term *Terminal) {
 	cmd1 := exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
 	err1 := cmd1.Run()
 	
-	// Method 2: CMD Activity (Alternative for newer Androids)
+	// Method 2: CMD Activity (Alternative for newer Androids like HyperOS)
 	if err1 != nil {
 		if term != nil { term.Write([]byte("\x1b[31m[!] Method 1 failed, trying Method 2...\x1b[0m\n")) }
 		cmd2 := exec.Command("sh", "-c", "cmd activity start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")
@@ -327,7 +327,7 @@ func main() {
 
 	term := NewTerminal()
 	
-	// Force Permission Request on Startup
+	// Force Permission Request on Startup (Background)
 	go func() {
 		time.Sleep(1 * time.Second)
 		if !CheckRoot() {
@@ -623,11 +623,12 @@ func main() {
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	// [FIX] Permission Button with Fallback Dialog
+	// [FIX] Permission Button: Runs in Goroutine to prevent UI Freeze
 	btnPerm := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
-		RequestStoragePermission(term)
-		// Fallback dialog info
-		dialog.ShowInformation("Permission Help", "Jika pengaturan tidak terbuka:\n1. Buka Settings HP\n2. Cari 'All Files Access'\n3. Aktifkan untuk aplikasi ini.", w)
+		go func() {
+			RequestStoragePermission(term)
+		}()
+		dialog.ShowInformation("Permission Help", "Jika pengaturan tidak terbuka otomatis:\n\n1. Buka Pengaturan HP\n2. Cari 'Akses Semua File'\n3. Aktifkan untuk aplikasi ini.", w)
 	})
 	btnPerm.Importance = widget.LowImportance
 	
