@@ -36,7 +36,6 @@ import (
 ========================================== */
 const AppVersion = "1.0"
 const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
-const FlagFile = "/dev/status_driver_aktif"
 const TargetDriverName = "5.10_A12"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
@@ -83,7 +82,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ULTRA LIGHTWEIGHT)
+   TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -113,8 +112,6 @@ func NewTerminal() *Terminal {
 		reAnsi:       re,
 		needsRefresh: false,
 	}
-	// Render Loop: Hanya refresh layar setiap 50ms (20 FPS)
-	// Ini mencegah UI Freeze saat data masuk deras
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		for range ticker.C {
@@ -163,11 +160,8 @@ func (t *Terminal) Clear() {
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
-	// Pre-clean input
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil { t.printText(raw); break }
@@ -187,52 +181,30 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	case 'm':
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
-			if part == "" || part == "0" {
-				t.curStyle.FGColor = theme.ForegroundColor()
-			} else {
-				col := ansiToColor(part)
-				if col != nil { t.curStyle.FGColor = col }
-			}
+			if part == "" || part == "0" { t.curStyle.FGColor = theme.ForegroundColor() } else { col := ansiToColor(part); if col != nil { t.curStyle.FGColor = col } }
 		}
 	case 'J':
 		if strings.Contains(content, "2") { t.grid.SetText(""); t.curRow = 0; t.curCol = 0 }
-	case 'H':
-		t.curRow = 0; t.curCol = 0
+	case 'H': t.curRow = 0; t.curCol = 0
 	}
 }
 
-// [OPTIMIZED] Logika ini mencegah aplikasi crash karena memory full
 func (t *Terminal) printText(text string) {
 	for _, char := range text {
 		if char == '\n' { 
 			t.curRow++
 			t.curCol = 0
-			
-			// AUTO-CLEANER: Hapus baris lama jika melebihi batas
-			if len(t.grid.Rows) > MaxScrollback {
-				// Hapus baris teratas (FIFO)
-				t.grid.Rows = t.grid.Rows[1:]
-				// Kursor mundur 1 baris
-				t.curRow-- 
-			}
+			if len(t.grid.Rows) > MaxScrollback { t.grid.Rows = t.grid.Rows[1:]; t.curRow-- }
 			continue 
 		}
-		
 		if char == '\r' { t.curCol = 0; continue }
-		
-		// Expand Rows
-		for t.curRow >= len(t.grid.Rows) { 
-			t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) 
-		}
-		
-		// Expand Cols
+		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol >= len(rowCells) {
 			newCells := make([]widget.TextGridCell, t.curCol+1)
 			copy(newCells, rowCells)
 			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
 		}
-		
 		cellStyle := *t.curStyle
 		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
 		t.curCol++
@@ -255,8 +227,17 @@ func CheckRoot() bool {
 	return strings.TrimSpace(string(out)) == "0"
 }
 
+// [METODE BARU] DEEP SCAN KERNEL SYMBOLS
+// Kita menggunakan /proc/kallsyms (Buku Induk Kernel).
+// Kita mencari fungsi unik "read_physical_address" yang pasti ada jika driver aktif di memori.
 func CheckKernelDriver() bool {
-	cmd := exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName)
+	// Signature: Nama fungsi unik dari driver Anda (hasil reverse engineering)
+	signature := "read_physical_address"
+	
+	// Perintah: grep 'read_physical_address' /proc/kallsyms
+	// Jika ketemu, grep return 0 (sukses). Jika tidak, return 1 (error).
+	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
+	
 	return cmd.Run() == nil
 }
 
@@ -265,15 +246,6 @@ func CheckSELinux() string {
 	out, err := cmd.Output()
 	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
-}
-
-func VerifySuccessAndCreateFlag() bool {
-	if exec.Command("su", "-c", "ls -d /sys/module/"+TargetDriverName).Run() == nil {
-		exec.Command("su", "-c", "touch "+FlagFile).Run()
-		exec.Command("su", "-c", "chmod 777 "+FlagFile).Run()
-		return true
-	}
-	return false
 }
 
 func RequestStoragePermission(term *Terminal) {
@@ -377,12 +349,15 @@ func main() {
 					lblSystemValue.Text = "DENIED"; lblSystemValue.Color = failRed
 				}
 				lblSystemValue.Refresh()
+				
+				// Panggil Deteksi Kallsyms
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				} else {
 					lblKernelValue.Text = "MISSING"; lblKernelValue.Color = failRed
 				}
 				lblKernelValue.Refresh()
+				
 				se := CheckSELinux()
 				lblSELinuxValue.Text = strings.ToUpper(se)
 				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else if se == "Permissive" { lblSELinuxValue.Color = failRed } else { lblSELinuxValue.Color = color.Gray{Y: 150} }
@@ -411,11 +386,7 @@ func main() {
 					target := "/data/local/tmp/temp_exec"
 					exec.Command("su", "-c", "rm -f "+target).Run()
 					exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", scriptPath, target, target)).Run()
-					if !isBinary {
-						cmd = exec.Command("su", "-c", "sh "+target)
-					} else {
-						cmd = exec.Command("su", "-c", target)
-					}
+					if !isBinary { cmd = exec.Command("su", "-c", "sh "+target) } else { cmd = exec.Command("su", "-c", target) }
 				} else {
 					if !isBinary { cmd = exec.Command("sh", scriptPath) } else { cmd = exec.Command(scriptPath) }
 				}
@@ -424,9 +395,7 @@ func main() {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
 					runCmd := cmdText
-					if strings.HasPrefix(cmdText, "ls") {
-						if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) }
-					}
+					if strings.HasPrefix(cmdText, "ls") { if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) } }
 					if strings.HasPrefix(cmdText, "./") {
 						fileName := strings.TrimPrefix(cmdText, "./")
 						fullPath := filepath.Join(currentDir, fileName)
@@ -446,28 +415,19 @@ func main() {
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
-
-			cmdMutex.Lock()
-			activeStdin = stdin
-			cmdMutex.Unlock()
+			cmdMutex.Lock(); activeStdin = stdin; cmdMutex.Unlock()
 
 			if err := cmd.Start(); err != nil {
 				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
 				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
 				return
 			}
-
 			var wg sync.WaitGroup
 			wg.Add(2)
 			go func() { defer wg.Done(); io.Copy(term, stdout) }()
 			go func() { defer wg.Done(); io.Copy(term, stderr) }()
-			
-			wg.Wait()
-			cmd.Wait()
-
-			cmdMutex.Lock()
-			activeStdin = nil
-			cmdMutex.Unlock()
+			wg.Wait(); cmd.Wait()
+			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
 			status.Text = "Status: Idle"; status.Refresh()
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
@@ -477,44 +437,22 @@ func main() {
 		text := input.Text
 		input.SetText("")
 		cmdMutex.Lock()
-		if activeStdin != nil {
-			io.WriteString(activeStdin, text+"\n")
-			term.Write([]byte(text + "\n"))
-			cmdMutex.Unlock()
-			return
-		}
+		if activeStdin != nil { io.WriteString(activeStdin, text+"\n"); term.Write([]byte(text + "\n")); cmdMutex.Unlock(); return }
 		cmdMutex.Unlock()
 		if strings.TrimSpace(text) == "" { return }
 		
 		if strings.HasPrefix(text, "cd") {
 			parts := strings.Fields(text)
 			newPath := currentDir
-			if len(parts) == 1 {
-				if CheckRoot() { newPath = "/data/local/tmp" } else { h, _ := os.UserHomeDir(); newPath = h }
-			} else {
-				arg := parts[1]
-				if filepath.IsAbs(arg) { newPath = arg } else { newPath = filepath.Join(currentDir, arg) }
-			}
+			if len(parts) == 1 { if CheckRoot() { newPath = "/data/local/tmp" } else { h, _ := os.UserHomeDir(); newPath = h } } else { arg := parts[1]; if filepath.IsAbs(arg) { newPath = arg } else { newPath = filepath.Join(currentDir, arg) } }
 			newPath = filepath.Clean(newPath)
 			exist := false
-			if CheckRoot() {
-				if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { exist = true }
-			} else {
-				if info, err := os.Stat(newPath); err == nil && info.IsDir() { exist = true }
-			}
-			if exist {
-				currentDir = newPath
-				displayDir := currentDir
-				if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }
-				term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", displayDir, parts[1])))
-			} else {
-				term.Write([]byte(fmt.Sprintf("\x1b[31mcd: %s: No such directory\x1b[0m\n", parts[1])))
-			}
+			if CheckRoot() { if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { exist = true } } else { if info, err := os.Stat(newPath); err == nil && info.IsDir() { exist = true } }
+			if exist { currentDir = newPath; displayDir := currentDir; if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }; term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", displayDir, parts[1]))) } else { term.Write([]byte(fmt.Sprintf("\x1b[31mcd: %s: No such directory\x1b[0m\n", parts[1]))) }
 			return
 		}
 		executeTask(text, false, "", false)
 	}
-
 	input.OnSubmitted = func(_ string) { send() }
 
 	runFile := func(reader fyne.URIReadCloser) {
@@ -556,29 +494,22 @@ func main() {
 				var cfg OnlineConfig
 				if json.Unmarshal(dec, &cfg) == nil && cfg.Version != "" && cfg.Version != AppVersion {
 					showModal("UPDATE", cfg.Message, "UPDATE", func() { if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } }, false)
-				} else {
-					term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
-				}
+				} else { term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n")) }
 			}
-		} else {
-			term.Write([]byte("\x1b[31m[ERR] Net/Server Fail\x1b[0m\n"))
-		}
+		} else { term.Write([]byte("\x1b[31m[ERR] Net/Server Fail\x1b[0m\n")) }
 	}()
 
 	autoInstallKernel := func() {
 		term.Clear(); status.Text = "System: Installing..."; status.Refresh()
 		go func() {
-			exec.Command("su", "-c", "rm -f "+FlagFile).Run()
 			term.Write([]byte("\x1b[36m╔════ DRIVER INSTALLER ════╗\x1b[0m\n"))
 			out, _ := exec.Command("uname", "-r").Output()
 			ver := strings.TrimSpace(string(out))
 			term.Write([]byte(fmt.Sprintf("Target: \x1b[33m%s\x1b[0m\n", ver)))
 			dlPath := "/data/local/tmp/temp_kernel_dl"; target := "/data/local/tmp/installer.sh"
 			var dlUrl string; var found bool = false
-			simulateProcess := func(label string) {
-				for i := 0; i <= 100; i += 10 { drawProgressBar(term, label, i, "\x1b[36m"); time.Sleep(50 * time.Millisecond) }
-				term.Write([]byte("\n"))
-			}
+			simulateProcess := func(label string) { for i := 0; i <= 100; i += 10 { drawProgressBar(term, label, i, "\x1b[36m"); time.Sleep(50 * time.Millisecond) }; term.Write([]byte("\n")) }
+			
 			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
 			simulateProcess("Connecting...")
 			err, _ := downloadFile(GitHubRepo+ver+".sh", dlPath)
@@ -600,7 +531,6 @@ func main() {
 				exec.Command("su", "-c", "mv "+dlPath+" "+target).Run()
 				exec.Command("su", "-c", "chmod 777 "+target).Run()
 				executeTask("", true, target, false)
-				VerifySuccessAndCreateFlag()
 			}
 		}()
 	}
@@ -611,14 +541,7 @@ func main() {
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
 	
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
-		container.NewPadded(titleText),
-		container.NewPadded(infoGrid),
-		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
-		container.NewPadded(status),
-		widget.NewSeparator(),
-	))
-
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), container.NewPadded(status), widget.NewSeparator()))
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
 	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
