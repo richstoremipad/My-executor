@@ -17,7 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,16 +34,14 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM
+   CONFIG
 ========================================== */
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
+const MaxScrollback = 200 // Simpan 200 baris terakhir
 
-// BATAS MAX BARIS (Scrollback)
-const MaxScrollback = 200
-
-var currentDir string = "/sdcard" 
+var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 var globalStatus *canvas.Text
@@ -64,314 +62,288 @@ var bgPng []byte
 var driverZip []byte
 
 /* ==========================================
-   SECURITY LOGIC
+   GESTURE OVERLAY (THE FIX FOR SWIPE)
+   Widget transparan ini duduk DI ATAS terminal untuk menangkap jari.
 ========================================== */
-func decryptConfig(encryptedStr string) ([]byte, error) {
-	defer func() { if r := recover(); r != nil {} }()
-	key := []byte(CryptoKey)
-	if len(key) != 32 { return nil, errors.New("key length error") }
-	encryptedStr = strings.TrimSpace(encryptedStr)
-	data, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil { return nil, err }
-	block, err := aes.NewCipher(key)
-	if err != nil { return nil, err }
-	gcm, err := cipher.NewGCM(block)
-	if err != nil { return nil, err }
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize { return nil, errors.New("data corrupt") }
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil { return nil, err }
-	return plaintext, nil
-}
-
-/* ==========================================
-   CUSTOM INTERACTIVE TERMINAL WIDGET
-========================================== */
-type TouchableTextGrid struct {
-	widget.TextGrid
-	term       *Terminal
+type GestureOverlay struct {
+	widget.BaseWidget
 	dragAccumY float32
+	onSwipeUp  func()
+	onSwipeDown func()
+	onLongPress func()
 }
 
-func NewTouchableTextGrid(t *Terminal) *TouchableTextGrid {
-	g := &TouchableTextGrid{term: t}
+func NewGestureOverlay(up, down, longPress func()) *GestureOverlay {
+	g := &GestureOverlay{
+		onSwipeUp:   up,
+		onSwipeDown: down,
+		onLongPress: longPress,
+	}
 	g.ExtendBaseWidget(g)
-	g.ShowLineNumbers = false
 	return g
 }
 
-func (t *TouchableTextGrid) TappedSecondary(e *fyne.PointEvent) {
-	t.copyContent()
-}
+// Event Handler: Drag (Swipe)
+func (g *GestureOverlay) OnDragStart() { g.dragAccumY = 0 }
+func (g *GestureOverlay) Dragged(e *fyne.DragEvent) {
+	g.dragAccumY += e.Dragged.DY
+	threshold := float32(20.0) // Jarak geser pixel untuk trigger tombol
 
-func (t *TouchableTextGrid) Tapped(e *fyne.PointEvent) {}
-func (t *TouchableTextGrid) TouchDown(e *mobile.TouchEvent) {}
-func (t *TouchableTextGrid) TouchUp(e *mobile.TouchEvent) {}
-func (t *TouchableTextGrid) TouchCancel(e *mobile.TouchEvent) {}
-
-func (t *TouchableTextGrid) OnDragStart() {
-	t.dragAccumY = 0
-}
-
-func (t *TouchableTextGrid) Dragged(e *fyne.DragEvent) {
-	t.dragAccumY += e.Dragged.DY
-	threshold := float32(20.0) // Sensitivitas Swipe
-
-	cmdMutex.Lock()
-	defer cmdMutex.Unlock()
-
-	if activeStdin != nil {
-		if t.dragAccumY > threshold {
-			io.WriteString(activeStdin, "\x1b[A") // Panah ATAS
-			t.dragAccumY = 0
-		} else if t.dragAccumY < -threshold {
-			io.WriteString(activeStdin, "\x1b[B") // Panah BAWAH
-			t.dragAccumY = 0
-		}
+	if g.dragAccumY > threshold {
+		if g.onSwipeDown != nil { g.onSwipeDown() } // Jari turun -> Kirim Panah Atas
+		g.dragAccumY = 0
+	} else if g.dragAccumY < -threshold {
+		if g.onSwipeUp != nil { g.onSwipeUp() } // Jari naik -> Kirim Panah Bawah
+		g.dragAccumY = 0
 	}
 }
+func (g *GestureOverlay) DragEnd() { g.dragAccumY = 0 }
 
-func (t *TouchableTextGrid) DragEnd() {
-	t.dragAccumY = 0
+// Event Handler: Tapped Secondary (Long Press / Klik Kanan)
+func (g *GestureOverlay) TappedSecondary(e *fyne.PointEvent) {
+	if g.onLongPress != nil { g.onLongPress() }
 }
 
-func (t *TouchableTextGrid) copyContent() {
-	var content strings.Builder
-	t.term.mutex.Lock()
-	rows := t.Rows 
-	t.term.mutex.Unlock()
+// Dummy implementasi agar dianggap widget interaktif
+func (g *GestureOverlay) Tapped(e *fyne.PointEvent) {}
+func (g *GestureOverlay) TouchDown(e *mobile.TouchEvent) {}
+func (g *GestureOverlay) TouchUp(e *mobile.TouchEvent) {}
+func (g *GestureOverlay) TouchCancel(e *mobile.TouchEvent) {}
 
-	for _, row := range rows {
-		for _, cell := range row.Cells {
-			content.WriteRune(cell.Rune)
-		}
-		content.WriteString("\n")
-	}
-	
-	clipboard := fyne.CurrentApp().Driver().AllWindows()[0].Clipboard()
-	clipboard.SetContent(content.String())
-	
-	if globalStatus != nil {
-		go func() {
-			originalText := globalStatus.Text
-			originalColor := globalStatus.Color
-			globalStatus.Text = "Teks Disalin ke Clipboard!"
-			globalStatus.Color = theme.SuccessColor()
-			globalStatus.Refresh()
-			time.Sleep(2 * time.Second)
-			globalStatus.Text = originalText
-			globalStatus.Color = originalColor
-			globalStatus.Refresh()
-		}()
-	}
+// Agar overlay ini transparan (invisible) tapi tetap menangkap sentuhan
+func (g *GestureOverlay) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
 /* ==========================================
-   TERMINAL LOGIC (BUFFERED RENDERING)
+   HIGH PERFORMANCE TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
-	grid         *TouchableTextGrid
-	scroll       *container.Scroll
-	curRow       int
-	curCol       int
-	curStyle     *widget.CustomTextGridStyle
-	mutex        sync.Mutex
-	reAnsi       *regexp.Regexp
-	dirty        bool // Penanda apakah layar perlu di-refresh
+	grid      *widget.TextGrid
+	scroll    *container.Scroll
+	
+	// Buffer Data (Backend)
+	rows      [][]widget.TextGridCell
+	curRow    int
+	curCol    int
+	curStyle  *widget.CustomTextGridStyle
+	
+	// Concurrency Control
+	dataChan  chan []byte
+	renderMut sync.Mutex
 }
 
 func NewTerminal() *Terminal {
-	term := &Terminal{
-		curRow:       0,
-		curCol:       0,
-		reAnsi:       regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
-		dirty:        false,
-	}
+	// Inisialisasi UI
+	g := widget.NewTextGrid()
+	g.ShowLineNumbers = false
 	
-	g := NewTouchableTextGrid(term)
-	// Default Style: Putih
-	defStyle := &widget.CustomTextGridStyle{
-		FGColor: color.White, 
-		BGColor: color.Transparent,
+	term := &Terminal{
+		grid:     g,
+		scroll:   container.NewScroll(g),
+		rows:     make([][]widget.TextGridCell, 0, MaxScrollback),
+		curRow:   0,
+		curCol:   0,
+		curStyle: &widget.CustomTextGridStyle{FGColor: color.White, BGColor: color.Transparent},
+		dataChan: make(chan []byte, 1024), // Buffer besar agar tidak blocking
 	}
-	term.curStyle = defStyle
-	term.grid = g
-	term.scroll = container.NewScroll(g)
 
-	// RENDER LOOP (Mencegah Lag)
-	// Hanya refresh UI setiap 50ms, bukan setiap karakter
+	// 1. GOROUTINE PENGOLAH DATA (Background Worker)
+	// Menerima data raw, parsing ANSI, update memori internal
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		for range ticker.C {
-			term.mutex.Lock()
-			if term.dirty {
-				term.grid.Refresh()
-				term.scroll.ScrollToBottom()
-				term.dirty = false
-			}
-			term.mutex.Unlock()
+		for p := range term.dataChan {
+			term.processPacket(p)
 		}
 	}()
+
+	// 2. GOROUTINE RENDERER (UI Updater - 30 FPS)
+	// Hanya update layar sesekali agar tidak lag saat teks ngebut
+	go func() {
+		ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
+		for range ticker.C {
+			term.renderMut.Lock()
+			// Sinkronisasi data memori ke Widget UI
+			if len(term.rows) > 0 {
+				// Update row UI satu per satu
+				// Optimasi: Fyne TextGrid akan menyesuaikan diri
+				term.grid.SetText("") // Hacky reset, tapi aman untuk TextGrid
+				
+				// Re-apply rows ke Grid
+				// Karena Fyne Grid.Rows tidak thread safe, kita manipulasi via API yang ada
+				// Cara tercepat di Fyne adalah replace slice Row
+				uiRows := make([]widget.TextGridRow, len(term.rows))
+				for i, r := range term.rows {
+					uiRows[i] = widget.TextGridRow{Cells: r}
+				}
+				term.grid.Rows = uiRows
+				term.grid.Refresh()
+				term.scroll.ScrollToBottom()
+			}
+			term.renderMut.Unlock()
+		}
+	}()
+
 	return term
 }
 
-func ansiToColor(code string) color.Color {
-	switch code {
-	case "0": return color.White // Reset
-	case "1": return color.White // Bold (disederhanakan ke putih terang)
-	case "30": return color.Gray{Y: 100}
-	case "31": return theme.ErrorColor()
-	case "32": return theme.SuccessColor()
-	case "33": return theme.WarningColor()
-	case "34": return theme.PrimaryColor()
-	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan
-	case "37": return color.White
-	case "90": return color.Gray{Y: 100}
-	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
-	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
-	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
-	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
-	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
-	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
-	case "97": return color.White
-	default: return nil
-	}
-}
-
-func (t *Terminal) Clear() {
-	t.mutex.Lock()
-	t.grid.SetText("")
-	t.curRow = 0; t.curCol = 0
-	t.dirty = true
-	t.mutex.Unlock()
-}
-
-// Write: Update data di memori saja, jangan panggil Refresh() disini
+// Fungsi Write super cepat: Cuma lempar data ke channel
 func (t *Terminal) Write(p []byte) (int, error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-	
-	raw := string(p)
-	// Normalisasi baris baru
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	
-	for len(raw) > 0 {
-		loc := t.reAnsi.FindStringIndex(raw)
-		if loc == nil { 
-			// Tidak ada kode warna, cetak semua
-			t.processText(raw) 
-			break 
-		}
-		
-		// Jika ada teks sebelum kode warna, cetak dulu
-		if loc[0] > 0 { 
-			t.processText(raw[:loc[0]]) 
-		}
-		
-		// Proses kode ANSI
-		t.processAnsi(raw[loc[0]:loc[1]])
-		
-		// Lanjut ke sisa string
-		raw = raw[loc[1]:]
-	}
-	
-	// Cek Scrollback (Hapus baris lama jika terlalu banyak)
-	if len(t.grid.Rows) > MaxScrollback {
-		excess := len(t.grid.Rows) - MaxScrollback
-		t.grid.Rows = t.grid.Rows[excess:]
-		t.curRow -= excess
-		if t.curRow < 0 { t.curRow = 0 }
-	}
-	
-	// Tandai agar Render Loop melakukan refresh nanti
-	t.dirty = true
+	// Copy data agar aman dari race condition
+	data := make([]byte, len(p))
+	copy(data, p)
+	t.dataChan <- data
 	return len(p), nil
 }
 
-func (t *Terminal) processAnsi(codeSeq string) {
-	if len(codeSeq) < 3 { return }
-	content := codeSeq[2 : len(codeSeq)-1]
-	command := codeSeq[len(codeSeq)-1]
-	
-	switch command {
-	case 'm': // Ganti Warna
-		parts := strings.Split(content, ";")
-		if len(parts) == 0 || (len(parts)==1 && parts[0]=="") {
-			// Reset ke default
-			t.curStyle = &widget.CustomTextGridStyle{FGColor: color.White, BGColor: color.Transparent}
-			return
+func (t *Terminal) Clear() {
+	t.renderMut.Lock()
+	t.rows = make([][]widget.TextGridCell, 0)
+	t.curRow = 0
+	t.curCol = 0
+	t.grid.SetText("")
+	t.renderMut.Unlock()
+}
+
+// Logika Parsing ANSI manual (Tanpa Regex = Cepat)
+func (t *Terminal) processPacket(p []byte) {
+	t.renderMut.Lock()
+	defer t.renderMut.Unlock()
+
+	raw := string(p)
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+
+	i := 0
+	length := len(raw)
+
+	for i < length {
+		char := raw[i]
+
+		// Deteksi Escape Sequence (ANSI Color)
+		if char == '\x1b' {
+			// Cari akhir dari sequence (huruf 'm' atau lainnya)
+			end := i + 1
+			for end < length {
+				c := raw[end]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+					break
+				}
+				end++
+			}
+			
+			if end < length {
+				seq := raw[i+1 : end+1] // misal "[32m"
+				t.handleAnsi(seq)
+				i = end + 1
+				continue
+			}
 		}
+
+		// Handle Newline
+		if char == '\n' {
+			t.curRow++
+			t.curCol = 0
+			// Scrollback management
+			if len(t.rows) > MaxScrollback {
+				t.rows = t.rows[1:] // Buang baris pertama
+				t.curRow--
+			}
+			i++
+			continue
+		}
+
+		// Handle Carriage Return
+		if char == '\r' {
+			t.curCol = 0
+			i++
+			continue
+		}
+
+		// Pastikan Baris Tersedia
+		for t.curRow >= len(t.rows) {
+			t.rows = append(t.rows, []widget.TextGridCell{})
+		}
+
+		// Pastikan Kolom Tersedia
+		currentRow := t.rows[t.curRow]
+		if t.curCol >= len(currentRow) {
+			// Padding dengan spasi kosong jika loncat (jarang terjadi di log biasa)
+			padding := make([]widget.TextGridCell, t.curCol - len(currentRow) + 1)
+			t.rows[t.curRow] = append(currentRow, padding...)
+		}
+
+		// Tulis Karakter
+		t.rows[t.curRow][t.curCol] = widget.TextGridCell{
+			Rune: rune(char),
+			Style: t.curStyle,
+		}
+		t.curCol++
+		i++
+	}
+}
+
+func (t *Terminal) handleAnsi(seq string) {
+	if len(seq) < 2 { return }
+	cmd := seq[len(seq)-1]
+	
+	if cmd == 'm' { // Color
+		params := seq[1 : len(seq)-1] // buang '[' dan 'm'
+		parts := strings.Split(params, ";")
 		
-		// Buat style baru (copy) agar tidak merubah warna teks sebelumnya
+		// Clone style saat ini
 		newStyle := &widget.CustomTextGridStyle{
 			FGColor: t.curStyle.FGColor,
 			BGColor: t.curStyle.BGColor,
 		}
 
-		for _, part := range parts {
-			if part == "0" {
+		for _, p := range parts {
+			if p == "0" || p == "" {
 				newStyle.FGColor = color.White
 			} else {
-				col := ansiToColor(part)
-				if col != nil { newStyle.FGColor = col }
+				// Parsing warna manual
+				switch p {
+				case "30", "90": newStyle.FGColor = color.Gray{Y: 100}
+				case "31", "91": newStyle.FGColor = theme.ErrorColor()
+				case "32", "92": newStyle.FGColor = theme.SuccessColor()
+				case "33", "93": newStyle.FGColor = theme.WarningColor()
+				case "34", "94": newStyle.FGColor = theme.PrimaryColor()
+				case "35", "95": newStyle.FGColor = color.RGBA{200, 0, 200, 255}
+				case "36", "96": newStyle.FGColor = color.RGBA{0, 255, 255, 255}
+				case "37", "97": newStyle.FGColor = color.White
+				}
 			}
 		}
 		t.curStyle = newStyle
-		
-	case 'J': // Clear Screen
-		if strings.Contains(content, "2") { 
-			t.grid.Rows = nil 
-			t.curRow = 0; t.curCol = 0 
+	} else if cmd == 'J' {
+		// Clear screen command
+		if strings.Contains(seq, "2") {
+			t.rows = make([][]widget.TextGridCell, 0)
+			t.curRow = 0
+			t.curCol = 0
 		}
-	case 'H': // Cursor Home
-		t.curRow = 0; t.curCol = 0
 	}
 }
 
-func (t *Terminal) processText(text string) {
-	for _, char := range text {
-		if char == '\n' { 
-			t.curRow++
-			t.curCol = 0
-			continue 
+// Helper Copy Content
+func (t *Terminal) GetContentString() string {
+	t.renderMut.Lock()
+	defer t.renderMut.Unlock()
+	var sb strings.Builder
+	for _, row := range t.rows {
+		for _, cell := range row {
+			if cell.Rune == 0 {
+				sb.WriteRune(' ')
+			} else {
+				sb.WriteRune(cell.Rune)
+			}
 		}
-		if char == '\r' { t.curCol = 0; continue }
-		
-		// Pastikan baris tersedia
-		for t.curRow >= len(t.grid.Rows) { 
-			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{Cells: []widget.TextGridCell{}})
-		}
-		
-		row := &t.grid.Rows[t.curRow]
-		
-		// Pastikan kolom tersedia (expand array jika perlu)
-		if t.curCol >= len(row.Cells) {
-			// Tambahkan cell kosong sampai posisi kursor
-			needed := t.curCol + 1 - len(row.Cells)
-			newCells := make([]widget.TextGridCell, needed)
-			row.Cells = append(row.Cells, newCells...)
-		}
-		
-		// Set karakter dan style
-		row.Cells[t.curCol] = widget.TextGridCell{
-			Rune: char, 
-			Style: t.curStyle, 
-		}
-		t.curCol++
+		sb.WriteString("\n")
 	}
+	return sb.String()
 }
 
 /* ===============================
-   SYSTEM HELPERS
+   SYSTEM & HELPERS
 ================================ */
-func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
-	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
-	for i := 0; i < barLength; i++ { if i < filledLength { bar += "█" } else { bar += "░" } }
-	term.Write([]byte(fmt.Sprintf("\r%s %s [%s] %d%%", colorCode, label, bar, percent)))
-}
-
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
@@ -380,56 +352,53 @@ func CheckRoot() bool {
 }
 
 func CheckKernelDriver() bool {
-	signature := "read_physical_address"
-	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
+	cmd := exec.Command("su", "-c", "grep -q 'read_physical_address' /proc/kallsyms")
 	return cmd.Run() == nil
 }
 
 func CheckSELinux() string {
 	cmd := exec.Command("su", "-c", "getenforce")
-	out, err := cmd.Output()
-	if err != nil { return "Unknown" }
+	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out))
 }
 
 func RequestStoragePermission(term *Terminal) {
-	if term != nil { term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n")) }
-	pkgName := "com.tangsan.executor"
-	cmd1 := exec.Command("sh", "-c", fmt.Sprintf("am start -a android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION -d package:%s", pkgName))
-	if cmd1.Run() != nil {
-		if term != nil { term.Write([]byte("\x1b[33m[!] Trying generic settings...\x1b[0m\n")) }
-		exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
-	}
+	if term != nil { term.Write([]byte("\x1b[33m[*] Opening Settings...\x1b[0m\n")) }
+	exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
 }
 
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
-	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
-	cmd := exec.Command("su", "-c", cmdStr)
-	err := cmd.Run()
-	if err == nil {
-		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
-		if checkCmd.Run() == nil { return nil, "Success" }
+	cmd := exec.Command("su", "-c", fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url))
+	if err := cmd.Run(); err != nil {
+		// Fallback simple http get if curl fails
+		return err, "Curl Fail"
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil { return err, "Init Fail" }
-	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
-	resp, err := client.Do(req)
-	if err != nil { return err, "Net Err" }
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
-	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
-	stdin, err := writeCmd.StdinPipe()
-	if err != nil { return err, "Pipe Err" }
-	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
-	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
+	// Verify file size > 0
+	if exec.Command("su", "-c", "[ -s "+filepath+" ]").Run() != nil {
+		return errors.New("empty file"), "Empty"
+	}
 	return nil, "Success"
 }
 
-func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
-	lbl := canvas.NewText(text, color)
-	lbl.TextSize = size; lbl.Alignment = fyne.TextAlignCenter
+func decryptConfig(encryptedStr string) ([]byte, error) {
+	defer func() { recover() }()
+	key := []byte(CryptoKey)
+	if len(key) != 32 { return nil, errors.New("key len") }
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encryptedStr))
+	if err != nil { return nil, err }
+	block, _ := aes.NewCipher(key)
+	gcm, _ := cipher.NewGCM(block)
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize { return nil, errors.New("corrupt") }
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func createLabel(text string, c color.Color, size float32, bold bool) *canvas.Text {
+	lbl := canvas.NewText(text, c)
+	lbl.TextSize = size
+	lbl.Alignment = fyne.TextAlignCenter
 	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
 	return lbl
 }
@@ -441,8 +410,8 @@ func copyFile(src, dst string) error {
 	out, err := os.Create(dst)
 	if err != nil { return err }
 	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	_, _ = io.Copy(out, in)
+	return nil
 }
 
 /* ===============================
@@ -452,31 +421,35 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Simple Exec by TANGSAN")
+	w := a.NewWindow("Simple Exec")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
+	// 1. Init System
 	term := NewTerminal()
 	
+	// Cek Root Background
 	go func() {
 		time.Sleep(1 * time.Second)
-		if !CheckRoot() { /* Optional Auto Request */ }
+		if !CheckRoot() { /* request permission code */ }
 	}()
-
 	if !CheckRoot() { currentDir = "/sdcard" }
 
-	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
-	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
+	// 2. UI Components
+	brightYellow := color.RGBA{255, 255, 0, 255}
+	successGreen := color.RGBA{0, 255, 0, 255}
+	failRed := color.RGBA{255, 50, 50, 255}
 	silverColor := color.Gray{Y: 180}
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 	
 	status := canvas.NewText("System: Ready", silverColor)
-	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
+	status.TextSize = 12
+	status.Alignment = fyne.TextAlignCenter
 	globalStatus = status
 
+	// Info Grid
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
@@ -484,11 +457,12 @@ func main() {
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
+	// Background Monitoring
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
 			func() {
-				defer func() { if r := recover(); r != nil {} }()
+				defer func() { recover() }()
 				if CheckRoot() {
 					lblSystemValue.Text = "GRANTED"; lblSystemValue.Color = successGreen
 				} else {
@@ -505,13 +479,14 @@ func main() {
 				
 				se := CheckSELinux()
 				lblSELinuxValue.Text = strings.ToUpper(se)
-				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else if se == "Permissive" { lblSELinuxValue.Color = failRed } else { lblSELinuxValue.Color = color.Gray{Y: 150} }
+				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else { lblSELinuxValue.Color = failRed }
 				lblSELinuxValue.Refresh()
 			}()
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
+	// Execution Logic
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
 		status.Color = silverColor
@@ -519,7 +494,7 @@ func main() {
 
 		if !isScript {
 			displayDir := currentDir
-			if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }
+			if len(displayDir) > 20 { displayDir = ".." + displayDir[len(displayDir)-18:] }
 			term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0m%s\n", displayDir, cmdText)))
 		}
 
@@ -540,18 +515,9 @@ func main() {
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
+					// Handling simple cd/ls for non-root
 					runCmd := cmdText
-					if strings.HasPrefix(cmdText, "ls") { if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) } }
-					if strings.HasPrefix(cmdText, "./") {
-						fileName := strings.TrimPrefix(cmdText, "./")
-						fullPath := filepath.Join(currentDir, fileName)
-						if strings.HasSuffix(fileName, ".sh") {
-							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
-						} else {
-							tmpBin := filepath.Join(os.TempDir(), fileName)
-							if err := copyFile(fullPath, tmpBin); err == nil { os.Chmod(tmpBin, 0755); runCmd = tmpBin } else { runCmd = fullPath }
-						}
-					}
+					if strings.HasPrefix(cmdText, "ls") && !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) }
 					cmd = exec.Command("sh", "-c", runCmd)
 					cmd.Dir = currentDir
 				}
@@ -561,20 +527,26 @@ func main() {
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
-			cmdMutex.Lock(); activeStdin = stdin; cmdMutex.Unlock()
+			
+			cmdMutex.Lock()
+			activeStdin = stdin
+			cmdMutex.Unlock()
 
 			if err := cmd.Start(); err != nil {
 				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
-				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
-				return
+			} else {
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() { defer wg.Done(); io.Copy(term, stdout) }()
+				go func() { defer wg.Done(); io.Copy(term, stderr) }()
+				wg.Wait()
+				cmd.Wait()
 			}
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go func() { defer wg.Done(); io.Copy(term, stdout) }()
-			go func() { defer wg.Done(); io.Copy(term, stderr) }()
-			wg.Wait(); cmd.Wait()
-			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
-			status.Text = "Status: Idle"; status.Color = silverColor; status.Refresh()
+			
+			cmdMutex.Lock()
+			activeStdin = nil
+			cmdMutex.Unlock()
+			status.Text = "Status: Idle"; status.Refresh()
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
 	}
@@ -582,19 +554,25 @@ func main() {
 	send := func() {
 		text := input.Text
 		input.SetText("")
-		cmdMutex.Lock()
-		if activeStdin != nil { io.WriteString(activeStdin, text+"\n"); term.Write([]byte(text + "\n")); cmdMutex.Unlock(); return }
-		cmdMutex.Unlock()
-		if strings.TrimSpace(text) == "" { return }
 		
+		cmdMutex.Lock()
+		if activeStdin != nil {
+			io.WriteString(activeStdin, text+"\n")
+			cmdMutex.Unlock()
+			return
+		}
+		cmdMutex.Unlock()
+
+		if strings.TrimSpace(text) == "" { return }
 		if strings.HasPrefix(text, "cd") {
 			parts := strings.Fields(text)
 			newPath := currentDir
-			if len(parts) == 1 { if CheckRoot() { newPath = "/data/local/tmp" } else { h, _ := os.UserHomeDir(); newPath = h } } else { arg := parts[1]; if filepath.IsAbs(arg) { newPath = arg } else { newPath = filepath.Join(currentDir, arg) } }
+			if len(parts) > 1 {
+				if filepath.IsAbs(parts[1]) { newPath = parts[1] } else { newPath = filepath.Join(currentDir, parts[1]) }
+			}
 			newPath = filepath.Clean(newPath)
-			exist := false
-			if CheckRoot() { if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { exist = true } } else { if info, err := os.Stat(newPath); err == nil && info.IsDir() { exist = true } }
-			if exist { currentDir = newPath; displayDir := currentDir; if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }; term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", displayDir, parts[1]))) } else { term.Write([]byte(fmt.Sprintf("\x1b[31mcd: %s: No such directory\x1b[0m\n", parts[1]))) }
+			currentDir = newPath
+			term.Write([]byte(fmt.Sprintf("\x1b[33mCD > \x1b[0m%s\n", currentDir)))
 			return
 		}
 		executeTask(text, false, "", false)
@@ -602,29 +580,47 @@ func main() {
 	input.OnSubmitted = func(_ string) { send() }
 
 	runFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close(); term.Clear()
-		data, err := io.ReadAll(reader)
-		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
+		defer reader.Close()
+		term.Clear()
+		data, _ := io.ReadAll(reader)
 		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-		tmpFile, err := os.CreateTemp("", "exec_tmp")
-		if err != nil { term.Write([]byte("\x1b[31m[ERR] Write Failed\x1b[0m\n")); return }
-		tmpPath := tmpFile.Name(); tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
+		tmpFile, _ := os.CreateTemp("", "exec_tmp")
+		tmpPath := tmpFile.Name()
+		tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
 		executeTask("", true, tmpPath, isBinary)
 	}
 
-	var overlayContainer *fyne.Container
+	// 3. Gesture Actions
+	// Swipe UP -> Send Down Key
+	actionSwipeUp := func() {
+		cmdMutex.Lock(); defer cmdMutex.Unlock()
+		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[B") }
+	}
+	// Swipe DOWN -> Send Up Key
+	actionSwipeDown := func() {
+		cmdMutex.Lock(); defer cmdMutex.Unlock()
+		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[A") }
+	}
+	// Long Press -> Copy
+	actionCopy := func() {
+		content := term.GetContentString()
+		w.Clipboard().SetContent(content)
+		status.Text = "Copied to Clipboard!"
+		status.Color = successGreen
+		status.Refresh()
+		go func() { time.Sleep(2*time.Second); status.Text="System: Ready"; status.Color=silverColor; status.Refresh() }()
+	}
+
+	// 4. Overlay & Modal
+	gestureOverlay := NewGestureOverlay(actionSwipeUp, actionSwipeDown, actionCopy)
 	
-	// FUNGSI POPUP (RETRY + COLOR)
+	var overlayContainer *fyne.Container
+	overlayContainer = container.NewStack()
+	overlayContainer.Hide()
+
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
-		w.Canvas().Refresh(w.Content())
-		
-		cancelLabel := "BATAL"
-		cancelFunc := func() { overlayContainer.Hide() }
-		
-		if isForce {
-			cancelLabel = "KELUAR"
-			cancelFunc = func() { os.Exit(0) }
-		}
+		cancelLabel := "BATAL"; cancelFunc := func() { overlayContainer.Hide() }
+		if isForce { cancelLabel = "KELUAR"; cancelFunc = func() { os.Exit(0) } }
 		
 		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
 		btnCancel.Importance = widget.DangerImportance
@@ -633,232 +629,131 @@ func main() {
 			if !isForce { overlayContainer.Hide() }
 			if action != nil { action() }
 		})
-		
-		if confirm == "COBA LAGI" {
-			btnOk.Importance = widget.HighImportance
-		} else {
-			if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
-		}
-		
-		btnBox := container.NewHBox(
-			layout.NewSpacer(), 
-			container.NewGridWrap(fyne.NewSize(110,40), btnCancel), 
-			widget.NewLabel("   "), 
-			container.NewGridWrap(fyne.NewSize(110,40), btnOk), 
-			layout.NewSpacer(),
-		)
-		
+		if confirm == "COBA LAGI" { btnOk.Importance = widget.HighImportance } else if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
+
+		btnBox := container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btnCancel), widget.NewLabel(" "), container.NewGridWrap(fyne.NewSize(110,40), btnOk), layout.NewSpacer())
 		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
 		if isErr { lblTitle.Color = theme.ErrorColor() }
+		lblMsg := widget.NewLabel(msg); lblMsg.Alignment = fyne.TextAlignCenter; lblMsg.Wrapping = fyne.TextWrapWord
 		
-		lblMsg := widget.NewLabel(msg)
-		lblMsg.Alignment = fyne.TextAlignCenter 
-		lblMsg.Wrapping = fyne.TextWrapWord
-		
-		content := container.NewVBox(
-			container.NewPadded(container.NewCenter(lblTitle)), 
-			container.NewPadded(lblMsg), 
-			widget.NewLabel(""), 
-			btnBox,
-		)
-		
-		card := widget.NewCard("", "", container.NewPadded(content))
-		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
-		
-		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
+		card := widget.NewCard("", "", container.NewPadded(container.NewVBox(container.NewPadded(container.NewCenter(lblTitle)), container.NewPadded(lblMsg), widget.NewLabel(""), btnBox)))
+		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))}
 		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
+	// Auto Install Logic
 	autoInstallKernel := func() {
-		term.Clear()
-		status.Text = "Sistem: Memproses..."
-		status.Refresh()
-
+		term.Clear(); status.Text = "System: Processing..."; status.Refresh()
 		go func() {
-			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
-
+			term.Write([]byte("\x1b[36m╔════ DRIVER INSTALLER ════╗\x1b[0m\n"))
 			out, _ := exec.Command("uname", "-r").Output()
-			fullVer := strings.TrimSpace(string(out))
-			targetVer := strings.Split(fullVer, "-")[0]
-			
+			fullVer := strings.TrimSpace(string(out)); targetVer := strings.Split(fullVer, "-")[0]
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
-
+			
 			targetKoPath := "/data/local/tmp/module_inject.ko"
-			defer func() {
-				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
-			}()
+			defer exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
 
-			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
 			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
-			if err != nil {
-				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
-			}
+			if err != nil { term.Write([]byte("\x1b[31m[ERR] Zip Fail\x1b[0m\n")); return }
+			
+			var targetFile *zip.File
+			for _, f := range zipReader.File { if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) { targetFile = f; break } }
+			if targetFile == nil { for _, f := range zipReader.File { if strings.HasSuffix(f.Name, ".ko") { targetFile = f; break } } }
 
-			var fileToExtract *zip.File
-			for _, f := range zipReader.File {
-				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
-					fileToExtract = f; break
-				}
-			}
-			if fileToExtract == nil {
-				for _, f := range zipReader.File {
-					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
-				}
-			}
-
-			if fileToExtract == nil {
-				term.Write([]byte("\x1b[31m[GAGAL] Modul .ko tidak ditemukan di dalam Zip!\x1b[0m\n"))
-				status.Text = "File Hilang"; status.Refresh()
-				return
-			}
-
-			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
-			rc, _ := fileToExtract.Open()
+			if targetFile == nil { term.Write([]byte("\x1b[31m[FAIL] No Driver Found\x1b[0m\n")); return }
+			
+			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Extract: %s\x1b[0m\n", targetFile.Name)))
+			rc, _ := targetFile.Open()
 			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
-			
-			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
-			os.WriteFile(userTmp, buf.Bytes(), 0644)
-			
-			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
-			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
-			os.Remove(userTmp) 
+			tmp := filepath.Join(os.TempDir(), "mod.ko")
+			os.WriteFile(tmp, buf.Bytes(), 0644)
+			exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", tmp, targetKoPath, targetKoPath)).Run()
+			os.Remove(tmp)
 
-			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
-			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
-			output, err := cmdInsmod.CombinedOutput()
-			outputStr := string(output)
-
+			term.Write([]byte("\x1b[36m[*] Injecting...\x1b[0m\n"))
+			res, err := exec.Command("su", "-c", "insmod "+targetKoPath).CombinedOutput()
 			if err == nil {
-				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
+				term.Write([]byte("\x1b[92m[SUCCESS] Installed!\x1b[0m\n"))
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
-				status.Text = "Berhasil Install"
-			} else if strings.Contains(outputStr, "File exists") {
-				term.Write([]byte("\x1b[33m[INFO] Driver Sudah Ada Ketik insmod untuk cek lebih lanjut\x1b[0m\n"))
+			} else if strings.Contains(string(res), "File exists") {
+				term.Write([]byte("\x1b[33m[INFO] Already Active\x1b[0m\n"))
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
-				status.Text = "Sudah Aktif"
 			} else {
-				term.Write([]byte("\x1b[31m[GAGAL] Gagal install\x1b[0m\n"))
-				term.Write([]byte("\x1b[31m" + outputStr + "\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m[FAIL] "+string(res)+"\x1b[0m\n"))
 				lblKernelValue.Text = "ERROR"; lblKernelValue.Color = failRed
-				status.Text = "Gagal Install"
 			}
-			
-			lblKernelValue.Refresh()
-			status.Refresh()
+			lblKernelValue.Refresh(); status.Text="Done"; status.Refresh()
 		}()
 	}
 
+	// Update Check
 	var checkUpdate func()
 	checkUpdate = func() {
-		overlayContainer.Hide()
-		
-		time.Sleep(500 * time.Millisecond)
-		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
-		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
+		overlayContainer.Hide(); time.Sleep(500 * time.Millisecond)
+		if strings.Contains(ConfigURL, "GANTI") { return }
 		
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
-		
 		if err == nil && resp.StatusCode == 200 {
-			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
-			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
+			b, _ := io.ReadAll(resp.Body); resp.Body.Close()
+			if dec, err := decryptConfig(string(bytes.TrimSpace(b))); err == nil {
 				var cfg OnlineConfig
-				if json.Unmarshal(dec, &cfg) == nil {
-					if cfg.Version != "" && cfg.Version != AppVersion {
-						showModal("UPDATE", cfg.Message, "UPDATE", func() { 
-							if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
-						}, false, true)
-					} else {
-						term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
-					}
+				if json.Unmarshal(dec, &cfg) == nil && cfg.Version != "" && cfg.Version != AppVersion {
+					showModal("UPDATE", cfg.Message, "UPDATE", func() { 
+						if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
+					}, false, true)
 				}
 			}
 		} else {
-			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
-				go checkUpdate()
-			}, true, true)
+			showModal("ERROR", "Gagal terhubung ke server.\nCek koneksi internet.", "COBA LAGI", func() { go checkUpdate() }, true, true)
 		}
 	}
+	go func() { time.Sleep(1 * time.Second); checkUpdate() }()
 
-	go func() {
-		time.Sleep(1500 * time.Millisecond)
-		checkUpdate()
-	}()
-
-	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
-	
-	infoGrid := container.NewGridWithColumns(3, 
-		container.NewVBox(lblKernelTitle, lblKernelValue), 
-		container.NewVBox(lblSELinuxTitle, lblSELinuxValue), 
-		container.NewVBox(lblSystemTitle, lblSystemValue),
-	)
-
-	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { 
-		showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false, false) 
-	})
+	// Layouting
+	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Inject Driver?", "MULAI", autoInstallKernel, false, false) })
 	btnInj.Importance = widget.HighImportance
-
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
 		go func() { 
-			if CheckSELinux() == "Enforcing" { 
-				exec.Command("su","-c","setenforce 0").Run() 
-			} else { 
-				exec.Command("su","-c","setenforce 1").Run() 
-			}
-			time.Sleep(100 * time.Millisecond)
-			se := CheckSELinux()
-			lblSELinuxValue.Text = strings.ToUpper(se)
-			if se == "Enforcing" { 
-				lblSELinuxValue.Color = successGreen 
-			} else if se == "Permissive" { 
-				lblSELinuxValue.Color = failRed 
-			} else { 
-				lblSELinuxValue.Color = color.Gray{Y: 150} 
-			}
+			if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() }
+			time.Sleep(100*time.Millisecond)
+			s := CheckSELinux(); lblSELinuxValue.Text=strings.ToUpper(s)
+			if s=="Enforcing" { lblSELinuxValue.Color=successGreen } else { lblSELinuxValue.Color=failRed }
 			lblSELinuxValue.Refresh()
 		}() 
 	})
 	btnSel.Importance = widget.HighImportance
-
-	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { 
-		term.Clear() 
-	})
+	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
 	btnClr.Importance = widget.DangerImportance
-	
-	headerContent := container.NewVBox(
-		container.NewPadded(titleText), 
-		container.NewPadded(infoGrid), 
-		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), 
-		container.NewPadded(status), 
+
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(
+		container.NewPadded(titleText),
+		container.NewPadded(container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle,lblKernelValue), container.NewVBox(lblSELinuxTitle,lblSELinuxValue), container.NewVBox(lblSystemTitle,lblSystemValue))),
+		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)),
+		container.NewPadded(status),
 		widget.NewSeparator(),
-	)
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), headerContent)
+	))
 
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
-	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
+	bottom := container.NewVBox(container.NewPadded(createLabel("Code by TANGSAN", silverColor, 10, false)), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
+	
 	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
-	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
 	
-	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
-	fdImg.FillMode = canvas.ImageFillContain
-	
-	fdBtn := widget.NewButton("", func() { 
-		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { 
-			if r != nil { runFile(r) } 
-		}, w).Show() 
-	})
-	fdBtn.Importance = widget.LowImportance
-	
-	fabWrapper := container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn))
-	fab := container.NewVBox(
-		layout.NewSpacer(), 
-		container.NewPadded(container.NewHBox(layout.NewSpacer(), fabWrapper)), 
-		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
+	// STACK: Background -> Terminal -> Gesture Overlay
+	termStack := container.NewStack(
+		canvas.NewRectangle(color.Black), 
+		bg, 
+		canvas.NewRectangle(color.RGBA{0,0,0,180}), 
+		term.scroll,
+		gestureOverlay, // FIX: Overlay paling atas agar swipe work
 	)
 
-	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
+	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); fdImg.FillMode = canvas.ImageFillContain
+	fdBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r!=nil { runFile(r) } }, w).Show() })
+	fdBtn.Importance = widget.LowImportance
+	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
+
+	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termStack), fab, overlayContainer))
 	w.ShowAndRun()
 }
 
