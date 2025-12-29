@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -35,8 +36,7 @@ import (
    CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
-const GitHubRepo = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/Driver/"
-const TargetDriverName = "5.10_A12"
+// Variabel GitHubRepo SUDAH DIHAPUS sesuai permintaan
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
@@ -58,6 +58,9 @@ var fdPng []byte
 
 //go:embed bg.png
 var bgPng []byte
+
+//go:embed driver.zip
+var driverZip []byte
 
 /* ==========================================
    SECURITY LOGIC
@@ -227,17 +230,10 @@ func CheckRoot() bool {
 	return strings.TrimSpace(string(out)) == "0"
 }
 
-// [METODE BARU] DEEP SCAN KERNEL SYMBOLS
-// Kita menggunakan /proc/kallsyms (Buku Induk Kernel).
-// Kita mencari fungsi unik "read_physical_address" yang pasti ada jika driver aktif di memori.
+// Cek Driver via Kallsyms
 func CheckKernelDriver() bool {
-	// Signature: Nama fungsi unik dari driver Anda (hasil reverse engineering)
 	signature := "read_physical_address"
-	
-	// Perintah: grep 'read_physical_address' /proc/kallsyms
-	// Jika ketemu, grep return 0 (sukses). Jika tidak, return 1 (error).
 	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
-	
 	return cmd.Run() == nil
 }
 
@@ -500,58 +496,69 @@ func main() {
 	}()
 
 	autoInstallKernel := func() {
-		term.Clear(); status.Text = "System: Installing..."; status.Refresh()
+		term.Clear()
+		status.Text = "Sistem: Memproses..."
+		status.Refresh()
+
 		go func() {
-			term.Write([]byte("\x1b[36m╔════ DRIVER INSTALLER ════╗\x1b[0m\n"))
+			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
+
+			// 1. Cek Versi Kernel
 			out, _ := exec.Command("uname", "-r").Output()
-			ver := strings.TrimSpace(string(out))
-			term.Write([]byte(fmt.Sprintf("Target: \x1b[33m%s\x1b[0m\n", ver)))
-			dlPath := "/data/local/tmp/temp_kernel_dl"; target := "/data/local/tmp/installer.sh"
-			var dlUrl string; var found bool = false
-			simulateProcess := func(label string) { for i := 0; i <= 100; i += 10 { drawProgressBar(term, label, i, "\x1b[36m"); time.Sleep(50 * time.Millisecond) }; term.Write([]byte("\n")) }
+			fullVer := strings.TrimSpace(string(out))
 			
-			term.Write([]byte("\x1b[97m[*] Checking Repository (Variant 1)...\x1b[0m\n"))
-			simulateProcess("Connecting...")
-			err, _ := downloadFile(GitHubRepo+ver+".sh", dlPath)
-			if err == nil { dlUrl = "Variant 1"; found = true }
-			if !found {
-				parts := strings.Split(ver, "-"); 
-				if len(parts) > 0 {
-					term.Write([]byte("\n\x1b[97m[*] Checking Repository (Variant 2)...\x1b[0m\n"))
-					simulateProcess("Connecting...")
-					err, _ = downloadFile(GitHubRepo+parts[0]+".sh", dlPath)
-					if err == nil { dlUrl = "Variant 2"; found = true }
+			// LOGIKA BARU: Ambil semua angka sebelum bertemu tanda strip (-) pertama
+			// Jika fullVer = "5.10.198-android12" -> targetVer = "5.10.198"
+			targetVer := strings.Split(fullVer, "-")[0]
+			
+			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
+
+			// Path tujuan
+			targetKoPath := "/data/local/tmp/module_inject.ko"
+			
+			// DEFER: Selalu hapus file sampah di akhir secara DIAM-DIAM
+			defer func() {
+				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
+			}()
+
+			// 2. Baca ZIP Embed
+			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
+			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
+			if err != nil {
+				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
+			}
+
+			// 3. Cari File .ko
+			var fileToExtract *zip.File
+			for _, f := range zipReader.File {
+				// Cari yang ada nama versinya (targetVer misal "5.10.198")
+				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
+					fileToExtract = f; break
 				}
 			}
-			if !found {
-				term.Write([]byte("\n\x1b[31m[DRIVER NOT FOUND]\x1b[0m\n")); status.Text = "Failed"; status.Refresh()
-			} else {
-				term.Write([]byte("\n\x1b[92m[*] Downloading Script: " + dlUrl + "\x1b[0m\n"))
-				simulateProcess("Downloading Payload")
-				exec.Command("su", "-c", "mv "+dlPath+" "+target).Run()
-				exec.Command("su", "-c", "chmod 777 "+target).Run()
-				executeTask("", true, target, false)
+			
+			// OPSI CADANGAN (FALLBACK):
+			// Jika tidak ketemu versi spesifik, ambil file .ko apa saja yang ada
+			if fileToExtract == nil {
+				for _, f := range zipReader.File {
+					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
+				}
 			}
-		}()
-	}
 
-	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
-	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
-	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Start injection?", "START", autoInstallKernel, false) }); btnInj.Importance = widget.HighImportance
-	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux()=="Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() } }() }); btnSel.Importance = widget.HighImportance
-	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() }); btnClr.Importance = widget.DangerImportance
-	
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), container.NewPadded(status), widget.NewSeparator()))
-	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
-	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
-	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
-	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
-	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); fdImg.FillMode = canvas.ImageFillContain
-	fdBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show() }); fdBtn.Importance = widget.LowImportance
-	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
-	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
-	w.ShowAndRun()
-}
+			if fileToExtract == nil {
+				term.Write([]byte("\x1b[31m[GAGAL] Modul .ko tidak ditemukan di dalam Zip!\x1b[0m\n"))
+				status.Text = "File Hilang"; status.Refresh()
+				return
+			}
 
+			// 4. Ekstrak
+			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
+			rc, _ := fileToExtract.Open()
+			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
+			
+			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
+			os.WriteFile(userTmp, buf.Bytes(), 0644)
+			
+			// Pindah ke root path
+			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
+			exec.Command("su", "-c", "chmod 777 "+tar
