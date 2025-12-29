@@ -463,7 +463,7 @@ func main() {
 
 	var overlayContainer *fyne.Container
 	
-	// FUNGSI POPUP (CENTER TEXT)
+	// FUNGSI POPUP (UPDATED: LOGIKA WARNA TOMBOL RETRY)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -482,7 +482,19 @@ func main() {
 			if !isForce { overlayContainer.Hide() }
 			if action != nil { action() }
 		})
-		if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
+		
+		// LOGIKA WARNA:
+		// Jika Tombol adalah "COBA LAGI" (Retry), Beri Warna BIRU (HighImportance)
+		// Meskipun Judulnya ERROR (Merah)
+		if confirm == "COBA LAGI" {
+			btnOk.Importance = widget.HighImportance
+		} else {
+			if isErr { 
+				btnOk.Importance = widget.DangerImportance 
+			} else { 
+				btnOk.Importance = widget.HighImportance 
+			}
+		}
 		
 		btnBox := container.NewHBox(
 			layout.NewSpacer(), 
@@ -604,9 +616,13 @@ func main() {
 		}()
 	}
 
-	// CHECK UPDATE
-	go func() {
-		time.Sleep(1500 * time.Millisecond)
+	// DEFINISI FUNGSI UPDATE (AGAR BISA DI-RETRY)
+	var checkUpdate func()
+	checkUpdate = func() {
+		// Reset tampilan saat retry
+		overlayContainer.Hide()
+		
+		time.Sleep(500 * time.Millisecond) // Jeda sedikit saat retry
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
 		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
 		
@@ -628,10 +644,19 @@ func main() {
 				}
 			}
 		} else {
-			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "KELUAR", func() {
-				os.Exit(0)
+			// POPUP RETRY
+			// Tombol Kanan: "COBA LAGI" (Akan berwarna Biru karena logika showModal di atas)
+			// Action: Memanggil checkUpdate() kembali
+			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
+				go checkUpdate() // Retry logic
 			}, true, true)
 		}
+	}
+
+	// JALANKAN CHECK UPDATE PERTAMA KALI
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		checkUpdate()
 	}()
 
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
@@ -647,21 +672,16 @@ func main() {
 	})
 	btnInj.Importance = widget.HighImportance
 
-	// TOMBOL SELINUX (UPDATED: AUTO REFRESH)
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
 		go func() { 
-			// 1. Eksekusi Perintah
 			if CheckSELinux() == "Enforcing" { 
 				exec.Command("su","-c","setenforce 0").Run() 
 			} else { 
 				exec.Command("su","-c","setenforce 1").Run() 
 			}
-			
-			// 2. Refresh UI Manual (Langsung)
-			time.Sleep(100 * time.Millisecond) // Jeda dikit biar sistem berubah dulu
+			time.Sleep(100 * time.Millisecond)
 			se := CheckSELinux()
 			lblSELinuxValue.Text = strings.ToUpper(se)
-			
 			if se == "Enforcing" { 
 				lblSELinuxValue.Color = successGreen 
 			} else if se == "Permissive" { 
