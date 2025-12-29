@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -463,13 +462,26 @@ func main() {
 	}
 
 	var overlayContainer *fyne.Container
-	showModal := func(title, msg, confirm string, action func(), isErr bool) {
+	
+	// FUNGSI POPUP (CENTER TEXT)
+	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		
-		btnCancel := widget.NewButton("CANCEL", func() { overlayContainer.Hide() })
+		cancelLabel := "BATAL"
+		cancelFunc := func() { overlayContainer.Hide() }
+		
+		if isForce {
+			cancelLabel = "KELUAR"
+			cancelFunc = func() { os.Exit(0) }
+		}
+		
+		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
 		btnCancel.Importance = widget.DangerImportance
 		
-		btnOk := widget.NewButton(confirm, func() { overlayContainer.Hide(); if action != nil { action() } })
+		btnOk := widget.NewButton(confirm, func() {
+			if !isForce { overlayContainer.Hide() }
+			if action != nil { action() }
+		})
 		if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
 		
 		btnBox := container.NewHBox(
@@ -483,34 +495,23 @@ func main() {
 		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
 		if isErr { lblTitle.Color = theme.ErrorColor() }
 		
+		lblMsg := widget.NewLabel(msg)
+		lblMsg.Alignment = fyne.TextAlignCenter 
+		lblMsg.Wrapping = fyne.TextWrapWord
+		
 		content := container.NewVBox(
 			container.NewPadded(container.NewCenter(lblTitle)), 
-			widget.NewLabel(msg), 
+			container.NewPadded(lblMsg), 
 			widget.NewLabel(""), 
 			btnBox,
 		)
 		
 		card := widget.NewCard("", "", container.NewPadded(content))
 		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
+		
 		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
 		overlayContainer.Show(); overlayContainer.Refresh()
 	}
-
-	go func() {
-		time.Sleep(1500 * time.Millisecond)
-		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
-		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
-		client := &http.Client{Timeout: 10 * time.Second}
-		if resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix())); err == nil && resp.StatusCode == 200 {
-			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
-			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
-				var cfg OnlineConfig
-				if json.Unmarshal(dec, &cfg) == nil && cfg.Version != "" && cfg.Version != AppVersion {
-					showModal("UPDATE", cfg.Message, "UPDATE", func() { if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } }, false)
-				} else { term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n")) }
-			}
-		} else { term.Write([]byte("\x1b[31m[ERR] Net/Server Fail\x1b[0m\n")) }
-	}()
 
 	autoInstallKernel := func() {
 		term.Clear()
@@ -523,8 +524,6 @@ func main() {
 			// 1. Cek Versi Kernel
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out))
-			
-			// LOGIKA: Ambil semua angka sebelum bertemu tanda strip (-) pertama
 			targetVer := strings.Split(fullVer, "-")[0]
 			
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
@@ -532,7 +531,7 @@ func main() {
 			// Path tujuan
 			targetKoPath := "/data/local/tmp/module_inject.ko"
 			
-			// DEFER: Selalu hapus file sampah di akhir secara DIAM-DIAM
+			// DEFER cleanup
 			defer func() {
 				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
 			}()
@@ -547,14 +546,12 @@ func main() {
 			// 3. Cari File .ko
 			var fileToExtract *zip.File
 			for _, f := range zipReader.File {
-				// Cari yang ada nama versinya (targetVer misal "5.10.198")
 				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
 					fileToExtract = f; break
 				}
 			}
 			
-			// OPSI CADANGAN (FALLBACK):
-			// Jika tidak ketemu versi spesifik, ambil file .ko apa saja yang ada
+			// Fallback
 			if fileToExtract == nil {
 				for _, f := range zipReader.File {
 					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
@@ -578,7 +575,7 @@ func main() {
 			// Pindah ke root path
 			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
 			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
-			os.Remove(userTmp) // Hapus temp user
+			os.Remove(userTmp) 
 
 			// 5. Install (Insmod)
 			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
@@ -586,29 +583,18 @@ func main() {
 			output, err := cmdInsmod.CombinedOutput()
 			outputStr := string(output)
 
-			// ============================================
-			// LOGIKA STATUS & PESAN SESUAI REQUEST
-			// ============================================
+			// 6. Cek Hasil
 			if err == nil {
-				// KASUS 1: Berhasil
 				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
-				
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				status.Text = "Berhasil Install"
-			
 			} else if strings.Contains(outputStr, "File exists") {
-				// KASUS 2: Sudah Ada
 				term.Write([]byte("\x1b[33m[INFO] Driver Sudah Ada Ketik insmod untuk cek lebih lanjut\x1b[0m\n"))
-				
-				// Tetap set UI jadi hijau (karena statusnya aktif)
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				status.Text = "Sudah Aktif"
-
 			} else {
-				// KASUS 3: Gagal
 				term.Write([]byte("\x1b[31m[GAGAL] Gagal install\x1b[0m\n"))
 				term.Write([]byte("\x1b[31m" + outputStr + "\x1b[0m\n"))
-				
 				lblKernelValue.Text = "ERROR"; lblKernelValue.Color = failRed
 				status.Text = "Gagal Install"
 			}
@@ -618,40 +604,81 @@ func main() {
 		}()
 	}
 
+	// CHECK UPDATE
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
+		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
+		
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
+		
+		if err == nil && resp.StatusCode == 200 {
+			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
+			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
+				var cfg OnlineConfig
+				if json.Unmarshal(dec, &cfg) == nil {
+					if cfg.Version != "" && cfg.Version != AppVersion {
+						showModal("UPDATE", cfg.Message, "UPDATE", func() { 
+							if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
+						}, false, true)
+					} else {
+						term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
+					}
+				}
+			}
+		} else {
+			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "KELUAR", func() {
+				os.Exit(0)
+			}, true, true)
+		}
+	}()
+
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
 	
-	// Layout Info Grid
 	infoGrid := container.NewGridWithColumns(3, 
 		container.NewVBox(lblKernelTitle, lblKernelValue), 
 		container.NewVBox(lblSELinuxTitle, lblSELinuxValue), 
 		container.NewVBox(lblSystemTitle, lblSystemValue),
 	)
 
-	// Inject Button
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { 
-		showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false) 
+		showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false, false) 
 	})
 	btnInj.Importance = widget.HighImportance
 
-	// SELinux Button (Perbaikan Syntax Formatting)
+	// TOMBOL SELINUX (UPDATED: AUTO REFRESH)
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
 		go func() { 
+			// 1. Eksekusi Perintah
 			if CheckSELinux() == "Enforcing" { 
 				exec.Command("su","-c","setenforce 0").Run() 
 			} else { 
 				exec.Command("su","-c","setenforce 1").Run() 
-			} 
+			}
+			
+			// 2. Refresh UI Manual (Langsung)
+			time.Sleep(100 * time.Millisecond) // Jeda dikit biar sistem berubah dulu
+			se := CheckSELinux()
+			lblSELinuxValue.Text = strings.ToUpper(se)
+			
+			if se == "Enforcing" { 
+				lblSELinuxValue.Color = successGreen 
+			} else if se == "Permissive" { 
+				lblSELinuxValue.Color = failRed 
+			} else { 
+				lblSELinuxValue.Color = color.Gray{Y: 150} 
+			}
+			lblSELinuxValue.Refresh()
 		}() 
 	})
 	btnSel.Importance = widget.HighImportance
 
-	// Clear Button
 	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { 
 		term.Clear() 
 	})
 	btnClr.Importance = widget.DangerImportance
 	
-	// Header Construction (Perbaikan Syntax Formatting)
 	headerContent := container.NewVBox(
 		container.NewPadded(titleText), 
 		container.NewPadded(infoGrid), 
@@ -667,7 +694,6 @@ func main() {
 	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
 	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
 	
-	// FD Button & Image
 	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	fdImg.FillMode = canvas.ImageFillContain
 	
@@ -689,3 +715,4 @@ func main() {
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
 	w.ShowAndRun()
 }
+
