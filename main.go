@@ -27,6 +27,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/mobile"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -84,10 +85,100 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
+   CUSTOM WIDGET: INTERACTIVE TEXT GRID
+   (Untuk menangani Copy & Swipe Navigation)
+========================================== */
+type TouchableTextGrid struct {
+	widget.TextGrid
+	term       *Terminal
+	lastDragY  float32
+	dragAccum  float32
+}
+
+func NewTouchableTextGrid(t *Terminal) *TouchableTextGrid {
+	g := &TouchableTextGrid{term: t}
+	g.ExtendBaseWidget(g)
+	g.ShowLineNumbers = false
+	return g
+}
+
+// Fitur 1: Long Press / Klik Kanan untuk COPY
+func (t *TouchableTextGrid) TappedSecondary(e *fyne.PointEvent) {
+	t.copyContent()
+}
+
+// Support untuk Mobile Long Press
+func (t *TouchableTextGrid) Tapped(e *fyne.PointEvent) {
+	// Kosongkan agar tidak error, bisa diisi logika klik jika perlu
+}
+
+func (t *TouchableTextGrid) TouchDown(e *mobile.TouchEvent) {
+	// Diperlukan untuk event touch mobile
+}
+func (t *TouchableTextGrid) TouchUp(e *mobile.TouchEvent) {
+	// Diperlukan untuk event touch mobile
+}
+func (t *TouchableTextGrid) TouchCancel(e *mobile.TouchEvent) {
+	// Diperlukan untuk event touch mobile
+}
+
+// Fitur 2: DRAG untuk NAVIGASI (Swipe)
+func (t *TouchableTextGrid) OnDragStart() {
+	t.dragAccum = 0
+}
+
+func (t *TouchableTextGrid) Dragged(e *fyne.DragEvent) {
+	// Hitung pergerakan Y (Vertikal)
+	t.dragAccum += e.Dragged.DY
+
+	// Threshold sensivitas (setiap 20 pixel gerakan mengirim 1 tombol)
+	threshold := float32(20.0)
+
+	cmdMutex.Lock()
+	defer cmdMutex.Unlock()
+
+	// Hanya kirim tombol jika ada script berjalan (activeStdin != nil)
+	if activeStdin != nil {
+		if t.dragAccum > threshold {
+			// Geser ke Bawah (Jari turun) -> Kirim Panah ATAS (Navigasi Naik)
+			io.WriteString(activeStdin, "\x1b[A") 
+			t.dragAccum = 0
+		} else if t.dragAccum < -threshold {
+			// Geser ke Atas (Jari naik) -> Kirim Panah BAWAH (Navigasi Turun)
+			io.WriteString(activeStdin, "\x1b[B")
+			t.dragAccum = 0
+		}
+	}
+}
+
+func (t *TouchableTextGrid) DragEnd() {
+	t.dragAccum = 0
+}
+
+func (t *TouchableTextGrid) copyContent() {
+	var content strings.Builder
+	for _, row := range t.Rows {
+		for _, cell := range row.Cells {
+			content.WriteRune(cell.Rune)
+		}
+		content.WriteString("\n")
+	}
+	
+	// Salin ke Clipboard
+	clipboard := fyne.CurrentApp().Driver().AllWindows()[0].Clipboard()
+	clipboard.SetContent(content.String())
+	
+	// Beri feedback visual (tulis ke terminal sebentar)
+	// Kita inject pesan sistem ke terminal local
+	t.term.printText("\n\x1b[32m[SYSTEM] Teks disalin ke Clipboard!\x1b[0m\n")
+	t.term.needsRefresh = true
+}
+
+/* ==========================================
    TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
-	grid         *widget.TextGrid
+	grid         *TouchableTextGrid // Gunakan widget custom
 	scroll       *container.Scroll
 	curRow       int
 	curCol       int
@@ -98,22 +189,26 @@ type Terminal struct {
 }
 
 func NewTerminal() *Terminal {
-	g := widget.NewTextGrid()
-	g.ShowLineNumbers = false
+	// Inisialisasi struct dulu tanpa grid
+	term := &Terminal{
+		curRow:       0,
+		curCol:       0,
+		reAnsi:       regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
+		needsRefresh: false,
+	}
+	
+	// Buat custom grid
+	g := NewTouchableTextGrid(term)
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
-	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
-	term := &Terminal{
-		grid:         g,
-		scroll:       container.NewScroll(g),
-		curRow:       0,
-		curCol:       0,
-		curStyle:     defStyle,
-		reAnsi:       re,
-		needsRefresh: false,
-	}
+	term.curStyle = defStyle
+	term.grid = g
+	
+	// Scroll container
+	term.scroll = container.NewScroll(g)
+
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		for range ticker.C {
@@ -483,9 +578,7 @@ func main() {
 			if action != nil { action() }
 		})
 		
-		// LOGIKA WARNA:
-		// Jika Tombol adalah "COBA LAGI" (Retry), Beri Warna BIRU (HighImportance)
-		// Meskipun Judulnya ERROR (Merah)
+		// LOGIKA WARNA TOMBOL RETRY
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
 		} else {
@@ -616,13 +709,12 @@ func main() {
 		}()
 	}
 
-	// DEFINISI FUNGSI UPDATE (AGAR BISA DI-RETRY)
+	// DEFINISI FUNGSI UPDATE (RETRY LOGIC)
 	var checkUpdate func()
 	checkUpdate = func() {
-		// Reset tampilan saat retry
 		overlayContainer.Hide()
 		
-		time.Sleep(500 * time.Millisecond) // Jeda sedikit saat retry
+		time.Sleep(500 * time.Millisecond)
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
 		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
 		
@@ -645,10 +737,8 @@ func main() {
 			}
 		} else {
 			// POPUP RETRY
-			// Tombol Kanan: "COBA LAGI" (Akan berwarna Biru karena logika showModal di atas)
-			// Action: Memanggil checkUpdate() kembali
 			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
-				go checkUpdate() // Retry logic
+				go checkUpdate()
 			}, true, true)
 		}
 	}
