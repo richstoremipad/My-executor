@@ -41,13 +41,11 @@ const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/exe
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // BATAS MAX BARIS (Scrollback)
-const MaxScrollback = 150 
+const MaxScrollback = 200
 
 var currentDir string = "/sdcard" 
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
-
-// Variabel Global untuk Status Label (agar bisa diakses dari widget terminal)
 var globalStatus *canvas.Text
 
 type OnlineConfig struct {
@@ -89,7 +87,6 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 
 /* ==========================================
    CUSTOM INTERACTIVE TERMINAL WIDGET
-   (Menangani Gestur & Copy)
 ========================================== */
 type TouchableTextGrid struct {
 	widget.TextGrid
@@ -104,41 +101,32 @@ func NewTouchableTextGrid(t *Terminal) *TouchableTextGrid {
 	return g
 }
 
-// FITUR COPY: Menggunakan TappedSecondary (Long Press di Android / Klik Kanan)
 func (t *TouchableTextGrid) TappedSecondary(e *fyne.PointEvent) {
 	t.copyContent()
 }
 
-// Implementasi interface touch (wajib untuk mobile)
 func (t *TouchableTextGrid) Tapped(e *fyne.PointEvent) {}
 func (t *TouchableTextGrid) TouchDown(e *mobile.TouchEvent) {}
 func (t *TouchableTextGrid) TouchUp(e *mobile.TouchEvent) {}
 func (t *TouchableTextGrid) TouchCancel(e *mobile.TouchEvent) {}
 
-// FITUR GESTURE NAVIGASI (SWIPE)
 func (t *TouchableTextGrid) OnDragStart() {
 	t.dragAccumY = 0
 }
 
 func (t *TouchableTextGrid) Dragged(e *fyne.DragEvent) {
 	t.dragAccumY += e.Dragged.DY
-	
-	// Threshold: Seberapa jauh jari harus geser untuk mengirim tombol (pixels)
-	// Angka 15 memberikan keseimbangan yang baik
-	threshold := float32(15.0)
+	threshold := float32(20.0) // Sensitivitas Swipe
 
 	cmdMutex.Lock()
 	defer cmdMutex.Unlock()
 
-	// Hanya aktif jika ada script yang berjalan (membutuhkan input)
 	if activeStdin != nil {
 		if t.dragAccumY > threshold {
-			// Geser ke BAWAH -> Kirim Panah ATAS (Navigasi Naik)
-			io.WriteString(activeStdin, "\x1b[A") 
+			io.WriteString(activeStdin, "\x1b[A") // Panah ATAS
 			t.dragAccumY = 0
 		} else if t.dragAccumY < -threshold {
-			// Geser ke ATAS -> Kirim Panah BAWAH (Navigasi Turun)
-			io.WriteString(activeStdin, "\x1b[B")
+			io.WriteString(activeStdin, "\x1b[B") // Panah BAWAH
 			t.dragAccumY = 0
 		}
 	}
@@ -150,7 +138,11 @@ func (t *TouchableTextGrid) DragEnd() {
 
 func (t *TouchableTextGrid) copyContent() {
 	var content strings.Builder
-	for _, row := range t.Rows {
+	t.term.mutex.Lock()
+	rows := t.Rows 
+	t.term.mutex.Unlock()
+
+	for _, row := range rows {
 		for _, cell := range row.Cells {
 			content.WriteRune(cell.Rune)
 		}
@@ -160,17 +152,13 @@ func (t *TouchableTextGrid) copyContent() {
 	clipboard := fyne.CurrentApp().Driver().AllWindows()[0].Clipboard()
 	clipboard.SetContent(content.String())
 	
-	// Feedback Visual via Status Bar (Bukan tulis ke terminal agar layout tidak rusak)
 	if globalStatus != nil {
-		originalText := globalStatus.Text
-		originalColor := globalStatus.Color
-		
-		globalStatus.Text = "Teks Disalin ke Clipboard!"
-		globalStatus.Color = theme.SuccessColor()
-		globalStatus.Refresh()
-		
-		// Kembalikan status setelah 2 detik
 		go func() {
+			originalText := globalStatus.Text
+			originalColor := globalStatus.Color
+			globalStatus.Text = "Teks Disalin ke Clipboard!"
+			globalStatus.Color = theme.SuccessColor()
+			globalStatus.Refresh()
 			time.Sleep(2 * time.Second)
 			globalStatus.Text = originalText
 			globalStatus.Color = originalColor
@@ -180,7 +168,7 @@ func (t *TouchableTextGrid) copyContent() {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (OPTIMIZED)
+   TERMINAL LOGIC (BUFFERED RENDERING)
 ========================================== */
 type Terminal struct {
 	grid         *TouchableTextGrid
@@ -190,7 +178,7 @@ type Terminal struct {
 	curStyle     *widget.CustomTextGridStyle
 	mutex        sync.Mutex
 	reAnsi       *regexp.Regexp
-	needsRefresh bool
+	dirty        bool // Penanda apakah layar perlu di-refresh
 }
 
 func NewTerminal() *Terminal {
@@ -198,27 +186,29 @@ func NewTerminal() *Terminal {
 		curRow:       0,
 		curCol:       0,
 		reAnsi:       regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
-		needsRefresh: false,
+		dirty:        false,
 	}
 	
 	g := NewTouchableTextGrid(term)
+	// Default Style: Putih
 	defStyle := &widget.CustomTextGridStyle{
-		FGColor: theme.ForegroundColor(),
+		FGColor: color.White, 
 		BGColor: color.Transparent,
 	}
 	term.curStyle = defStyle
 	term.grid = g
 	term.scroll = container.NewScroll(g)
 
-	// Refresh Loop (Ticker)
+	// RENDER LOOP (Mencegah Lag)
+	// Hanya refresh UI setiap 50ms, bukan setiap karakter
 	go func() {
-		ticker := time.NewTicker(30 * time.Millisecond) // 30ms lebih responsif
+		ticker := time.NewTicker(50 * time.Millisecond)
 		for range ticker.C {
 			term.mutex.Lock()
-			if term.needsRefresh {
+			if term.dirty {
 				term.grid.Refresh()
 				term.scroll.ScrollToBottom()
-				term.needsRefresh = false
+				term.dirty = false
 			}
 			term.mutex.Unlock()
 		}
@@ -228,14 +218,16 @@ func NewTerminal() *Terminal {
 
 func ansiToColor(code string) color.Color {
 	switch code {
+	case "0": return color.White // Reset
+	case "1": return color.White // Bold (disederhanakan ke putih terang)
 	case "30": return color.Gray{Y: 100}
 	case "31": return theme.ErrorColor()
 	case "32": return theme.SuccessColor()
 	case "33": return theme.WarningColor()
 	case "34": return theme.PrimaryColor()
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
-	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	case "37": return theme.ForegroundColor()
+	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255} // Cyan
+	case "37": return color.White
 	case "90": return color.Gray{Y: 100}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
@@ -252,34 +244,40 @@ func (t *Terminal) Clear() {
 	t.mutex.Lock()
 	t.grid.SetText("")
 	t.curRow = 0; t.curCol = 0
-	t.needsRefresh = true
+	t.dirty = true
 	t.mutex.Unlock()
 }
 
-// FUNGSI WRITE YANG SUDAH DI-OPTIMASI
+// Write: Update data di memori saja, jangan panggil Refresh() disini
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	
 	raw := string(p)
+	// Normalisasi baris baru
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	
-	// Loop utama parsing ANSI
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil { 
-			t.printTextFast(raw) 
+			// Tidak ada kode warna, cetak semua
+			t.processText(raw) 
 			break 
 		}
+		
+		// Jika ada teks sebelum kode warna, cetak dulu
 		if loc[0] > 0 { 
-			t.printTextFast(raw[:loc[0]]) 
+			t.processText(raw[:loc[0]]) 
 		}
-		t.handleAnsiCode(raw[loc[0]:loc[1]])
+		
+		// Proses kode ANSI
+		t.processAnsi(raw[loc[0]:loc[1]])
+		
+		// Lanjut ke sisa string
 		raw = raw[loc[1]:]
 	}
 	
-	// OPTIMASI: Lakukan pembersihan baris (scrollback) HANYA SEKALI per Write call
-	// Ini menghilangkan lag "mengetik satu-satu"
+	// Cek Scrollback (Hapus baris lama jika terlalu banyak)
 	if len(t.grid.Rows) > MaxScrollback {
 		excess := len(t.grid.Rows) - MaxScrollback
 		t.grid.Rows = t.grid.Rows[excess:]
@@ -287,28 +285,52 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		if t.curRow < 0 { t.curRow = 0 }
 	}
 	
-	t.needsRefresh = true
+	// Tandai agar Render Loop melakukan refresh nanti
+	t.dirty = true
 	return len(p), nil
 }
 
-func (t *Terminal) handleAnsiCode(codeSeq string) {
+func (t *Terminal) processAnsi(codeSeq string) {
 	if len(codeSeq) < 3 { return }
 	content := codeSeq[2 : len(codeSeq)-1]
 	command := codeSeq[len(codeSeq)-1]
+	
 	switch command {
-	case 'm':
+	case 'm': // Ganti Warna
 		parts := strings.Split(content, ";")
-		for _, part := range parts {
-			if part == "" || part == "0" { t.curStyle.FGColor = theme.ForegroundColor() } else { col := ansiToColor(part); if col != nil { t.curStyle.FGColor = col } }
+		if len(parts) == 0 || (len(parts)==1 && parts[0]=="") {
+			// Reset ke default
+			t.curStyle = &widget.CustomTextGridStyle{FGColor: color.White, BGColor: color.Transparent}
+			return
 		}
-	case 'J':
-		if strings.Contains(content, "2") { t.grid.SetText(""); t.curRow = 0; t.curCol = 0 }
-	case 'H': t.curRow = 0; t.curCol = 0
+		
+		// Buat style baru (copy) agar tidak merubah warna teks sebelumnya
+		newStyle := &widget.CustomTextGridStyle{
+			FGColor: t.curStyle.FGColor,
+			BGColor: t.curStyle.BGColor,
+		}
+
+		for _, part := range parts {
+			if part == "0" {
+				newStyle.FGColor = color.White
+			} else {
+				col := ansiToColor(part)
+				if col != nil { newStyle.FGColor = col }
+			}
+		}
+		t.curStyle = newStyle
+		
+	case 'J': // Clear Screen
+		if strings.Contains(content, "2") { 
+			t.grid.Rows = nil 
+			t.curRow = 0; t.curCol = 0 
+		}
+	case 'H': // Cursor Home
+		t.curRow = 0; t.curCol = 0
 	}
 }
 
-// FUNGSI RENDER TEKS CEPAT (Tanpa manipulasi row berlebihan)
-func (t *Terminal) printTextFast(text string) {
+func (t *Terminal) processText(text string) {
 	for _, char := range text {
 		if char == '\n' { 
 			t.curRow++
@@ -317,24 +339,25 @@ func (t *Terminal) printTextFast(text string) {
 		}
 		if char == '\r' { t.curCol = 0; continue }
 		
-		// Tambah baris baru HANYA jika diperlukan
+		// Pastikan baris tersedia
 		for t.curRow >= len(t.grid.Rows) { 
 			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
 		
 		row := &t.grid.Rows[t.curRow]
 		
-		// Expand kolom HANYA jika diperlukan
+		// Pastikan kolom tersedia (expand array jika perlu)
 		if t.curCol >= len(row.Cells) {
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, row.Cells)
-			row.Cells = newCells
+			// Tambahkan cell kosong sampai posisi kursor
+			needed := t.curCol + 1 - len(row.Cells)
+			newCells := make([]widget.TextGridCell, needed)
+			row.Cells = append(row.Cells, newCells...)
 		}
 		
-		// Set karakter langsung ke memori (sangat cepat)
+		// Set karakter dan style
 		row.Cells[t.curCol] = widget.TextGridCell{
 			Rune: char, 
-			Style: t.curStyle, // Pointer ke style aktif
+			Style: t.curStyle, 
 		}
 		t.curCol++
 	}
@@ -433,7 +456,6 @@ func main() {
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
-	// Init Terminal
 	term := NewTerminal()
 	
 	go func() {
@@ -451,10 +473,9 @@ func main() {
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
 	
-	// STATUS LABEL (Global)
 	status := canvas.NewText("System: Ready", silverColor)
 	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
-	globalStatus = status // Assign ke variabel global agar bisa diubah widget lain
+	globalStatus = status
 
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
@@ -656,7 +677,6 @@ func main() {
 		go func() {
 			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
 
-			// 1. Cek Versi Kernel
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out))
 			targetVer := strings.Split(fullVer, "-")[0]
