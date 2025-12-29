@@ -40,12 +40,15 @@ const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// BATAS MAX BARIS AGAR TIDAK LEMOT/CRASH
-const MaxScrollback = 100 
+// BATAS MAX BARIS (Scrollback)
+const MaxScrollback = 150 
 
 var currentDir string = "/sdcard" 
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
+
+// Variabel Global untuk Status Label (agar bisa diakses dari widget terminal)
+var globalStatus *canvas.Text
 
 type OnlineConfig struct {
 	Version string `json:"version"`
@@ -85,14 +88,13 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   CUSTOM WIDGET: INTERACTIVE TEXT GRID
-   (Untuk menangani Copy & Swipe Navigation)
+   CUSTOM INTERACTIVE TERMINAL WIDGET
+   (Menangani Gestur & Copy)
 ========================================== */
 type TouchableTextGrid struct {
 	widget.TextGrid
 	term       *Terminal
-	lastDragY  float32
-	dragAccum  float32
+	dragAccumY float32
 }
 
 func NewTouchableTextGrid(t *Terminal) *TouchableTextGrid {
@@ -102,57 +104,48 @@ func NewTouchableTextGrid(t *Terminal) *TouchableTextGrid {
 	return g
 }
 
-// Fitur 1: Long Press / Klik Kanan untuk COPY
+// FITUR COPY: Menggunakan TappedSecondary (Long Press di Android / Klik Kanan)
 func (t *TouchableTextGrid) TappedSecondary(e *fyne.PointEvent) {
 	t.copyContent()
 }
 
-// Support untuk Mobile Long Press
-func (t *TouchableTextGrid) Tapped(e *fyne.PointEvent) {
-	// Kosongkan agar tidak error, bisa diisi logika klik jika perlu
-}
+// Implementasi interface touch (wajib untuk mobile)
+func (t *TouchableTextGrid) Tapped(e *fyne.PointEvent) {}
+func (t *TouchableTextGrid) TouchDown(e *mobile.TouchEvent) {}
+func (t *TouchableTextGrid) TouchUp(e *mobile.TouchEvent) {}
+func (t *TouchableTextGrid) TouchCancel(e *mobile.TouchEvent) {}
 
-func (t *TouchableTextGrid) TouchDown(e *mobile.TouchEvent) {
-	// Diperlukan untuk event touch mobile
-}
-func (t *TouchableTextGrid) TouchUp(e *mobile.TouchEvent) {
-	// Diperlukan untuk event touch mobile
-}
-func (t *TouchableTextGrid) TouchCancel(e *mobile.TouchEvent) {
-	// Diperlukan untuk event touch mobile
-}
-
-// Fitur 2: DRAG untuk NAVIGASI (Swipe)
+// FITUR GESTURE NAVIGASI (SWIPE)
 func (t *TouchableTextGrid) OnDragStart() {
-	t.dragAccum = 0
+	t.dragAccumY = 0
 }
 
 func (t *TouchableTextGrid) Dragged(e *fyne.DragEvent) {
-	// Hitung pergerakan Y (Vertikal)
-	t.dragAccum += e.Dragged.DY
-
-	// Threshold sensivitas (setiap 20 pixel gerakan mengirim 1 tombol)
-	threshold := float32(20.0)
+	t.dragAccumY += e.Dragged.DY
+	
+	// Threshold: Seberapa jauh jari harus geser untuk mengirim tombol (pixels)
+	// Angka 15 memberikan keseimbangan yang baik
+	threshold := float32(15.0)
 
 	cmdMutex.Lock()
 	defer cmdMutex.Unlock()
 
-	// Hanya kirim tombol jika ada script berjalan (activeStdin != nil)
+	// Hanya aktif jika ada script yang berjalan (membutuhkan input)
 	if activeStdin != nil {
-		if t.dragAccum > threshold {
-			// Geser ke Bawah (Jari turun) -> Kirim Panah ATAS (Navigasi Naik)
+		if t.dragAccumY > threshold {
+			// Geser ke BAWAH -> Kirim Panah ATAS (Navigasi Naik)
 			io.WriteString(activeStdin, "\x1b[A") 
-			t.dragAccum = 0
-		} else if t.dragAccum < -threshold {
-			// Geser ke Atas (Jari naik) -> Kirim Panah BAWAH (Navigasi Turun)
+			t.dragAccumY = 0
+		} else if t.dragAccumY < -threshold {
+			// Geser ke ATAS -> Kirim Panah BAWAH (Navigasi Turun)
 			io.WriteString(activeStdin, "\x1b[B")
-			t.dragAccum = 0
+			t.dragAccumY = 0
 		}
 	}
 }
 
 func (t *TouchableTextGrid) DragEnd() {
-	t.dragAccum = 0
+	t.dragAccumY = 0
 }
 
 func (t *TouchableTextGrid) copyContent() {
@@ -164,21 +157,33 @@ func (t *TouchableTextGrid) copyContent() {
 		content.WriteString("\n")
 	}
 	
-	// Salin ke Clipboard
 	clipboard := fyne.CurrentApp().Driver().AllWindows()[0].Clipboard()
 	clipboard.SetContent(content.String())
 	
-	// Beri feedback visual (tulis ke terminal sebentar)
-	// Kita inject pesan sistem ke terminal local
-	t.term.printText("\n\x1b[32m[SYSTEM] Teks disalin ke Clipboard!\x1b[0m\n")
-	t.term.needsRefresh = true
+	// Feedback Visual via Status Bar (Bukan tulis ke terminal agar layout tidak rusak)
+	if globalStatus != nil {
+		originalText := globalStatus.Text
+		originalColor := globalStatus.Color
+		
+		globalStatus.Text = "Teks Disalin ke Clipboard!"
+		globalStatus.Color = theme.SuccessColor()
+		globalStatus.Refresh()
+		
+		// Kembalikan status setelah 2 detik
+		go func() {
+			time.Sleep(2 * time.Second)
+			globalStatus.Text = originalText
+			globalStatus.Color = originalColor
+			globalStatus.Refresh()
+		}()
+	}
 }
 
 /* ==========================================
-   TERMINAL LOGIC
+   TERMINAL LOGIC (OPTIMIZED)
 ========================================== */
 type Terminal struct {
-	grid         *TouchableTextGrid // Gunakan widget custom
+	grid         *TouchableTextGrid
 	scroll       *container.Scroll
 	curRow       int
 	curCol       int
@@ -189,7 +194,6 @@ type Terminal struct {
 }
 
 func NewTerminal() *Terminal {
-	// Inisialisasi struct dulu tanpa grid
 	term := &Terminal{
 		curRow:       0,
 		curCol:       0,
@@ -197,7 +201,6 @@ func NewTerminal() *Terminal {
 		needsRefresh: false,
 	}
 	
-	// Buat custom grid
 	g := NewTouchableTextGrid(term)
 	defStyle := &widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
@@ -205,12 +208,11 @@ func NewTerminal() *Terminal {
 	}
 	term.curStyle = defStyle
 	term.grid = g
-	
-	// Scroll container
 	term.scroll = container.NewScroll(g)
 
+	// Refresh Loop (Ticker)
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(30 * time.Millisecond) // 30ms lebih responsif
 		for range ticker.C {
 			term.mutex.Lock()
 			if term.needsRefresh {
@@ -254,18 +256,37 @@ func (t *Terminal) Clear() {
 	t.mutex.Unlock()
 }
 
+// FUNGSI WRITE YANG SUDAH DI-OPTIMASI
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	
 	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
+	// Loop utama parsing ANSI
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
-		if loc == nil { t.printText(raw); break }
-		if loc[0] > 0 { t.printText(raw[:loc[0]]) }
+		if loc == nil { 
+			t.printTextFast(raw) 
+			break 
+		}
+		if loc[0] > 0 { 
+			t.printTextFast(raw[:loc[0]]) 
+		}
 		t.handleAnsiCode(raw[loc[0]:loc[1]])
 		raw = raw[loc[1]:]
 	}
+	
+	// OPTIMASI: Lakukan pembersihan baris (scrollback) HANYA SEKALI per Write call
+	// Ini menghilangkan lag "mengetik satu-satu"
+	if len(t.grid.Rows) > MaxScrollback {
+		excess := len(t.grid.Rows) - MaxScrollback
+		t.grid.Rows = t.grid.Rows[excess:]
+		t.curRow -= excess
+		if t.curRow < 0 { t.curRow = 0 }
+	}
+	
 	t.needsRefresh = true
 	return len(p), nil
 }
@@ -286,24 +307,35 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	}
 }
 
-func (t *Terminal) printText(text string) {
+// FUNGSI RENDER TEKS CEPAT (Tanpa manipulasi row berlebihan)
+func (t *Terminal) printTextFast(text string) {
 	for _, char := range text {
 		if char == '\n' { 
 			t.curRow++
 			t.curCol = 0
-			if len(t.grid.Rows) > MaxScrollback { t.grid.Rows = t.grid.Rows[1:]; t.curRow-- }
 			continue 
 		}
 		if char == '\r' { t.curCol = 0; continue }
-		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
-		rowCells := t.grid.Rows[t.curRow].Cells
-		if t.curCol >= len(rowCells) {
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, rowCells)
-			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
+		
+		// Tambah baris baru HANYA jika diperlukan
+		for t.curRow >= len(t.grid.Rows) { 
+			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{Cells: []widget.TextGridCell{}})
 		}
-		cellStyle := *t.curStyle
-		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
+		
+		row := &t.grid.Rows[t.curRow]
+		
+		// Expand kolom HANYA jika diperlukan
+		if t.curCol >= len(row.Cells) {
+			newCells := make([]widget.TextGridCell, t.curCol+1)
+			copy(newCells, row.Cells)
+			row.Cells = newCells
+		}
+		
+		// Set karakter langsung ke memori (sangat cepat)
+		row.Cells[t.curCol] = widget.TextGridCell{
+			Rune: char, 
+			Style: t.curStyle, // Pointer ke style aktif
+		}
 		t.curCol++
 	}
 }
@@ -324,7 +356,6 @@ func CheckRoot() bool {
 	return strings.TrimSpace(string(out)) == "0"
 }
 
-// Cek Driver via Kallsyms
 func CheckKernelDriver() bool {
 	signature := "read_physical_address"
 	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
@@ -402,6 +433,7 @@ func main() {
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
+	// Init Terminal
 	term := NewTerminal()
 	
 	go func() {
@@ -418,8 +450,11 @@ func main() {
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("Terminal Command...")
+	
+	// STATUS LABEL (Global)
 	status := canvas.NewText("System: Ready", silverColor)
 	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
+	globalStatus = status // Assign ke variabel global agar bisa diubah widget lain
 
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
@@ -440,7 +475,6 @@ func main() {
 				}
 				lblSystemValue.Refresh()
 				
-				// Panggil Deteksi Kallsyms
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				} else {
@@ -459,6 +493,7 @@ func main() {
 
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
+		status.Color = silverColor
 		status.Refresh()
 
 		if !isScript {
@@ -518,7 +553,7 @@ func main() {
 			go func() { defer wg.Done(); io.Copy(term, stderr) }()
 			wg.Wait(); cmd.Wait()
 			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
-			status.Text = "Status: Idle"; status.Refresh()
+			status.Text = "Status: Idle"; status.Color = silverColor; status.Refresh()
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
 		}()
 	}
@@ -558,7 +593,7 @@ func main() {
 
 	var overlayContainer *fyne.Container
 	
-	// FUNGSI POPUP (UPDATED: LOGIKA WARNA TOMBOL RETRY)
+	// FUNGSI POPUP (RETRY + COLOR)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -578,15 +613,10 @@ func main() {
 			if action != nil { action() }
 		})
 		
-		// LOGIKA WARNA TOMBOL RETRY
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
 		} else {
-			if isErr { 
-				btnOk.Importance = widget.DangerImportance 
-			} else { 
-				btnOk.Importance = widget.HighImportance 
-			}
+			if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
 		}
 		
 		btnBox := container.NewHBox(
@@ -633,30 +663,23 @@ func main() {
 			
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
 
-			// Path tujuan
 			targetKoPath := "/data/local/tmp/module_inject.ko"
-			
-			// DEFER cleanup
 			defer func() {
 				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
 			}()
 
-			// 2. Baca ZIP Embed
 			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
 			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
 			if err != nil {
 				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
 			}
 
-			// 3. Cari File .ko
 			var fileToExtract *zip.File
 			for _, f := range zipReader.File {
 				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
 					fileToExtract = f; break
 				}
 			}
-			
-			// Fallback
 			if fileToExtract == nil {
 				for _, f := range zipReader.File {
 					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
@@ -669,7 +692,6 @@ func main() {
 				return
 			}
 
-			// 4. Ekstrak
 			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
 			rc, _ := fileToExtract.Open()
 			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
@@ -677,18 +699,15 @@ func main() {
 			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
 			os.WriteFile(userTmp, buf.Bytes(), 0644)
 			
-			// Pindah ke root path
 			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
 			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
 			os.Remove(userTmp) 
 
-			// 5. Install (Insmod)
 			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
 			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
 			output, err := cmdInsmod.CombinedOutput()
 			outputStr := string(output)
 
-			// 6. Cek Hasil
 			if err == nil {
 				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
@@ -709,7 +728,6 @@ func main() {
 		}()
 	}
 
-	// DEFINISI FUNGSI UPDATE (RETRY LOGIC)
 	var checkUpdate func()
 	checkUpdate = func() {
 		overlayContainer.Hide()
@@ -736,14 +754,12 @@ func main() {
 				}
 			}
 		} else {
-			// POPUP RETRY
 			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
 				go checkUpdate()
 			}, true, true)
 		}
 	}
 
-	// JALANKAN CHECK UPDATE PERTAMA KALI
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		checkUpdate()
