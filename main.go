@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -36,7 +37,6 @@ import (
    CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
-// Variabel GitHubRepo SUDAH DIHAPUS sesuai permintaan
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
@@ -465,14 +465,31 @@ func main() {
 	var overlayContainer *fyne.Container
 	showModal := func(title, msg, confirm string, action func(), isErr bool) {
 		w.Canvas().Refresh(w.Content())
+		
 		btnCancel := widget.NewButton("CANCEL", func() { overlayContainer.Hide() })
 		btnCancel.Importance = widget.DangerImportance
+		
 		btnOk := widget.NewButton(confirm, func() { overlayContainer.Hide(); if action != nil { action() } })
 		if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance }
-		btnBox := container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btnCancel), widget.NewLabel("   "), container.NewGridWrap(fyne.NewSize(110,40), btnOk), layout.NewSpacer())
+		
+		btnBox := container.NewHBox(
+			layout.NewSpacer(), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnCancel), 
+			widget.NewLabel("   "), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnOk), 
+			layout.NewSpacer(),
+		)
+		
 		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
 		if isErr { lblTitle.Color = theme.ErrorColor() }
-		content := container.NewVBox(container.NewPadded(container.NewCenter(lblTitle)), widget.NewLabel(msg), widget.NewLabel(""), btnBox)
+		
+		content := container.NewVBox(
+			container.NewPadded(container.NewCenter(lblTitle)), 
+			widget.NewLabel(msg), 
+			widget.NewLabel(""), 
+			btnBox,
+		)
+		
 		card := widget.NewCard("", "", container.NewPadded(content))
 		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
 		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
@@ -507,8 +524,7 @@ func main() {
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out))
 			
-			// LOGIKA BARU: Ambil semua angka sebelum bertemu tanda strip (-) pertama
-			// Jika fullVer = "5.10.198-android12" -> targetVer = "5.10.198"
+			// LOGIKA: Ambil semua angka sebelum bertemu tanda strip (-) pertama
 			targetVer := strings.Split(fullVer, "-")[0]
 			
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
@@ -561,4 +577,115 @@ func main() {
 			
 			// Pindah ke root path
 			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
-			exec.Command("su", "-c", "chmod 777 "+tar
+			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
+			os.Remove(userTmp) // Hapus temp user
+
+			// 5. Install (Insmod)
+			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
+			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
+			output, err := cmdInsmod.CombinedOutput()
+			outputStr := string(output)
+
+			// ============================================
+			// LOGIKA STATUS & PESAN SESUAI REQUEST
+			// ============================================
+			if err == nil {
+				// KASUS 1: Berhasil
+				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
+				
+				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
+				status.Text = "Berhasil Install"
+			
+			} else if strings.Contains(outputStr, "File exists") {
+				// KASUS 2: Sudah Ada
+				term.Write([]byte("\x1b[33m[INFO] Driver Sudah Ada Ketik insmod untuk cek lebih lanjut\x1b[0m\n"))
+				
+				// Tetap set UI jadi hijau (karena statusnya aktif)
+				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
+				status.Text = "Sudah Aktif"
+
+			} else {
+				// KASUS 3: Gagal
+				term.Write([]byte("\x1b[31m[GAGAL] Gagal install\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m" + outputStr + "\x1b[0m\n"))
+				
+				lblKernelValue.Text = "ERROR"; lblKernelValue.Color = failRed
+				status.Text = "Gagal Install"
+			}
+			
+			lblKernelValue.Refresh()
+			status.Refresh()
+		}()
+	}
+
+	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
+	
+	// Layout Info Grid
+	infoGrid := container.NewGridWithColumns(3, 
+		container.NewVBox(lblKernelTitle, lblKernelValue), 
+		container.NewVBox(lblSELinuxTitle, lblSELinuxValue), 
+		container.NewVBox(lblSystemTitle, lblSystemValue),
+	)
+
+	// Inject Button
+	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { 
+		showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false) 
+	})
+	btnInj.Importance = widget.HighImportance
+
+	// SELinux Button (Perbaikan Syntax Formatting)
+	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
+		go func() { 
+			if CheckSELinux() == "Enforcing" { 
+				exec.Command("su","-c","setenforce 0").Run() 
+			} else { 
+				exec.Command("su","-c","setenforce 1").Run() 
+			} 
+		}() 
+	})
+	btnSel.Importance = widget.HighImportance
+
+	// Clear Button
+	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { 
+		term.Clear() 
+	})
+	btnClr.Importance = widget.DangerImportance
+	
+	// Header Construction (Perbaikan Syntax Formatting)
+	headerContent := container.NewVBox(
+		container.NewPadded(titleText), 
+		container.NewPadded(infoGrid), 
+		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), 
+		container.NewPadded(status), 
+		widget.NewSeparator(),
+	)
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), headerContent)
+
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
+	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
+	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
+	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
+	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
+	
+	// FD Button & Image
+	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
+	fdImg.FillMode = canvas.ImageFillContain
+	
+	fdBtn := widget.NewButton("", func() { 
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { 
+			if r != nil { runFile(r) } 
+		}, w).Show() 
+	})
+	fdBtn.Importance = widget.LowImportance
+	
+	fabWrapper := container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn))
+	fab := container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewPadded(container.NewHBox(layout.NewSpacer(), fabWrapper)), 
+		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
+	)
+
+	overlayContainer = container.NewStack(); overlayContainer.Hide()
+	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
+	w.ShowAndRun()
+}
