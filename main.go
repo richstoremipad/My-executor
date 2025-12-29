@@ -62,7 +62,7 @@ var bgPng []byte
 var driverZip []byte
 
 /* ==========================================
-   GESTURE OVERLAY (SWIPE & COPY)
+   GESTURE OVERLAY (SWIPE MENU)
 ========================================== */
 type GestureOverlay struct {
 	widget.BaseWidget
@@ -81,7 +81,9 @@ func NewGestureOverlay(up, down, longPress func()) *GestureOverlay {
 func (g *GestureOverlay) OnDragStart() { g.dragAccumY = 0 }
 func (g *GestureOverlay) Dragged(e *fyne.DragEvent) {
 	g.dragAccumY += e.Dragged.DY
-	threshold := float32(25.0) // Sensitivitas Swipe
+	// Threshold disesuaikan agar tidak terlalu sensitif (mencegah jitter)
+	threshold := float32(30.0) 
+
 	if g.dragAccumY > threshold {
 		if g.onSwipeDown != nil { g.onSwipeDown() }
 		g.dragAccumY = 0
@@ -101,20 +103,19 @@ func (g *GestureOverlay) CreateRenderer() fyne.WidgetRenderer {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (BUFFERED RENDERING - NO LAG)
+   TERMINAL LOGIC (ANTI-FLICKER + BUFFERED)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
 	scroll       *container.Scroll
+	rows         [][]widget.TextGridCell
 	curRow       int
 	curCol       int
 	curStyle     *widget.CustomTextGridStyle
 	mutex        sync.Mutex
 	reAnsi       *regexp.Regexp
 	
-	// Buffer System
 	needsRefresh bool
-	buffer       bytes.Buffer 
 }
 
 func NewTerminal() *Terminal {
@@ -124,21 +125,35 @@ func NewTerminal() *Terminal {
 	term := &Terminal{
 		grid:     g,
 		scroll:   container.NewScroll(g),
+		rows:     make([][]widget.TextGridCell, 0, MaxScrollback),
 		curRow:   0,
 		curCol:   0,
 		curStyle: &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent},
 		reAnsi:   regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
 	}
 
-	// ENGINE UTAMA: Refresh Rate Limiter (30 FPS)
-	// Ini mencegah layar berkedip dan lag saat teks muncul cepat
+	// RENDER LOOP (FIXED FLICKERING)
 	go func() {
-		ticker := time.NewTicker(33 * time.Millisecond)
+		ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
 		for range ticker.C {
 			term.mutex.Lock()
 			if term.needsRefresh {
+				// LOGIKA BARU: Update Langsung (Tanpa Reset Kosong)
+				
+				// 1. Siapkan slice baris UI baru sesuai jumlah data
+				newRows := make([]widget.TextGridRow, len(term.rows))
+				
+				// 2. Copy data dari memori ke struct UI
+				for i, r := range term.rows {
+					newRows[i] = widget.TextGridRow{Cells: r}
+				}
+				
+				// 3. Terapkan ke Grid (Atomic update)
+				// Kita TIDAK memanggil term.grid.SetText("") agar tidak kedip
+				term.grid.Rows = newRows
 				term.grid.Refresh()
 				term.scroll.ScrollToBottom()
+				
 				term.needsRefresh = false
 			}
 			term.mutex.Unlock()
@@ -150,6 +165,7 @@ func NewTerminal() *Terminal {
 func ansiToColor(code string) color.Color {
 	switch code {
 	case "0": return theme.ForegroundColor()
+	case "1": return color.White
 	case "30", "90": return color.Gray{Y: 100}
 	case "31", "91": return theme.ErrorColor()
 	case "32", "92": return theme.SuccessColor()
@@ -164,21 +180,20 @@ func ansiToColor(code string) color.Color {
 
 func (t *Terminal) Clear() {
 	t.mutex.Lock()
-	t.grid.SetText("")
-	t.curRow = 0; t.curCol = 0
+	t.rows = make([][]widget.TextGridCell, 0)
+	t.curRow = 0
+	t.curCol = 0
 	t.needsRefresh = true
 	t.mutex.Unlock()
 }
 
-// Write: Proses data di memori (CPU), jangan sentuh UI (GPU) di sini
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	raw := string(p) // Go string handle UTF-8 safe automatically here usually
+	raw := string(p)
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 
-	// Parser ANSI Standard (Reliable)
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
 		if loc == nil {
@@ -192,7 +207,6 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		raw = raw[loc[1]:]
 	}
 
-	// Tandai bahwa UI butuh update di siklus Ticker berikutnya
 	t.needsRefresh = true
 	return len(p), nil
 }
@@ -215,7 +229,7 @@ func (t *Terminal) handleAnsiMem(codeSeq string) {
 		}
 	case 'J':
 		if strings.Contains(content, "2") {
-			t.grid.SetText("") // Khusus Clear Screen boleh reset grid
+			t.rows = make([][]widget.TextGridCell, 0)
 			t.curRow = 0; t.curCol = 0
 		}
 	case 'H':
@@ -228,43 +242,46 @@ func (t *Terminal) printTextMem(text string) {
 		if char == '\n' {
 			t.curRow++
 			t.curCol = 0
-			// Scrollback limiter
-			if len(t.grid.Rows) > MaxScrollback {
-				t.grid.Rows = t.grid.Rows[1:]
+			if len(t.rows) > MaxScrollback {
+				t.rows = t.rows[1:]
 				t.curRow--
 			}
 			continue
 		}
 		if char == '\r' { t.curCol = 0; continue }
 
-		// Dynamic Row Expansion
-		for t.curRow >= len(t.grid.Rows) {
-			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{})
+		for t.curRow >= len(t.rows) {
+			t.rows = append(t.rows, []widget.TextGridCell{})
 		}
 		
-		// Dynamic Col Expansion
-		row := &t.grid.Rows[t.curRow]
-		if t.curCol >= len(row.Cells) {
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, row.Cells)
-			row.Cells = newCells
+		row := &t.rows[t.curRow]
+		
+		// Pastikan kapasitas row cukup (Anti-Crash)
+		// Jika kolom melompat jauh (misal tab), isi kekosongan
+		if t.curCol >= len(*row) {
+			needed := t.curCol + 1 - len(*row)
+			padding := make([]widget.TextGridCell, needed)
+			*row = append(*row, padding...)
 		}
 
-		// Update Cell in Memory
-		cellStyle := *t.curStyle // Copy style
-		row.Cells[t.curCol] = widget.TextGridCell{Rune: char, Style: &cellStyle}
+		// Update cell langsung di memori
+		styleCopy := *t.curStyle
+		(*row)[t.curCol] = widget.TextGridCell{Rune: char, Style: &styleCopy}
 		t.curCol++
 	}
 }
 
-// Copy Content Helper
 func (t *Terminal) GetContent() string {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	var sb strings.Builder
-	for _, row := range t.grid.Rows {
-		for _, cell := range row.Cells {
-			sb.WriteRune(cell.Rune)
+	for _, row := range t.rows {
+		for _, cell := range row {
+			if cell.Rune == 0 {
+				sb.WriteRune(' ')
+			} else {
+				sb.WriteRune(cell.Rune)
+			}
 		}
 		sb.WriteString("\n")
 	}
@@ -322,26 +339,20 @@ func main() {
 
 	term := NewTerminal()
 	
-	// Root Check
 	go func() { time.Sleep(1*time.Second); CheckRoot() }()
 	if !CheckRoot() { currentDir = "/sdcard" }
 
-	// Colors
 	brightYellow := color.RGBA{255, 255, 0, 255}
 	successGreen := color.RGBA{0, 255, 0, 255}
 	failRed := color.RGBA{255, 50, 50, 255}
 	silverColor := color.Gray{Y: 180}
 
-	// UI Components
-	// PERBAIKAN URUTAN: Definisi globalStatus dan titleText sebelum digunakan
 	status := canvas.NewText("System: Ready", silverColor)
 	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
 	globalStatus = status
 
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
-
-	input := widget.NewEntry()
-	input.SetPlaceHolder("Terminal Command...")
+	input := widget.NewEntry(); input.SetPlaceHolder("Terminal Command...")
 
 	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
@@ -350,7 +361,6 @@ func main() {
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// Monitor System Status
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
@@ -371,7 +381,6 @@ func main() {
 		}
 	}()
 
-	// Executor
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
 		status.Color = silverColor
@@ -460,14 +469,13 @@ func main() {
 		executeTask("", true, tmpPath, isBinary)
 	}
 
-	// Actions
 	actionSwipeUp := func() {
 		cmdMutex.Lock(); defer cmdMutex.Unlock()
-		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[B") } // Panah Bawah
+		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[B") }
 	}
 	actionSwipeDown := func() {
 		cmdMutex.Lock(); defer cmdMutex.Unlock()
-		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[A") } // Panah Atas
+		if activeStdin != nil { io.WriteString(activeStdin, "\x1b[A") }
 	}
 	actionCopy := func() {
 		w.Clipboard().SetContent(term.GetContent())
@@ -475,13 +483,10 @@ func main() {
 		go func() { time.Sleep(2*time.Second); status.Text="System: Ready"; status.Color=silverColor; status.Refresh() }()
 	}
 
-	// Gesture Overlay (Invisible layer on top)
 	gestureOverlay := NewGestureOverlay(actionSwipeUp, actionSwipeDown, actionCopy)
 	
-	// Modal
 	var overlayContainer *fyne.Container
-	overlayContainer = container.NewStack()
-	overlayContainer.Hide()
+	overlayContainer = container.NewStack(); overlayContainer.Hide()
 
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		cancelLabel := "BATAL"; cancelFunc := func() { overlayContainer.Hide() }
@@ -497,13 +502,11 @@ func main() {
 			widget.NewLabel(""),
 			container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btnCancel), widget.NewLabel(" "), container.NewGridWrap(fyne.NewSize(110,40), btnOk), layout.NewSpacer()),
 		)
-		
 		card := widget.NewCard("", "", container.NewPadded(content))
 		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))}
 		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
-	// Logic Install
 	autoInstallKernel := func() {
 		term.Clear(); status.Text="Installing..."; status.Refresh()
 		go func() {
@@ -550,7 +553,6 @@ func main() {
 		}()
 	}
 
-	// Update Check Logic
 	var checkUpdate func()
 	checkUpdate = func() {
 		overlayContainer.Hide(); time.Sleep(500 * time.Millisecond)
@@ -558,7 +560,6 @@ func main() {
 		
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
-		
 		if err == nil && resp.StatusCode == 200 {
 			b, _ := io.ReadAll(resp.Body); resp.Body.Close()
 			if dec, err := decryptConfig(string(bytes.TrimSpace(b))); err == nil {
@@ -573,7 +574,6 @@ func main() {
 	}
 	go func() { time.Sleep(1500 * time.Millisecond); checkUpdate() }()
 
-	// Main Layout
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Inject Driver?", "MULAI", autoInstallKernel, false, false) })
 	btnInj.Importance = widget.HighImportance
 	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
