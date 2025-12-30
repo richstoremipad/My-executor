@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/creack/pty" // WAJIB: Library untuk membuat Terminal Virtual
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -34,15 +35,15 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.0"
+const AppVersion = "1.1" // Versi dengan PTY Support
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// MAX Scrollback agar tidak memakan RAM berlebih
+// MAX Scrollback
 const MaxScrollback = 300 
 
 var currentDir string = "/sdcard" 
-var activeStdin io.WriteCloser
+var activeStdin *os.File // Ubah tipe jadi *os.File karena PTY menghasilkan file
 var cmdMutex sync.Mutex
 
 type OnlineConfig struct {
@@ -118,7 +119,7 @@ func NewTerminal() *Terminal {
 		needsRefresh: false,
 	}
 
-	// Refresher loop (60 FPS limiter)
+	// Refresher loop
 	go func() {
 		ticker := time.NewTicker(16 * time.Millisecond)
 		for range ticker.C {
@@ -158,12 +159,11 @@ func (t *Terminal) Write(p []byte) (int, error) {
 
 		if t.inEsc {
 			t.escBuffer = append(t.escBuffer, b)
-			// CSI sequences end with letters
 			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
 				t.handleCSI(t.escBuffer)
 				t.inEsc = false
 			}
-			if len(t.escBuffer) > 40 { t.inEsc = false } // Safety break
+			if len(t.escBuffer) > 40 { t.inEsc = false }
 			continue
 		}
 
@@ -172,7 +172,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 			t.curRow++
 			t.curCol = 0
 			t.ensureRow(t.curRow)
-		case '\r': // Carriage Return (Overwriting line)
+		case '\r': // Carriage Return (Penting untuk Progress Bar)
 			t.curCol = 0
 		case '\b', 0x7f: // Backspace
 			if t.curCol > 0 { t.curCol--; t.setChar(' ') }
@@ -209,7 +209,7 @@ func (t *Terminal) handleCSI(seq []byte) {
 	}
 
 	switch cmd {
-	case 'm': // SGR (Select Graphic Rendition)
+	case 'm': // SGR (Warna & Style)
 		i := 0
 		for i < len(params) {
 			code := params[i]
@@ -223,31 +223,26 @@ func (t *Terminal) handleCSI(seq []byte) {
 			case 22: t.curStyle.TextStyle.Bold = false
 			case 23: t.curStyle.TextStyle.Italic = false
 			
-			// Standard FG
 			case 30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97:
 				t.curStyle.FGColor = ansiToSimpleColor(code)
 			case 39: t.curStyle.FGColor = theme.ForegroundColor()
-				
-			// Standard BG
 			case 40, 41, 42, 43, 44, 45, 46, 47:
 				t.curStyle.BGColor = ansiToSimpleColor(code - 10)
 			case 49: t.curStyle.BGColor = color.Transparent
 
-			// True Color FG: 38;2;R;G;B
-			case 38:
+			case 38: // FG RGB
 				if i+4 < len(params) && params[i+1] == 2 {
 					t.curStyle.FGColor = color.RGBA{R: uint8(params[i+2]), G: uint8(params[i+3]), B: uint8(params[i+4]), A: 255}
 					i += 4
-				} else if i+2 < len(params) && params[i+1] == 5 { // 256 Color
+				} else if i+2 < len(params) && params[i+1] == 5 {
 					t.curStyle.FGColor = ansi256ToColor(params[i+2])
 					i += 2
 				}
-			// True Color BG: 48;2;R;G;B
-			case 48:
+			case 48: // BG RGB
 				if i+4 < len(params) && params[i+1] == 2 {
 					t.curStyle.BGColor = color.RGBA{R: uint8(params[i+2]), G: uint8(params[i+3]), B: uint8(params[i+4]), A: 255}
 					i += 4
-				} else if i+2 < len(params) && params[i+1] == 5 { // 256 Color
+				} else if i+2 < len(params) && params[i+1] == 5 {
 					t.curStyle.BGColor = ansi256ToColor(params[i+2])
 					i += 2
 				}
@@ -255,23 +250,23 @@ func (t *Terminal) handleCSI(seq []byte) {
 			i++
 		}
 
-	case 'A': // Cursor Up
+	case 'A': // Up
 		n := 1; if len(params) > 0 && params[0] > 0 { n = params[0] }
 		t.curRow -= n; if t.curRow < 0 { t.curRow = 0 }
-	case 'B': // Cursor Down
+	case 'B': // Down
 		n := 1; if len(params) > 0 && params[0] > 0 { n = params[0] }
 		t.curRow += n; t.ensureRow(t.curRow)
-	case 'C': // Cursor Forward
+	case 'C': // Forward
 		n := 1; if len(params) > 0 && params[0] > 0 { n = params[0] }
 		t.curCol += n
-	case 'D': // Cursor Back
+	case 'D': // Back
 		n := 1; if len(params) > 0 && params[0] > 0 { n = params[0] }
 		t.curCol -= n; if t.curCol < 0 { t.curCol = 0 }
 	case 'J': // Clear Screen
 		if len(params) > 0 && params[0] == 2 {
 			t.grid.SetText(""); t.curRow = 0; t.curCol = 0
 		}
-	case 'K': // Clear Line
+	case 'K': // Clear Line (Penting buat animasi TUI)
 		t.ensureRow(t.curRow)
 		rowCells := t.grid.Rows[t.curRow].Cells
 		if t.curCol < len(rowCells) {
@@ -323,7 +318,7 @@ func ansi256ToColor(idx int) color.Color {
 	if idx < 16 { return ansiToSimpleColor(30 + idx) }
 	if idx == 232 { return color.Black }
 	if idx == 255 { return color.White }
-	return theme.PrimaryColor() // Fallback
+	return theme.PrimaryColor()
 }
 
 /* ===============================
@@ -374,7 +369,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Rich Exec by TANGSAN")
+	w := a.NewWindow("TANGSAN EXECUTOR (PTY)")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
@@ -382,7 +377,7 @@ func main() {
 	
 	go func() {
 		time.Sleep(1 * time.Second)
-		if !CheckRoot() { /* Optional Auto Request */ }
+		if !CheckRoot() { /* Auto Check */ }
 	}()
 
 	if !CheckRoot() { currentDir = "/sdcard" }
@@ -404,7 +399,7 @@ func main() {
 	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// UPDATE STATUS MONITOR
+	// UPDATE STATUS LOOP
 	go func() {
 		time.Sleep(1 * time.Second)
 		for {
@@ -433,7 +428,9 @@ func main() {
 		}
 	}()
 
-	// EXECUTION LOGIC (WITH FORCE COLOR ENV)
+	// -------------------------------------------------------------
+	// CORE EXECUTION LOGIC DENGAN PTY (FIX /dev/tty error)
+	// -------------------------------------------------------------
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Status: Processing..."
 		status.Refresh()
@@ -478,44 +475,66 @@ func main() {
 				}
 			}
 
-			// PENTING: Environment untuk Memaksa Output Berwarna (Rich TUI)
-			newEnv := append(os.Environ(), 
+			// 1. Force Colors Env
+			cmd.Env = append(os.Environ(), 
 				"TERM=xterm-256color",
+				"COLORTERM=truecolor",
 				"FORCE_COLOR=1",
-				"CLICOLOR_FORCE=1",
-				"PYTHONIOENCODING=utf-8",
 			)
-			cmd.Env = newEnv
 
-			stdin, _ := cmd.StdinPipe()
-			stdout, _ := cmd.StdoutPipe()
-			stderr, _ := cmd.StderrPipe()
-			cmdMutex.Lock(); activeStdin = stdin; cmdMutex.Unlock()
-
-			if err := cmd.Start(); err != nil {
-				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
-				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
+			// 2. Start dengan PTY (Pseudo-Terminal)
+			// Ini membuat file device virtual yang bisa menipu binary TUI
+			ptmx, err := pty.Start(cmd)
+			if err != nil {
+				term.Write([]byte(fmt.Sprintf("\x1b[31m[PTY ERR] %s\x1b[0m\n", err.Error())))
+				status.Text = "Error"; status.Refresh()
 				return
 			}
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go func() { defer wg.Done(); io.Copy(term, stdout) }()
-			go func() { defer wg.Done(); io.Copy(term, stderr) }()
-			wg.Wait(); cmd.Wait()
-			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
-			status.Text = "Status: Idle"; status.Refresh()
-			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
+
+			// 3. Set Ukuran Terminal (Wajib agar TUI tidak berantakan)
+			// Ukuran 35 Baris x 85 Kolom cocok untuk layar HP Landscape
+			pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 85, X: 0, Y: 0})
+
+			// 4. Hubungkan Input User ke PTY
+			cmdMutex.Lock()
+			activeStdin = ptmx // ptmx bisa baca dan tulis
+			cmdMutex.Unlock()
+
+			defer func() {
+				_ = ptmx.Close()
+				cmdMutex.Lock()
+				activeStdin = nil
+				cmdMutex.Unlock()
+				status.Text = "Status: Idle"; status.Refresh()
+				if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
+			}()
+
+			// 5. Salin Output PTY ke UI Terminal Kita
+			io.Copy(term, ptmx)
+
+			cmd.Wait()
 		}()
 	}
 
 	send := func() {
 		text := input.Text
 		input.SetText("")
+		
+		// Jika sedang menjalankan proses, kirim text sebagai input keyboard
 		cmdMutex.Lock()
-		if activeStdin != nil { io.WriteString(activeStdin, text+"\n"); term.Write([]byte(text + "\n")); cmdMutex.Unlock(); return }
+		if activeStdin != nil {
+			// Tambahkan newline agar dienter
+			activeStdin.Write([]byte(text + "\n")) 
+			// Opsional: Tulis apa yang kita ketik ke layar sendiri (Echo)
+			// term.Write([]byte(text + "\n")) 
+			cmdMutex.Unlock()
+			return 
+		}
 		cmdMutex.Unlock()
+		
 		if strings.TrimSpace(text) == "" { return }
 		
+		// Logic 'cd' manual karena kita belum pakai shell persisten penuh
 		if strings.HasPrefix(text, "cd") {
 			parts := strings.Fields(text)
 			newPath := currentDir
@@ -660,7 +679,7 @@ func main() {
 
 	go func() { time.Sleep(1500 * time.Millisecond); checkUpdate() }()
 
-	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
+	titleText := createLabel("TANGSAN EXECUTOR", color.White, 16, true)
 	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false, false) })
 	btnInj.Importance = widget.HighImportance
@@ -689,4 +708,3 @@ func main() {
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
 	w.ShowAndRun()
 }
-

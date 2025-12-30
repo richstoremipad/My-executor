@@ -2,7 +2,10 @@ module com.exe.rich
 
 go 1.23
 
-require fyne.io/fyne/v2 v2.7.1
+require (
+	fyne.io/fyne/v2 v2.7.1
+	github.com/creack/pty v1.1.24
+)
 
 require (
 	fyne.io/systray v1.11.1-0.20250603113521-ca66a66d8b58 // indirect
