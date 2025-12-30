@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,28 +29,26 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/mobile"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM
+   CONFIG & ASSETS
 ========================================== */
-const AppVersion = "1.1" // Versi Fix TUI & UTF8
+const AppVersion = "1.4" // Versi Mouse Support
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
-const MaxScrollback = 100 
 
-var currentDir string = "/sdcard" 
-var activeStdin *os.File
+// Ukuran Terminal Virtual (Sesuaikan agar pas di layar)
+const TermRows = 30
+const TermCols = 85
+
+var currentDir string = "/sdcard"
+var activeStdin *os.File // Pointer ke PTY Master
 var cmdMutex sync.Mutex
-
-type OnlineConfig struct {
-	Version string `json:"version"`
-	Message string `json:"message"`
-	Link    string `json:"link"`
-}
 
 //go:embed fd.png
 var fdPng []byte
@@ -58,89 +57,104 @@ var fdPng []byte
 var driverZip []byte
 
 /* ==========================================
-   CUSTOM THEME (FORCE MONOSPACE FOR TUI)
+   CUSTOM WIDGET: INTERACTIVE GRID (MOUSE CLICK)
 ========================================== */
-type MyTheme struct{}
+// Widget ini turunan dari TextGrid tapi bisa mendeteksi Tap/Klik
+type InteractiveGrid struct {
+	widget.TextGrid
+	cellSize fyne.Size
+	ptyInput *os.File
+}
 
-func (m MyTheme) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
-	return theme.DefaultTheme().Color(n, v)
+func NewInteractiveGrid() *InteractiveGrid {
+	g := &InteractiveGrid{}
+	g.ExtendBaseWidget(g)
+	g.ShowLineNumbers = false
+	return g
 }
-func (m MyTheme) Font(s fyne.TextStyle) fyne.Resource {
-	// PAKSA SEMUA TEKS JADI MONOSPACE AGAR KOTAK TUI LURUS
-	return theme.DefaultTheme().Font(fyne.TextStyle{Monospace: true})
+
+// Event saat layar disentuh (Tap)
+func (g *InteractiveGrid) Tapped(e *fyne.PointEvent) {
+	if activeStdin == nil { return }
+
+	// Hitung perkiraan baris & kolom berdasarkan posisi tap
+	// Kita perlu ukuran font rata-rata. Fyne agak tricky disini, 
+	// jadi kita estimasi berdasarkan ukuran widget dibagi jumlah baris/kolom.
+	
+	size := g.Size()
+	cellW := size.Width / float32(TermCols)
+	cellH := size.Height / float32(TermRows)
+
+	// Hitung Col & Row (1-based index untuk Xterm Mouse)
+	col := int(e.Position.X/cellW) + 1
+	row := int(e.Position.Y/cellH) + 1
+
+	// Batasi agar tidak error
+	if col < 1 { col = 1 }
+	if col > TermCols { col = TermCols }
+	if row < 1 { row = 1 }
+	if row > TermRows { row = TermRows }
+
+	// KIRIM KODE KLIK MOUSE X10 (Standard Terminal Click)
+	// Format: ESC [ M <Button+32> <Col+32> <Row+32>
+	// Button 0 (Left Click) + 32 = 32 (Space) -> ASCII
+	btn := 32 
+	x := col + 32
+	y := row + 32
+	
+	mouseSeq := []byte{0x1b, '[', 'M', byte(btn), byte(x), byte(y)}
+	
+	cmdMutex.Lock()
+	if activeStdin != nil {
+		activeStdin.Write(mouseSeq)
+	}
+	cmdMutex.Unlock()
 }
-func (m MyTheme) Icon(n fyne.ThemeIconName) fyne.Resource {
-	return theme.DefaultTheme().Icon(n)
-}
-func (m MyTheme) Size(n fyne.ThemeSizeName) float32 {
-	return theme.DefaultTheme().Size(n)
-}
+
+// Agar widget bisa discroll di mobile
+func (g *InteractiveGrid) TappedSecondary(e *fyne.PointEvent) {}
+func (g *InteractiveGrid) Dragged(e *fyne.DragEvent) {}
+func (g *InteractiveGrid) DragEnd() {}
 
 /* ==========================================
-   SECURITY LOGIC
-========================================== */
-func decryptConfig(encryptedStr string) ([]byte, error) {
-	defer func() { if r := recover(); r != nil {} }()
-	key := []byte(CryptoKey)
-	if len(key) != 32 { return nil, errors.New("key length error") }
-	encryptedStr = strings.TrimSpace(encryptedStr)
-	data, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil { return nil, err }
-	block, err := aes.NewCipher(key)
-	if err != nil { return nil, err }
-	gcm, err := cipher.NewGCM(block)
-	if err != nil { return nil, err }
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize { return nil, errors.New("data corrupt") }
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil { return nil, err }
-	return plaintext, nil
-}
-
-/* ==========================================
-   TERMINAL EMULATOR (UTF-8 SUPPORT)
+   TERMINAL LOGIC (RENDERER)
 ========================================== */
 type Terminal struct {
-	grid         *widget.TextGrid
-	scroll       *container.Scroll
+	grid         *InteractiveGrid // Gunakan widget custom kita
 	curRow       int
 	curCol       int
 	curStyle     *widget.CustomTextGridStyle
 	mutex        sync.Mutex
 	needsRefresh bool
 	
-	// Buffer state
 	escBuffer    []byte
 	inEsc        bool
-	utf8Buffer   []byte // Penampung byte sisa UTF-8
 }
 
 func NewTerminal() *Terminal {
-	g := widget.NewTextGrid()
-	g.ShowLineNumbers = false
+	g := NewInteractiveGrid()
 	
+	// Style Default: Teks Putih, Background Hitam (Sesuai Termux)
 	defStyle := &widget.CustomTextGridStyle{
-		FGColor: color.White, // Default text putih
-		BGColor: color.Black, // Default bg hitam pekat
+		FGColor: color.White,
+		BGColor: color.Black,
 	}
 
 	term := &Terminal{
 		grid:         g,
-		scroll:       container.NewScroll(g),
 		curRow:       0,
 		curCol:       0,
 		curStyle:     defStyle,
 		inEsc:        false,
 		escBuffer:    make([]byte, 0, 100),
-		utf8Buffer:   make([]byte, 0, 10),
 		needsRefresh: false,
 	}
 
-	term.ensureSize(40, 100)
+	// Inisialisasi Ukuran Awal
+	term.resizeGrid(TermRows, TermCols)
 
 	go func() {
-		ticker := time.NewTicker(16 * time.Millisecond)
+		ticker := time.NewTicker(30 * time.Millisecond) // 30 FPS Update
 		for range ticker.C {
 			term.mutex.Lock()
 			if term.needsRefresh {
@@ -153,508 +167,336 @@ func NewTerminal() *Terminal {
 	return term
 }
 
+// Pastikan grid selalu punya ukuran tetap (Fixed Size Terminal)
+// Ini kunci agar tampilan tidak berantakan
+func (t *Terminal) resizeGrid(rows, cols int) {
+	// Reset grid rows
+	t.grid.Rows = make([]widget.TextGridRow, rows)
+	for i := range t.grid.Rows {
+		cells := make([]widget.TextGridCell, cols)
+		for j := range cells {
+			// Isi dengan spasi kosong & style default
+			cells[j] = widget.TextGridCell{Rune: ' ', Style: t.curStyle}
+		}
+		t.grid.Rows[i] = widget.TextGridRow{Cells: cells}
+	}
+}
+
 func (t *Terminal) Clear() {
 	t.mutex.Lock()
-	t.grid.SetText("")
-	t.ensureSize(40, 100)
+	t.resizeGrid(TermRows, TermCols)
 	t.curRow = 0
 	t.curCol = 0
 	t.needsRefresh = true
 	t.mutex.Unlock()
 }
 
-// FUNGSI UTAMA: MENANGANI BYTES DENGAN UTF-8 DECODING
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	// Gabungkan sisa buffer lama dengan data baru
-	data := append(t.utf8Buffer, p...)
-	t.utf8Buffer = t.utf8Buffer[:0] // Kosongkan buffer
-
 	i := 0
-	for i < len(data) {
-		// 1. Cek apakah byte ini awal dari ESC Sequence
-		if !t.inEsc && data[i] == 0x1b {
+	for i < len(p) {
+		b := p[i]
+		
+		// 1. ESC Sequence Start
+		if !t.inEsc && b == 0x1b {
 			t.inEsc = true
 			t.escBuffer = t.escBuffer[:0]
 			i++
 			continue
 		}
 
-		// 2. Jika sedang dalam mode Escape (Color/Cursor)
+		// 2. Escape Parsing
 		if t.inEsc {
-			b := data[i]
 			t.escBuffer = append(t.escBuffer, b)
 			i++
-			
-			// Deteksi akhir sequence (huruf a-z, A-Z, @, `)
-			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '@' || b == '`' {
+			// Deteksi akhir sequence (huruf kapital/kecil)
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
 				t.handleCSI(t.escBuffer)
 				t.inEsc = false
 			}
-			if len(t.escBuffer) > 50 { t.inEsc = false } // Safety break
+			if len(t.escBuffer) > 20 { t.inEsc = false } // Safety
 			continue
 		}
 
-		// 3. Decode UTF-8 Rune (Perbaikan "â00")
-		r, size := utf8.DecodeRune(data[i:])
-		if r == utf8.RuneError && size == 1 {
-			// Jika byte tidak lengkap, simpan ke buffer untuk paket berikutnya
-			if len(data)-i < 4 { // Max UTF8 size is 4
-				t.utf8Buffer = append(t.utf8Buffer, data[i:]...)
-				break 
-			}
-			// Jika memang error, skip byte ini
-			i++ 
-			continue
-		}
-		
-		// Proses Rune yang valid
-		i += size
-		
-		switch r {
-		case '\n': t.curRow++
-		case '\r': t.curCol = 0
-		case '\b': if t.curCol > 0 { t.curCol-- }
-		case '\t': t.curCol += 4
-		case 0x07: // Bell
+		// 3. Normal Character / Control Char
+		switch b {
+		case '\n': 
+			t.curRow++
+			if t.curRow >= TermRows { t.curRow = TermRows - 1 } // Jangan nambah baris, tapi stay
+		case '\r': 
+			t.curCol = 0
+		case '\b': 
+			if t.curCol > 0 { t.curCol-- }
 		default:
+			// Decode Rune (UTF-8 simple)
+			r, size := utf8.DecodeRune(p[i:])
+			if r == utf8.RuneError { 
+				i++ 
+				continue 
+			}
+			i += size - 1 // loop akan nambah 1, jadi kurangi 1 disini
+			
 			t.setChar(r)
 			t.curCol++
 		}
+		i++
 	}
 	t.needsRefresh = true
 	return len(p), nil
 }
 
-// LOGIC WARNA & POSISI (SAMA TAPI DIOPTIMALKAN)
 func (t *Terminal) handleCSI(seq []byte) {
-	if len(seq) < 1 || seq[0] != '[' { return }
+	if len(seq) < 2 || seq[0] != '[' { return }
+	
 	cmd := seq[len(seq)-1]
 	paramsStr := string(seq[1 : len(seq)-1])
+	params := []int{}
 	
-	var params []int
-	if len(paramsStr) > 0 {
-		cleanParams := strings.TrimPrefix(paramsStr, "?")
-		for _, p := range strings.Split(cleanParams, ";") {
-			var val int
-			fmt.Sscanf(p, "%d", &val)
-			params = append(params, val)
-		}
-	} else { params = []int{0} }
+	// Parse parameters "31;1" -> [31, 1]
+	parts := strings.Split(paramsStr, ";")
+	for _, p := range parts {
+		var v int
+		fmt.Sscanf(p, "%d", &v)
+		params = append(params, v)
+	}
+	if len(params) == 0 { params = []int{0} }
 
-	getParam := func(idx, def int) int {
-		if idx < len(params) { if params[idx] == 0 { return def }; return params[idx] }
+	val := func(idx, def int) int {
+		if idx < len(params) { 
+			if params[idx] == 0 { return def }
+			return params[idx] 
+		}
 		return def
 	}
 
 	switch cmd {
-	case 'm': // Colors
-		for i := 0; i < len(params); i++ {
-			c := params[i]
-			switch c {
+	case 'm': // Color & Style
+		for _, code := range params {
+			switch code {
 			case 0: // Reset
 				t.curStyle.FGColor = color.White
 				t.curStyle.BGColor = color.Black
-				t.curStyle.TextStyle = fyne.TextStyle{Monospace: true}
+				t.curStyle.TextStyle.Bold = false
 			case 1: t.curStyle.TextStyle.Bold = true
-			case 30,31,32,33,34,35,36,37,90,91,92,93,94,95,96,97: 
-				t.curStyle.FGColor = ansiToColor(c)
-			case 39: t.curStyle.FGColor = color.White
-			case 40,41,42,43,44,45,46,47: 
-				t.curStyle.BGColor = ansiToColor(c-10)
-			case 49: t.curStyle.BGColor = color.Black
-			case 38, 48: // RGB Support (Simplifikasi)
-				if i+2 < len(params) && params[i+1] == 5 {
-					col := ansi256ToColor(params[i+2])
-					if c == 38 { t.curStyle.FGColor = col } else { t.curStyle.BGColor = col }
-					i += 2
-				}
+			// FG Colors
+			case 30: t.curStyle.FGColor = color.RGBA{128,128,128,255}
+			case 31: t.curStyle.FGColor = color.RGBA{255,100,100,255}
+			case 32: t.curStyle.FGColor = color.RGBA{100,255,100,255} // Green
+			case 33: t.curStyle.FGColor = color.RGBA{255,255,100,255} // Yellow
+			case 34: t.curStyle.FGColor = color.RGBA{100,100,255,255}
+			case 36: t.curStyle.FGColor = color.RGBA{0,255,255,255}
+			case 37: t.curStyle.FGColor = color.White
+			// BG Colors
+			case 40: t.curStyle.BGColor = color.Black
+			case 41: t.curStyle.BGColor = color.RGBA{200,50,50,255}
+			case 42: t.curStyle.BGColor = color.RGBA{50,200,50,255}
+			case 44: t.curStyle.BGColor = color.RGBA{50,50,200,255}
+			case 47: t.curStyle.BGColor = color.White
 			}
 		}
-	case 'H', 'f': // Cursor Pos
-		t.curRow = getParam(0, 1) - 1; t.curCol = getParam(1, 1) - 1
-		t.ensureSize(t.curRow+1, t.curCol+1)
-	case 'A': t.curRow -= getParam(0, 1); if t.curRow < 0 { t.curRow = 0 }
-	case 'B': t.curRow += getParam(0, 1); t.ensureSize(t.curRow+1, t.curCol)
-	case 'C': t.curCol += getParam(0, 1)
-	case 'D': t.curCol -= getParam(0, 1); if t.curCol < 0 { t.curCol = 0 }
-	case 'J': // Clear
-		if getParam(0, 0) == 2 {
-			t.grid.SetText(""); t.curRow = 0; t.curCol = 0
-			t.ensureSize(40, 100)
-		}
-	case 'K': // Clear Line
-		t.ensureSize(t.curRow+1, t.curCol+1)
-		rowCells := t.grid.Rows[t.curRow].Cells
-		if t.curCol < len(rowCells) {
-			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: rowCells[:t.curCol]})
-		}
-	}
-}
+	
+	case 'H', 'f': // Cursor Position [row;colH
+		r := val(0, 1) - 1
+		c := val(1, 1) - 1
+		t.curRow = r
+		t.curCol = c
+		// Bounds check
+		if t.curRow < 0 { t.curRow = 0 }
+		if t.curRow >= TermRows { t.curRow = TermRows - 1 }
+		if t.curCol < 0 { t.curCol = 0 }
+		if t.curCol >= TermCols { t.curCol = TermCols - 1 }
 
-func (t *Terminal) ensureSize(rows, cols int) {
-	for len(t.grid.Rows) <= rows {
-		t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}})
+	case 'J': // Clear Screen
+		mode := val(0, 0)
+		if mode == 2 {
+			t.resizeGrid(TermRows, TermCols) // Reset total
+			t.curRow = 0
+			t.curCol = 0
+		}
+	
+	case 'K': // Clear Line (Penting untuk anti-ghosting)
+		if t.curRow < len(t.grid.Rows) {
+			rowCells := t.grid.Rows[t.curRow].Cells
+			for x := t.curCol; x < len(rowCells); x++ {
+				rowCells[x] = widget.TextGridCell{Rune: ' ', Style: t.curStyle}
+			}
+			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: rowCells})
+		}
 	}
 }
 
 func (t *Terminal) setChar(r rune) {
-	t.ensureSize(t.curRow, t.curCol)
+	if t.curRow >= TermRows || t.curCol >= TermCols { return }
+	
 	rowCells := t.grid.Rows[t.curRow].Cells
 	
-	if t.curCol >= len(rowCells) {
-		newCells := make([]widget.TextGridCell, t.curCol+1)
-		copy(newCells, rowCells)
-		for i := len(rowCells); i < t.curCol; i++ { 
-			newCells[i] = widget.TextGridCell{Rune: ' ', Style: t.curStyle} 
-		}
-		rowCells = newCells
-	}
-	
-	styleCopy := *t.curStyle
-	// Paksa Monospace agar karakter TUI lebar nya sama
-	styleCopy.TextStyle.Monospace = true 
-	
-	rowCells[t.curCol] = widget.TextGridCell{Rune: r, Style: &styleCopy}
+	// Copy style untuk cell ini
+	style := *t.curStyle
+	style.TextStyle.Monospace = true // Paksa Monospace
+
+	rowCells[t.curCol] = widget.TextGridCell{Rune: r, Style: &style}
 	t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: rowCells})
-}
-
-// WARNA YANG LEBIH CERAH UNTUK TUI
-func ansiToColor(c int) color.Color {
-	switch c {
-	case 30, 90: return color.RGBA{100, 100, 100, 255}
-	case 31, 91: return color.RGBA{255, 85, 85, 255}
-	case 32, 92: return color.RGBA{80, 250, 123, 255}
-	case 33, 93: return color.RGBA{241, 250, 140, 255}
-	case 34, 94: return color.RGBA{189, 147, 249, 255}
-	case 35, 95: return color.RGBA{255, 121, 198, 255}
-	case 36, 96: return color.RGBA{139, 233, 253, 255}
-	case 37, 97: return color.White
-	default: return color.White
-	}
-}
-
-func ansi256ToColor(idx int) color.Color {
-	if idx < 16 { return ansiToColor(30 + idx) }
-	if idx == 232 { return color.Black }
-	if idx >= 232 && idx <= 255 {
-		gray := uint8((idx - 232) * 10 + 8)
-		return color.RGBA{gray, gray, gray, 255}
-	}
-	return color.White
-}
-
-/* ===============================
-   SYSTEM HELPERS
-================================ */
-func CheckRoot() bool {
-	cmd := exec.Command("su", "-c", "id -u")
-	out, err := cmd.Output()
-	if err != nil { return false }
-	return strings.TrimSpace(string(out)) == "0"
-}
-
-func CheckKernelDriver() bool {
-	signature := "read_physical_address"
-	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
-	return cmd.Run() == nil
-}
-
-func CheckSELinux() string {
-	cmd := exec.Command("su", "-c", "getenforce")
-	out, err := cmd.Output()
-	if err != nil { return "Unknown" }
-	return strings.TrimSpace(string(out))
-}
-
-func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
-	lbl := canvas.NewText(text, color)
-	lbl.TextSize = size; lbl.Alignment = fyne.TextAlignCenter
-	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
-	return lbl
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil { return err }
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil { return err }
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 /* ===============================
               MAIN UI
 ================================ */
+// Helper UI
+func createBtn(label string, icon fyne.Resource, action func()) *widget.Button {
+	b := widget.NewButtonWithIcon(label, icon, action)
+	return b
+}
+
+func checkRoot() bool {
+	return exec.Command("su", "-c", "id").Run() == nil
+}
+
 func main() {
 	a := app.New()
 	
-	// PENTING: SET CUSTOM THEME AGAR FONT MONOSPACE
-	a.Settings().SetTheme(&MyTheme{})
+	// SET TEMA GELAP
+	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("TANGSAN EXECUTOR (TUI FIXED)")
-	w.Resize(fyne.NewSize(400, 700))
-	w.SetMaster()
+	w := a.NewWindow("ULTIMATE EXECUTOR")
+	// Paksa Landscape di HP jika bisa, atau ukuran besar
+	w.Resize(fyne.NewSize(800, 500)) 
 
 	term := NewTerminal()
+	statusLbl := widget.NewLabel("Status: Ready")
+	statusLbl.Alignment = fyne.TextAlignCenter
+
+	// --- TOMBOL KONTROL (NAVIGASI TUI) ---
+	// Karena touch TUI susah, kita buat D-PAD Virtual
+	sendKey := func(data []byte) {
+		cmdMutex.Lock()
+		if activeStdin != nil { activeStdin.Write(data) }
+		cmdMutex.Unlock()
+	}
 	
-	go func() {
-		time.Sleep(1 * time.Second)
-		if !CheckRoot() { /* Auto Check */ }
-	}()
+	// Kode ANSI untuk Panah
+	btnUp := widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() { sendKey([]byte{0x1b, '[', 'A'}) })
+	btnDown := widget.NewButtonWithIcon("", theme.MoveDownIcon(), func() { sendKey([]byte{0x1b, '[', 'B'}) })
+	btnLeft := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() { sendKey([]byte{0x1b, '[', 'D'}) })
+	btnRight := widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() { sendKey([]byte{0x1b, '[', 'C'}) })
+	btnEnter := widget.NewButton("ENTER", func() { sendKey([]byte{'\n'}) })
+	btnEnter.Importance = widget.HighImportance
 
-	if !CheckRoot() { currentDir = "/sdcard" }
+	// Susunan Tombol Kontrol (Bawah Layar)
+	dpad := container.NewHBox(
+		layout.NewSpacer(),
+		btnLeft, 
+		container.NewVBox(btnUp, btnDown),
+		btnRight,
+		layout.NewSpacer(),
+		btnEnter,
+		layout.NewSpacer(),
+	)
 
-	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
-	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
-	silverColor := color.Gray{Y: 180}
-
-	input := widget.NewEntry()
-	input.SetPlaceHolder("Terminal Command...")
-	status := canvas.NewText("System: Ready", silverColor)
-	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
-
-	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
-	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
-	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
-	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
-	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
-	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
-
-	go func() {
-		time.Sleep(1 * time.Second)
-		for {
-			func() {
-				defer func() { if r := recover(); r != nil {} }()
-				if CheckRoot() {
-					lblSystemValue.Text = "GRANTED"; lblSystemValue.Color = successGreen
-				} else {
-					lblSystemValue.Text = "DENIED"; lblSystemValue.Color = failRed
-				}
-				lblSystemValue.Refresh()
-				
-				if CheckKernelDriver() {
-					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
-				} else {
-					lblKernelValue.Text = "MISSING"; lblKernelValue.Color = failRed
-				}
-				lblKernelValue.Refresh()
-				
-				se := CheckSELinux()
-				lblSELinuxValue.Text = strings.ToUpper(se)
-				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else if se == "Permissive" { lblSELinuxValue.Color = failRed } else { lblSELinuxValue.Color = color.Gray{Y: 150} }
-				lblSELinuxValue.Refresh()
-			}()
-			time.Sleep(3 * time.Second)
-		}
-	}()
-
+	// --- LOGIC EKSEKUSI ---
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
-		status.Text = "Status: Running TUI..."
-		status.Refresh()
-
+		statusLbl.SetText("Running...")
+		
 		go func() {
 			var cmd *exec.Cmd
-			isRoot := CheckRoot()
-
+			
+			// Setup Command (sama seperti sebelumnya)
 			if isScript {
-				if isRoot {
+				if checkRoot() {
 					target := "/data/local/tmp/temp_exec"
 					exec.Command("su", "-c", "rm -f "+target).Run()
 					exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", scriptPath, target, target)).Run()
-					if !isBinary { cmd = exec.Command("su", "-c", "sh "+target) } else { cmd = exec.Command("su", "-c", target) }
+					if isBinary {
+						cmd = exec.Command("su", "-c", target)
+					} else {
+						cmd = exec.Command("su", "-c", "sh "+target)
+					}
 				} else {
-					if !isBinary { cmd = exec.Command("sh", scriptPath) } else { cmd = exec.Command(scriptPath) }
+					cmd = exec.Command("sh", scriptPath)
 				}
 			} else {
-				if isRoot {
-					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
-				} else {
-					runCmd := cmdText
-					if strings.HasPrefix(cmdText, "ls") { if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) } }
-					if strings.HasPrefix(cmdText, "./") {
-						fileName := strings.TrimPrefix(cmdText, "./")
-						fullPath := filepath.Join(currentDir, fileName)
-						if strings.HasSuffix(fileName, ".sh") {
-							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
-						} else {
-							tmpBin := filepath.Join(os.TempDir(), fileName)
-							if err := copyFile(fullPath, tmpBin); err == nil { os.Chmod(tmpBin, 0755); runCmd = tmpBin } else { runCmd = fullPath }
-						}
-					}
-					cmd = exec.Command("sh", "-c", runCmd)
-					cmd.Dir = currentDir
-				}
+				// Command biasa
+				cmd = exec.Command("sh", "-c", cmdText)
 			}
 
-			// ENV untuk TUI
+			// ENV WAJIB UNTUK TUI
 			cmd.Env = append(os.Environ(), 
 				"TERM=xterm-256color",
 				"COLORTERM=truecolor",
-				"LANG=en_US.UTF-8",
 			)
 
+			// Start PTY
 			ptmx, err := pty.Start(cmd)
 			if err != nil {
-				status.Text = "Error"; status.Refresh(); return
+				statusLbl.SetText("Error: " + err.Error())
+				return
 			}
 
-			// UKURAN TERMINAL FIXED AGAR PAS
-			pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 100, X: 0, Y: 0})
+			// SET UKURAN PTY AGAR SAMA DENGAN GRID KITA
+			pty.Setsize(ptmx, &pty.Winsize{Rows: TermRows, Cols: TermCols, X: 0, Y: 0})
 
-			cmdMutex.Lock(); activeStdin = ptmx; cmdMutex.Unlock()
+			cmdMutex.Lock()
+			activeStdin = ptmx
+			cmdMutex.Unlock()
 
-			defer func() {
-				_ = ptmx.Close()
-				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
-				status.Text = "Status: Idle"; status.Refresh()
-				if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
-			}()
-
+			// Hubungkan Output PTY ke Terminal Widget kita
 			io.Copy(term, ptmx)
+
+			// Cleanup
 			cmd.Wait()
+			ptmx.Close()
+			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
+			statusLbl.SetText("Finished.")
 		}()
 	}
 
-	send := func() {
-		text := input.Text
-		input.SetText("")
-		cmdMutex.Lock()
-		if activeStdin != nil { activeStdin.Write([]byte(text + "\n")); cmdMutex.Unlock(); return }
-		cmdMutex.Unlock()
-		if strings.TrimSpace(text) == "" { return }
-		
-		if strings.HasPrefix(text, "cd") {
-			parts := strings.Fields(text)
-			newPath := currentDir
-			if len(parts) > 1 { newPath = filepath.Join(currentDir, parts[1]) }
-			if CheckRoot() { if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { currentDir = newPath } } 
-			term.Write([]byte(fmt.Sprintf("cd %s\n", newPath)))
-			return
-		}
-		executeTask(text, false, "", false)
-	}
-	input.OnSubmitted = func(_ string) { send() }
+	// File Picker
+	btnFile := widget.NewButtonWithIcon("OPEN FILE", theme.FileIcon(), func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err == nil && r != nil {
+				// Copy file ke temp
+				data, _ := io.ReadAll(r)
+				r.Close()
+				tmpPath := filepath.Join(os.TempDir(), r.URI().Name())
+				os.WriteFile(tmpPath, data, 0755)
+				
+				// Cek binary ELF
+				isBin := bytes.HasPrefix(data, []byte("\x7fELF"))
+				
+				// Jalankan
+				term.Clear()
+				executeTask("", true, tmpPath, isBin)
+			}
+		}, w).Show()
+	})
 
-	runFile := func(reader fyne.URIReadCloser) {
-		defer reader.Close(); term.Clear()
-		data, err := io.ReadAll(reader)
-		if err != nil { return }
-		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
-		tmpFile, err := os.CreateTemp("", "exec_tmp")
-		if err != nil { return }
-		tmpPath := tmpFile.Name(); tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
-		executeTask("", true, tmpPath, isBinary)
-	}
-
-	var overlayContainer *fyne.Container
-	
-	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
-		w.Canvas().Refresh(w.Content())
-		cancelLabel := "BATAL"; cancelFunc := func() { overlayContainer.Hide() }
-		if isForce { cancelLabel = "KELUAR"; cancelFunc = func() { os.Exit(0) } }
-		
-		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
-		btnCancel.Importance = widget.DangerImportance
-		btnOk := widget.NewButton(confirm, func() { if !isForce { overlayContainer.Hide() }; if action != nil { action() } })
-		if confirm == "COBA LAGI" { btnOk.Importance = widget.HighImportance } else { if isErr { btnOk.Importance = widget.DangerImportance } else { btnOk.Importance = widget.HighImportance } }
-		
-		btnBox := container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btnCancel), widget.NewLabel("   "), container.NewGridWrap(fyne.NewSize(110,40), btnOk), layout.NewSpacer())
-		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true); if isErr { lblTitle.Color = theme.ErrorColor() }
-		lblMsg := widget.NewLabel(msg); lblMsg.Alignment = fyne.TextAlignCenter; lblMsg.Wrapping = fyne.TextWrapWord
-		content := container.NewVBox(container.NewPadded(container.NewCenter(lblTitle)), container.NewPadded(lblMsg), widget.NewLabel(""), btnBox)
-		card := widget.NewCard("", "", container.NewPadded(content))
-		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
-		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
-		overlayContainer.Show(); overlayContainer.Refresh()
-	}
-
-	autoInstallKernel := func() {
+	btnClear := widget.NewButtonWithIcon("CLEAR", theme.ContentClearIcon(), func() {
 		term.Clear()
-		status.Text = "Sistem: Memproses..."
-		status.Refresh()
-		go func() {
-			targetKoPath := "/data/local/tmp/module_inject.ko"
-			defer func() { exec.Command("su", "-c", "rm -f "+targetKoPath).Run() }()
-			
-			term.Write([]byte("Checking Kernel...\n"))
-			out, _ := exec.Command("uname", "-r").Output()
-			targetVer := strings.Split(strings.TrimSpace(string(out)), "-")[0]
-			
-			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
-			if err != nil { term.Write([]byte("Zip Error\n")); return }
-			
-			var fileToExtract *zip.File
-			for _, f := range zipReader.File { if strings.Contains(f.Name, targetVer) && strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break } }
-			if fileToExtract == nil { term.Write([]byte("Driver not found\n")); return }
-			
-			rc, _ := fileToExtract.Open()
-			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
-			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
-			os.WriteFile(userTmp, buf.Bytes(), 0644)
-			exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", userTmp, targetKoPath, targetKoPath)).Run()
-			os.Remove(userTmp) 
-			
-			if exec.Command("su", "-c", "insmod "+targetKoPath).Run() == nil {
-				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
-			} else {
-				lblKernelValue.Text = "ERROR"; lblKernelValue.Color = failRed
-			}
-			lblKernelValue.Refresh(); status.Refresh()
-		}()
-	}
+	})
 
-	var checkUpdate func()
-	checkUpdate = func() {
-		overlayContainer.Hide()
-		time.Sleep(500 * time.Millisecond)
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
-		if err == nil && resp.StatusCode == 200 {
-			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
-			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
-				var cfg OnlineConfig
-				if json.Unmarshal(dec, &cfg) == nil && cfg.Version != "" && cfg.Version != AppVersion {
-					showModal("UPDATE", cfg.Message, "UPDATE", func() { if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } }, false, true)
-				} else { term.Write([]byte("\x1b[32m[V] Updated.\x1b[0m\n")) }
-			}
-		} else {
-			showModal("ERROR", "Connection Failed", "COBA LAGI", func() { go checkUpdate() }, true, true)
-		}
-	}
-	go func() { time.Sleep(1500 * time.Millisecond); checkUpdate() }()
+	// Layout Utama
+	topBar := container.NewVBox(
+		widget.NewLabelWithStyle("ULTIMATE EXECUTOR TUI", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		container.NewHBox(btnFile, layout.NewSpacer(), btnClear),
+		statusLbl,
+	)
 
-	titleText := createLabel("TANGSAN EXECUTOR", color.White, 16, true)
-	infoGrid := container.NewGridWithColumns(3, container.NewVBox(lblKernelTitle, lblKernelValue), container.NewVBox(lblSELinuxTitle, lblSELinuxValue), container.NewVBox(lblSystemTitle, lblSystemValue))
-	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { showModal("INJECT", "Inject Driver?", "MULAI", autoInstallKernel, false, false) })
-	btnInj.Importance = widget.HighImportance
-	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { go func() { if CheckSELinux() == "Enforcing" { exec.Command("su","-c","setenforce 0").Run() } else { exec.Command("su","-c","setenforce 1").Run() }; time.Sleep(100 * time.Millisecond); se := CheckSELinux(); lblSELinuxValue.Text = strings.ToUpper(se); if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else { lblSELinuxValue.Color = failRed }; lblSELinuxValue.Refresh() }() })
-	btnSel.Importance = widget.HighImportance
-	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { term.Clear() })
-	btnClr.Importance = widget.DangerImportance
-	
-	headerContent := container.NewVBox(container.NewPadded(titleText), container.NewPadded(infoGrid), container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), container.NewPadded(status), widget.NewSeparator())
-	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), headerContent)
+	// Container Terminal (Hitam Pekat)
+	termContainer := container.NewStack(
+		canvas.NewRectangle(color.Black), // Background Hitam
+		term.grid, // Grid Widget kita
+	)
 
-	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
-	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
-	
-	// BACKGROUND DIHILANGKAN AGAR TUI BERSIH (HANYA HITAM SOLID)
-	termBox := container.NewStack(canvas.NewRectangle(color.Black), term.scroll)
-	
-	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng}); fdImg.FillMode = canvas.ImageFillContain
-	fdBtn := widget.NewButton("", func() { dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { if r != nil { runFile(r) } }, w).Show() }); fdBtn.Importance = widget.LowImportance
-	fabWrapper := container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn))
-	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), fabWrapper)), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
+	// Struktur Layar
+	content := container.NewBorder(
+		topBar, // Atas
+		dpad,   // Bawah (Tombol Kontrol)
+		nil, nil,
+		termContainer, // Tengah
+	)
 
-	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
+	w.SetContent(content)
 	w.ShowAndRun()
 }
 
