@@ -33,14 +33,15 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM
+   CONFIG & SYSTEM
 ========================================== */
-const AppVersion = "1.1" // Performance Update
+const AppVersion = "1.1" // Ultra Performance
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// Scrollback lebih besar karena rendering sekarang lebih efisien
-const MaxScrollback = 1000 
+// BATAS BARIS (Penting agar HP tidak lag)
+// Hanya menyimpan 300 baris terakhir di layar
+const MaxScrollback = 300 
 
 var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
@@ -84,17 +85,22 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   HIGH PERFORMANCE TERMINAL LOGIC
+   ULTRA FAST TERMINAL (BUFFERED)
 ========================================== */
 type Terminal struct {
 	grid          *widget.TextGrid
 	scroll        *container.Scroll
+	
+	// Internal State
 	curRow        int
 	curCol        int
-	curStyle      widget.CustomTextGridStyle // Not a pointer anymore for safety
-	mutex         sync.Mutex
+	curStyle      widget.CustomTextGridStyle
+	
+	// Buffer Logic
+	incomingBuf   bytes.Buffer // Penampungan data mentah
+	bufMutex      sync.Mutex
 	reAnsi        *regexp.Regexp
-	needsRefresh  bool
+	
 	OnNavRequired func() 
 }
 
@@ -102,39 +108,177 @@ func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
 	
-	// Default Style
 	defStyle := widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
 
-	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	term := &Terminal{
-		grid:         g,
-		scroll:       container.NewScroll(g),
-		curRow:       0,
-		curCol:       0,
-		curStyle:     defStyle,
-		reAnsi:       re,
-		needsRefresh: false,
+		grid:     g,
+		scroll:   container.NewScroll(g),
+		curRow:   0,
+		curCol:   0,
+		curStyle: defStyle,
+		reAnsi:   regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
 	}
-	
-	// RENDERING LOOP (50ms = 20fps)
-	// Ini mencegah layar berkedip karena update terlalu cepat
+
+	// RENDERING LOOP (30 FPS)
+	// Ini memisahkan proses tulis data dengan proses gambar ke layar
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
 		defer ticker.Stop()
 		for range ticker.C {
-			term.mutex.Lock()
-			if term.needsRefresh {
-				term.grid.Refresh() // Batch Refresh
-				term.scroll.ScrollToBottom()
-				term.needsRefresh = false
-			}
-			term.mutex.Unlock()
+			term.processBatch()
 		}
 	}()
 	return term
+}
+
+// Fungsi Write hanya menyimpan data ke memori (Sangat Cepat)
+// Tidak menyentuh UI sama sekali
+func (t *Terminal) Write(p []byte) (int, error) {
+	t.bufMutex.Lock()
+	t.incomingBuf.Write(p)
+	t.bufMutex.Unlock()
+	
+	// Deteksi Navigasi (Ringan)
+	// Kita cek chunk kecil saja untuk keyword
+	if len(p) > 0 {
+		lowerRaw := strings.ToLower(string(p))
+		if strings.Contains(lowerRaw, "navigasi") || 
+		   strings.Contains(lowerRaw, "menu") || 
+		   strings.Contains(lowerRaw, "pilih") ||
+		   strings.Contains(lowerRaw, "arrow") {
+			if t.OnNavRequired != nil {
+				go t.OnNavRequired()
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (t *Terminal) Clear() {
+	t.bufMutex.Lock()
+	t.incomingBuf.Reset()
+	t.bufMutex.Unlock()
+	
+	// Operasi UI harus di main thread, tapi karena ini Clear, kita bisa langsung
+	t.grid.SetText("")
+	t.curRow = 0
+	t.curCol = 0
+}
+
+// Fungsi ini dipanggil oleh Ticker (Rendering Engine)
+func (t *Terminal) processBatch() {
+	t.bufMutex.Lock()
+	if t.incomingBuf.Len() == 0 {
+		t.bufMutex.Unlock()
+		return
+	}
+	// Ambil semua data yg menumpuk
+	data := t.incomingBuf.String()
+	t.incomingBuf.Reset()
+	t.bufMutex.Unlock()
+
+	// Parse ANSI dan Update TextGrid GridRows (Hanya data struct, bukan render visual)
+	t.parseAndApply(data)
+
+	// Trigger Render Visual ke Fyne (Hanya sekali per frame)
+	t.grid.Refresh()
+	t.scroll.ScrollToBottom()
+}
+
+func (t *Terminal) parseAndApply(raw string) {
+	// Normalisasi newline
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+
+	for len(raw) > 0 {
+		loc := t.reAnsi.FindStringIndex(raw)
+		if loc == nil {
+			t.appendString(raw)
+			break
+		}
+		if loc[0] > 0 {
+			t.appendString(raw[:loc[0]])
+		}
+		t.handleAnsiCode(raw[loc[0]:loc[1]])
+		raw = raw[loc[1]:]
+	}
+}
+
+func (t *Terminal) handleAnsiCode(codeSeq string) {
+	if len(codeSeq) < 3 { return }
+	content := codeSeq[2 : len(codeSeq)-1]
+	command := codeSeq[len(codeSeq)-1]
+	switch command {
+	case 'm':
+		parts := strings.Split(content, ";")
+		for _, part := range parts {
+			if part == "" || part == "0" {
+				t.curStyle.FGColor = theme.ForegroundColor()
+			} else {
+				t.curStyle.FGColor = ansiToColor(part)
+			}
+		}
+	case 'J':
+		if strings.Contains(content, "2") {
+			t.grid.Rows = []widget.TextGridRow{} // Wipe Rows
+			t.curRow = 0
+			t.curCol = 0
+		}
+	case 'H':
+		t.curRow = 0
+		t.curCol = 0
+	}
+}
+
+func (t *Terminal) appendString(text string) {
+	for _, char := range text {
+		if char == '\n' {
+			t.curRow++
+			t.curCol = 0
+			// MEMORY PROTECTION: Hapus baris lama jika melebihi batas
+			if len(t.grid.Rows) > MaxScrollback {
+				// Hapus 50 baris sekaligus biar tidak sering resize array
+				excess := len(t.grid.Rows) - MaxScrollback
+				if excess > 0 {
+					// Geser slice
+					t.grid.Rows = t.grid.Rows[excess:]
+					t.curRow -= excess
+					if t.curRow < 0 { t.curRow = 0 }
+				}
+			}
+			continue
+		}
+		if char == '\r' {
+			t.curCol = 0
+			continue
+		}
+
+		// Auto-expand Rows
+		for t.curRow >= len(t.grid.Rows) {
+			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{})
+		}
+
+		// Auto-expand Cells di Row saat ini
+		row := &t.grid.Rows[t.curRow]
+		if t.curCol >= len(row.Cells) {
+			// Pre-allocate chunk kecil untuk efisiensi
+			newCells := make([]widget.TextGridCell, t.curCol+5) 
+			copy(newCells, row.Cells)
+			row.Cells = newCells
+			// Potong ke ukuran pas nanti (atau biarkan len menghandle)
+			row.Cells = row.Cells[:t.curCol+1] 
+		}
+
+		// Set cell
+		styleCopy := t.curStyle // Copy by value
+		row.Cells[t.curCol] = widget.TextGridCell{
+			Rune:  char,
+			Style: &styleCopy,
+		}
+		t.curCol++
+	}
 }
 
 func ansiToColor(code string) color.Color {
@@ -155,132 +299,12 @@ func ansiToColor(code string) color.Color {
 	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
 	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
 	case "97": return color.White
-	default: return nil
-	}
-}
-
-func (t *Terminal) Clear() {
-	t.mutex.Lock()
-	t.grid.SetText("")
-	t.curRow = 0; t.curCol = 0
-	t.needsRefresh = true
-	t.mutex.Unlock()
-}
-
-func (t *Terminal) Write(p []byte) (int, error) {
-	// Lock data structure segera
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	raw := string(p)
-
-	// Deteksi Navigasi (tetap jalan)
-	lowerRaw := strings.ToLower(raw)
-	if strings.Contains(lowerRaw, "navigasi") || 
-	   strings.Contains(lowerRaw, "menu") || 
-	   strings.Contains(lowerRaw, "pilih") || 
-	   strings.Contains(lowerRaw, "select") ||
-	   strings.Contains(lowerRaw, "arrow") {
-		if t.OnNavRequired != nil {
-			go t.OnNavRequired()
-		}
-	}
-
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	
-	// Parsing Loop
-	for len(raw) > 0 {
-		loc := t.reAnsi.FindStringIndex(raw)
-		if loc == nil { 
-			t.printTextFast(raw)
-			break 
-		}
-		if loc[0] > 0 { 
-			t.printTextFast(raw[:loc[0]]) 
-		}
-		t.handleAnsiCode(raw[loc[0]:loc[1]])
-		raw = raw[loc[1]:]
-	}
-	
-	// Tandai butuh refresh, tapi jangan refresh di sini (biar Ticker yang kerja)
-	t.needsRefresh = true
-	return len(p), nil
-}
-
-func (t *Terminal) handleAnsiCode(codeSeq string) {
-	if len(codeSeq) < 3 { return }
-	content := codeSeq[2 : len(codeSeq)-1]
-	command := codeSeq[len(codeSeq)-1]
-	switch command {
-	case 'm':
-		parts := strings.Split(content, ";")
-		for _, part := range parts {
-			if part == "" || part == "0" { 
-				t.curStyle.FGColor = theme.ForegroundColor() 
-			} else { 
-				col := ansiToColor(part)
-				if col != nil { t.curStyle.FGColor = col } 
-			}
-		}
-	case 'J':
-		if strings.Contains(content, "2") { 
-			// Clear screen tanpa SetText("") untuk menghindari flash putih/kosong
-			t.grid.Rows = []widget.TextGridRow{} // Reset slice langsung
-			t.curRow = 0
-			t.curCol = 0
-		}
-	case 'H': 
-		t.curRow = 0
-		t.curCol = 0
-	}
-}
-
-// FUNGSI INI ADALAH KUNCI PERFORMANYA
-// Kita tidak menggunakan SetCell, tapi memodifikasi array Rows langsung
-func (t *Terminal) printTextFast(text string) {
-	for _, char := range text {
-		if char == '\n' { 
-			t.curRow++
-			t.curCol = 0
-			// Scrollback limiter
-			if len(t.grid.Rows) > MaxScrollback { 
-				t.grid.Rows = t.grid.Rows[1:]
-				t.curRow-- 
-			}
-			continue 
-		}
-		if char == '\r' { 
-			t.curCol = 0
-			continue 
-		}
-
-		// 1. Pastikan Baris (Row) tersedia
-		for t.curRow >= len(t.grid.Rows) {
-			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{})
-		}
-
-		// 2. Pastikan Kolom (Cell) tersedia di baris tersebut
-		currentRow := &t.grid.Rows[t.curRow] // Ambil pointer ke row
-		if t.curCol >= len(currentRow.Cells) {
-			// Extend slice manual lebih cepat daripada SetRow berulang kali
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, currentRow.Cells)
-			currentRow.Cells = newCells
-		}
-
-		// 3. Set Cell langsung ke memori (Sangat Cepat)
-		// Kita COPY stylenya, bukan pakai pointer, agar warna tidak berubah belakangan
-		thisStyle := t.curStyle 
-		currentRow.Cells[t.curCol] = widget.TextGridCell{
-			Rune: char,
-			Style: &thisStyle, 
-		}
-		t.curCol++
+	default: return theme.ForegroundColor()
 	}
 }
 
 /* ===============================
-   SYSTEM HELPERS (SAMA SEPERTI SEBELUMNYA)
+   SYSTEM HELPERS
 ================================ */
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
@@ -429,22 +453,50 @@ func main() {
 				}
 			}
 
+			// OPTIMASI: Buffer output command sebelum masuk ke terminal
+			// Kita tidak mau write byte-per-byte
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			stdin, _ := cmd.StdinPipe()
-			stdout, _ := cmd.StdoutPipe()
-			stderr, _ := cmd.StderrPipe()
-			cmdMutex.Lock(); activeStdin = stdin; cmdMutex.Unlock()
+			
+			// Custom Pipes
+			prOut, pwOut := io.Pipe()
+			prErr, pwErr := io.Pipe()
+			cmd.Stdout = pwOut
+			cmd.Stderr = pwErr
+			
+			// Buat Goroutine khusus untuk membaca pipe
+			// Ini agar pembacaan tidak memblokir dan bisa mengirim chunk besar ke Terminal
+			copyToTerm := func(r io.Reader) {
+				buf := make([]byte, 4096) // Buffer 4KB
+				for {
+					n, err := r.Read(buf)
+					if n > 0 {
+						term.Write(buf[:n]) // Kirim chunk ke terminal
+					}
+					if err != nil { break }
+				}
+			}
+
+			cmd.Stdin = nil // Setup stdin nanti
+			stdinPipe, _ := cmd.StdinPipe()
+			cmdMutex.Lock(); activeStdin = stdinPipe; cmdMutex.Unlock()
 
 			if err := cmd.Start(); err != nil {
 				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
 				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
 				return
 			}
+			
 			var wg sync.WaitGroup
 			wg.Add(2)
-			go func() { defer wg.Done(); io.Copy(term, stdout) }()
-			go func() { defer wg.Done(); io.Copy(term, stderr) }()
-			wg.Wait(); cmd.Wait()
+			go func() { defer wg.Done(); copyToTerm(prOut) }()
+			go func() { defer wg.Done(); copyToTerm(prErr) }()
+			
+			wg.Wait()
+			cmd.Wait()
+			
+			pwOut.Close()
+			pwErr.Close()
+
 			cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
 			status.Text = "Status: Idle"; status.Refresh()
 			if isScript && isRoot { exec.Command("su", "-c", "rm -f /data/local/tmp/temp_exec").Run() }
