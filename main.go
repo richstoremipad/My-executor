@@ -36,7 +36,7 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.3" // Versi Fix TUI & UTF8
+const AppVersion = "1.1" // Versi Fix TUI & UTF8
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 const MaxScrollback = 100 
