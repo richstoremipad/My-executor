@@ -39,7 +39,6 @@ const AppVersion = "1.1" // Updated Version
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// BATAS MAX BARIS AGAR TIDAK LEMOT/CRASH
 const MaxScrollback = 100
 
 var currentDir string = "/sdcard"
@@ -95,7 +94,7 @@ type Terminal struct {
 	mutex         sync.Mutex
 	reAnsi        *regexp.Regexp
 	needsRefresh  bool
-	OnNavRequired func() // Callback untuk memunculkan Navigasi
+	OnNavRequired func() 
 }
 
 func NewTerminal() *Terminal {
@@ -166,7 +165,6 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	raw := string(p)
 
 	// DETEKSI OTOMATIS NAVIGASI
-	// Jika output mengandung kata kunci ini, panggil callback untuk memunculkan tombol
 	lowerRaw := strings.ToLower(raw)
 	if strings.Contains(lowerRaw, "navigasi") || 
 	   strings.Contains(lowerRaw, "menu") || 
@@ -423,7 +421,7 @@ func main() {
 	input.OnSubmitted = func(_ string) { send() }
 
 	/* =======================================
-	   NAVIGASI CONTROLLER (NEW FEATURE)
+	   NAVIGASI CONTROLLER (FLOATING UPDATE)
 	   ======================================= */
 	sendKey := func(data string) {
 		cmdMutex.Lock()
@@ -433,38 +431,56 @@ func main() {
 		}
 	}
 
-	// Layout Tombol Navigasi
-	// Up: \x1b[A, Down: \x1b[B, Enter: \n, Q: q
+	// Buat container melayang (Floating)
+	var navFloatContainer *fyne.Container
+
 	btnUp := widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() { sendKey("\x1b[A") })
 	btnDown := widget.NewButtonWithIcon("", theme.MoveDownIcon(), func() { sendKey("\x1b[B") })
 	btnEnter := widget.NewButton("ENTER", func() { sendKey("\n") })
 	btnQ := widget.NewButton("Q", func() { sendKey("q") })
 	
-	// Container Tombol Navigasi (Awalnya Hidden)
-	navContainer := container.NewVBox(
-		container.NewGridWithColumns(4, 
-			btnQ,
-			btnUp, 
-			btnDown, 
-			btnEnter,
-		),
-		widget.NewSeparator(),
-	)
-	navContainer.Hide() // Sembunyikan saat start
-
-	// Tombol Tutup Navigasi Manual (Kecil di pojok container nav)
+	// Tombol Close (X) - Digabung dalam baris yang sama
 	btnCloseNav := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
-		navContainer.Hide()
+		navFloatContainer.Hide()
 	})
-	btnCloseNav.Importance = widget.LowImportance
-	
-	// Re-Assemble Nav Container dengan tombol close
-	navFull := container.NewBorder(nil, nil, nil, btnCloseNav, navContainer)
+	btnCloseNav.Importance = widget.DangerImportance // Merah agar terlihat sebagai tombol tutup
 
-	// Callback dari Terminal untuk memunculkan Nav
+	// Baris Tombol: Q, UP, DOWN, ENTER, X
+	// Kita gunakan GridWithColumns agar rapi
+	navButtons := container.NewGridWithColumns(5,
+		btnQ,
+		btnUp, 
+		btnDown, 
+		btnEnter,
+		btnCloseNav, // Masuk dalam grid yang sama
+	)
+
+	// Background semi-transparan untuk navigasi
+	navBg := canvas.NewRectangle(color.RGBA{R: 30, G: 30, B: 30, A: 230})
+	navBg.CornerRadius = 8 // Sedikit melengkung
+
+	// Stack Background + Tombol
+	navStack := container.NewStack(navBg, container.NewPadded(navButtons))
+
+	// Container Utama yang Melayang
+	// Menggunakan VBox dengan Spacer di atasnya untuk mendorong ke bawah
+	// Dan Spacer di bawahnya sedikit agar tidak menimpa Input Field
+	navFloatContainer = container.NewVBox(
+		layout.NewSpacer(), // Dorong ke bawah
+		container.NewHBox(
+			layout.NewSpacer(), // Dorong ke tengah horizontal
+			container.NewGridWrap(fyne.NewSize(380, 50), navStack), // Ukuran Nav Bar
+			layout.NewSpacer(),
+		),
+		widget.NewLabel(" "), // Spacer: Beri jarak dari input field paling bawah
+		widget.NewLabel(" "), 
+	)
+	navFloatContainer.Hide() // Default Sembunyi
+
+	// Callback dari Terminal
 	term.OnNavRequired = func() {
-		navContainer.Show()
-		navContainer.Refresh()
+		navFloatContainer.Show()
+		navFloatContainer.Refresh()
 	}
 
 	runFile := func(reader fyne.URIReadCloser) {
@@ -578,9 +594,8 @@ func main() {
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
 	
-	// Bottom Area sekarang berisi Navigasi juga
+	// Bottom Area hanya berisi Footer dan Input
 	bottomArea := container.NewVBox(
-		navFull, // Container Navigasi yang auto-muncul
 		container.NewPadded(cpyLbl), 
 		container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)),
 	)
@@ -593,7 +608,18 @@ func main() {
 	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), fabWrapper)), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
 
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(header, bottomArea, nil, nil, termBox), fab, overlayContainer))
+	
+	// SUSUN LAYOUT UTAMA:
+	// 1. Layer Dasar: Border(Header, Bottom, TermBox)
+	// 2. Layer Floating 1: FAB (Tombol Folder)
+	// 3. Layer Floating 2: Navigasi (navFloatContainer) -> Ini akan muncul di tengah bawah
+	// 4. Layer Overlay: Popup Modal
+	w.SetContent(container.NewStack(
+		container.NewBorder(header, bottomArea, nil, nil, termBox), 
+		fab, 
+		navFloatContainer, // Masukkan navigasi sebagai layer floating
+		overlayContainer,
+	))
 	w.ShowAndRun()
 }
 
