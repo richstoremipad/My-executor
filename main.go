@@ -35,7 +35,7 @@ import (
 /* ==========================================
    CONFIG & VARIABLES
 ========================================== */
-const AppVersion = "2.2-FIXED"
+const AppVersion = "1.1"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
