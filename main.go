@@ -35,11 +35,12 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.1" // Updated Version
+const AppVersion = "1.4" // Performance Update
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-const MaxScrollback = 100
+// Scrollback lebih besar karena rendering sekarang lebih efisien
+const MaxScrollback = 1000 
 
 var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
@@ -83,14 +84,14 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC
+   HIGH PERFORMANCE TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
 	grid          *widget.TextGrid
 	scroll        *container.Scroll
 	curRow        int
 	curCol        int
-	curStyle      *widget.CustomTextGridStyle
+	curStyle      widget.CustomTextGridStyle // Not a pointer anymore for safety
 	mutex         sync.Mutex
 	reAnsi        *regexp.Regexp
 	needsRefresh  bool
@@ -100,10 +101,13 @@ type Terminal struct {
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
-	defStyle := &widget.CustomTextGridStyle{
+	
+	// Default Style
+	defStyle := widget.CustomTextGridStyle{
 		FGColor: theme.ForegroundColor(),
 		BGColor: color.Transparent,
 	}
+
 	re := regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`)
 	term := &Terminal{
 		grid:         g,
@@ -114,12 +118,16 @@ func NewTerminal() *Terminal {
 		reAnsi:       re,
 		needsRefresh: false,
 	}
+	
+	// RENDERING LOOP (50ms = 20fps)
+	// Ini mencegah layar berkedip karena update terlalu cepat
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
 		for range ticker.C {
 			term.mutex.Lock()
 			if term.needsRefresh {
-				term.grid.Refresh()
+				term.grid.Refresh() // Batch Refresh
 				term.scroll.ScrollToBottom()
 				term.needsRefresh = false
 			}
@@ -160,11 +168,13 @@ func (t *Terminal) Clear() {
 }
 
 func (t *Terminal) Write(p []byte) (int, error) {
+	// Lock data structure segera
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
 	raw := string(p)
 
-	// DETEKSI OTOMATIS NAVIGASI
+	// Deteksi Navigasi (tetap jalan)
 	lowerRaw := strings.ToLower(raw)
 	if strings.Contains(lowerRaw, "navigasi") || 
 	   strings.Contains(lowerRaw, "menu") || 
@@ -177,13 +187,22 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	}
 
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	
+	// Parsing Loop
 	for len(raw) > 0 {
 		loc := t.reAnsi.FindStringIndex(raw)
-		if loc == nil { t.printText(raw); break }
-		if loc[0] > 0 { t.printText(raw[:loc[0]]) }
+		if loc == nil { 
+			t.printTextFast(raw)
+			break 
+		}
+		if loc[0] > 0 { 
+			t.printTextFast(raw[:loc[0]]) 
+		}
 		t.handleAnsiCode(raw[loc[0]:loc[1]])
 		raw = raw[loc[1]:]
 	}
+	
+	// Tandai butuh refresh, tapi jangan refresh di sini (biar Ticker yang kerja)
 	t.needsRefresh = true
 	return len(p), nil
 }
@@ -196,38 +215,72 @@ func (t *Terminal) handleAnsiCode(codeSeq string) {
 	case 'm':
 		parts := strings.Split(content, ";")
 		for _, part := range parts {
-			if part == "" || part == "0" { t.curStyle.FGColor = theme.ForegroundColor() } else { col := ansiToColor(part); if col != nil { t.curStyle.FGColor = col } }
+			if part == "" || part == "0" { 
+				t.curStyle.FGColor = theme.ForegroundColor() 
+			} else { 
+				col := ansiToColor(part)
+				if col != nil { t.curStyle.FGColor = col } 
+			}
 		}
 	case 'J':
-		if strings.Contains(content, "2") { t.grid.SetText(""); t.curRow = 0; t.curCol = 0 }
-	case 'H': t.curRow = 0; t.curCol = 0
+		if strings.Contains(content, "2") { 
+			// Clear screen tanpa SetText("") untuk menghindari flash putih/kosong
+			t.grid.Rows = []widget.TextGridRow{} // Reset slice langsung
+			t.curRow = 0
+			t.curCol = 0
+		}
+	case 'H': 
+		t.curRow = 0
+		t.curCol = 0
 	}
 }
 
-func (t *Terminal) printText(text string) {
+// FUNGSI INI ADALAH KUNCI PERFORMANYA
+// Kita tidak menggunakan SetCell, tapi memodifikasi array Rows langsung
+func (t *Terminal) printTextFast(text string) {
 	for _, char := range text {
 		if char == '\n' { 
 			t.curRow++
 			t.curCol = 0
-			if len(t.grid.Rows) > MaxScrollback { t.grid.Rows = t.grid.Rows[1:]; t.curRow-- }
+			// Scrollback limiter
+			if len(t.grid.Rows) > MaxScrollback { 
+				t.grid.Rows = t.grid.Rows[1:]
+				t.curRow-- 
+			}
 			continue 
 		}
-		if char == '\r' { t.curCol = 0; continue }
-		for t.curRow >= len(t.grid.Rows) { t.grid.SetRow(len(t.grid.Rows), widget.TextGridRow{Cells: []widget.TextGridCell{}}) }
-		rowCells := t.grid.Rows[t.curRow].Cells
-		if t.curCol >= len(rowCells) {
-			newCells := make([]widget.TextGridCell, t.curCol+1)
-			copy(newCells, rowCells)
-			t.grid.SetRow(t.curRow, widget.TextGridRow{Cells: newCells})
+		if char == '\r' { 
+			t.curCol = 0
+			continue 
 		}
-		cellStyle := *t.curStyle
-		t.grid.SetCell(t.curRow, t.curCol, widget.TextGridCell{Rune: char, Style: &cellStyle})
+
+		// 1. Pastikan Baris (Row) tersedia
+		for t.curRow >= len(t.grid.Rows) {
+			t.grid.Rows = append(t.grid.Rows, widget.TextGridRow{})
+		}
+
+		// 2. Pastikan Kolom (Cell) tersedia di baris tersebut
+		currentRow := &t.grid.Rows[t.curRow] // Ambil pointer ke row
+		if t.curCol >= len(currentRow.Cells) {
+			// Extend slice manual lebih cepat daripada SetRow berulang kali
+			newCells := make([]widget.TextGridCell, t.curCol+1)
+			copy(newCells, currentRow.Cells)
+			currentRow.Cells = newCells
+		}
+
+		// 3. Set Cell langsung ke memori (Sangat Cepat)
+		// Kita COPY stylenya, bukan pakai pointer, agar warna tidak berubah belakangan
+		thisStyle := t.curStyle 
+		currentRow.Cells[t.curCol] = widget.TextGridCell{
+			Rune: char,
+			Style: &thisStyle, 
+		}
 		t.curCol++
 	}
 }
 
 /* ===============================
-   SYSTEM HELPERS
+   SYSTEM HELPERS (SAMA SEPERTI SEBELUMNYA)
 ================================ */
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
@@ -421,7 +474,7 @@ func main() {
 	input.OnSubmitted = func(_ string) { send() }
 
 	/* =======================================
-	   NAVIGASI CONTROLLER (FLOATING UPDATE)
+	   NAVIGASI CONTROLLER (FLOATING)
 	   ======================================= */
 	sendKey := func(data string) {
 		cmdMutex.Lock()
@@ -431,7 +484,6 @@ func main() {
 		}
 	}
 
-	// Buat container melayang (Floating)
 	var navFloatContainer *fyne.Container
 
 	btnUp := widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() { sendKey("\x1b[A") })
@@ -439,45 +491,36 @@ func main() {
 	btnEnter := widget.NewButton("ENTER", func() { sendKey("\n") })
 	btnQ := widget.NewButton("Q", func() { sendKey("q") })
 	
-	// Tombol Close (X) - Digabung dalam baris yang sama
 	btnCloseNav := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
 		navFloatContainer.Hide()
 	})
-	btnCloseNav.Importance = widget.DangerImportance // Merah agar terlihat sebagai tombol tutup
+	btnCloseNav.Importance = widget.DangerImportance 
 
-	// Baris Tombol: Q, UP, DOWN, ENTER, X
-	// Kita gunakan GridWithColumns agar rapi
 	navButtons := container.NewGridWithColumns(5,
 		btnQ,
 		btnUp, 
 		btnDown, 
 		btnEnter,
-		btnCloseNav, // Masuk dalam grid yang sama
+		btnCloseNav, 
 	)
 
-	// Background semi-transparan untuk navigasi
 	navBg := canvas.NewRectangle(color.RGBA{R: 30, G: 30, B: 30, A: 230})
-	navBg.CornerRadius = 8 // Sedikit melengkung
+	navBg.CornerRadius = 8 
 
-	// Stack Background + Tombol
 	navStack := container.NewStack(navBg, container.NewPadded(navButtons))
 
-	// Container Utama yang Melayang
-	// Menggunakan VBox dengan Spacer di atasnya untuk mendorong ke bawah
-	// Dan Spacer di bawahnya sedikit agar tidak menimpa Input Field
 	navFloatContainer = container.NewVBox(
-		layout.NewSpacer(), // Dorong ke bawah
+		layout.NewSpacer(), 
 		container.NewHBox(
-			layout.NewSpacer(), // Dorong ke tengah horizontal
-			container.NewGridWrap(fyne.NewSize(380, 50), navStack), // Ukuran Nav Bar
+			layout.NewSpacer(), 
+			container.NewGridWrap(fyne.NewSize(380, 50), navStack), 
 			layout.NewSpacer(),
 		),
-		widget.NewLabel(" "), // Spacer: Beri jarak dari input field paling bawah
+		widget.NewLabel(" "), 
 		widget.NewLabel(" "), 
 	)
-	navFloatContainer.Hide() // Default Sembunyi
+	navFloatContainer.Hide() 
 
-	// Callback dari Terminal
 	term.OnNavRequired = func() {
 		navFloatContainer.Show()
 		navFloatContainer.Refresh()
@@ -594,7 +637,6 @@ func main() {
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
 	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
 	
-	// Bottom Area hanya berisi Footer dan Input
 	bottomArea := container.NewVBox(
 		container.NewPadded(cpyLbl), 
 		container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)),
@@ -609,15 +651,10 @@ func main() {
 
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
 	
-	// SUSUN LAYOUT UTAMA:
-	// 1. Layer Dasar: Border(Header, Bottom, TermBox)
-	// 2. Layer Floating 1: FAB (Tombol Folder)
-	// 3. Layer Floating 2: Navigasi (navFloatContainer) -> Ini akan muncul di tengah bawah
-	// 4. Layer Overlay: Popup Modal
 	w.SetContent(container.NewStack(
 		container.NewBorder(header, bottomArea, nil, nil, termBox), 
 		fab, 
-		navFloatContainer, // Masukkan navigasi sebagai layer floating
+		navFloatContainer,
 		overlayContainer,
 	))
 	w.ShowAndRun()
