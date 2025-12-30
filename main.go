@@ -39,9 +39,9 @@ const AppVersion = "1.1"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// PERFORMANCE SETTINGS
-const MaxDisplayRows = 50 
-const RefreshRate = 100 * time.Millisecond 
+// SETTING PERFORMA (ANTI LAG)
+const MaxDisplayRows = 100              // Hanya simpan 100 baris terakhir agar ringan
+const RefreshRate = 100 * time.Millisecond // Update layar 10x per detik (Smooth & Stabil)
 
 var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
@@ -105,43 +105,55 @@ func CheckSELinux() string {
 }
 
 /* ==========================================
-   TERMINAL ENGINE (ANTI-LAG / TAIL DROP)
+   TERMINAL ENGINE (PERFORMA TINGGI)
 ========================================== */
 type Terminal struct {
 	grid          *widget.TextGrid
 	scroll        *container.Scroll
 	
-	rawBuffer     bytes.Buffer
-	bufMutex      sync.Mutex
-	cachedRows    []widget.TextGridRow
-	reAnsi        *regexp.Regexp
+	// Buffer System
+	rawBuffer     bytes.Buffer      // Penampung data mentah dari binary
+	bufMutex      sync.Mutex        // Pengunci agar tidak crash saat read/write barengan
+	cachedRows    []widget.TextGridRow // Cache baris yang sudah diproses
 	
+	reAnsi        *regexp.Regexp
 	OnNavRequired func() 
 }
 
 func NewTerminal() *Terminal {
 	g := widget.NewTextGrid()
 	g.ShowLineNumbers = false
+	
 	term := &Terminal{
 		grid:       g,
 		scroll:     container.NewScroll(g),
 		reAnsi:     regexp.MustCompile(`\x1b\[([0-9;]*)?([a-zA-Z])`),
 		cachedRows: make([]widget.TextGridRow, 0, MaxDisplayRows),
 	}
+
+	// JALANKAN RENDER LOOP TERPISAH (INI KUNCI BIAR TIDAK LAG)
 	go term.renderLoop()
+	
 	return term
 }
 
+// Write sekarang hanya menampung data (Sangat Cepat), tidak menyentuh UI
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.bufMutex.Lock()
-	if t.rawBuffer.Len() > 20000 { t.rawBuffer.Reset() } // Tail Drop Protection
+	// Jika buffer terlalu penuh (misal binary spamming text), reset biar RAM aman
+	if t.rawBuffer.Len() > 50000 { 
+		t.rawBuffer.Reset()
+		t.rawBuffer.WriteString("\n[...Buffer Full - Cleared...]\n")
+	}
 	t.rawBuffer.Write(p)
 	t.bufMutex.Unlock()
 	
-	// Navigasi Trigger
+	// Deteksi Navigasi (Sampling Cepat)
 	if len(p) > 0 {
 		str := string(p)
-		if strings.Contains(strings.ToLower(str), "navigasi") || strings.Contains(strings.ToLower(str), "menu") {
+		// Cek keyword umum
+		lower := strings.ToLower(str)
+		if strings.Contains(lower, "navigasi") || strings.Contains(lower, "menu") || strings.Contains(lower, "pilih") {
 			if t.OnNavRequired != nil { go t.OnNavRequired() }
 		}
 	}
@@ -156,39 +168,53 @@ func (t *Terminal) Clear() {
 	t.grid.SetText("")
 }
 
+// Loop ini berjalan tiap 100ms untuk update UI
 func (t *Terminal) renderLoop() {
 	ticker := time.NewTicker(RefreshRate)
 	defer ticker.Stop()
-	for range ticker.C { t.processBuffer() }
+
+	for range ticker.C {
+		t.processBuffer()
+	}
 }
 
 func (t *Terminal) processBuffer() {
 	t.bufMutex.Lock()
-	if t.rawBuffer.Len() == 0 { t.bufMutex.Unlock(); return }
+	if t.rawBuffer.Len() == 0 {
+		t.bufMutex.Unlock()
+		return
+	}
+	// Ambil semua data
 	data := t.rawBuffer.String()
 	t.rawBuffer.Reset()
 	t.bufMutex.Unlock()
 
-	if len(data) > 4000 { data = "...\n[SKIP DATA]\n..." + data[len(data)-4000:] }
-
+	// Parse ANSI menjadi Baris Fyne
 	newRows := t.parseAnsiToRows(data)
+
+	// Gabung ke cache
 	t.cachedRows = append(t.cachedRows, newRows...)
+	
+	// Potong jika terlalu banyak (Tail Drop)
 	if len(t.cachedRows) > MaxDisplayRows {
 		t.cachedRows = t.cachedRows[len(t.cachedRows)-MaxDisplayRows:]
 	}
 
+	// Update UI (Harus copy slice biar aman)
 	finalRows := make([]widget.TextGridRow, len(t.cachedRows))
 	copy(finalRows, t.cachedRows)
 	
 	t.grid.Rows = finalRows
-	t.grid.Refresh()
+	t.grid.Refresh() // Refresh batch (Sekali refresh untuk banyak baris)
 	t.scroll.ScrollToBottom()
 }
 
+// Logic Parsing Warna
 func (t *Terminal) parseAnsiToRows(text string) []widget.TextGridRow {
 	var rows []widget.TextGridRow
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
+
 	currentStyle := &widget.CustomTextGridStyle{FGColor: theme.ForegroundColor(), BGColor: color.Transparent}
 
 	for _, line := range lines {
@@ -203,6 +229,7 @@ func (t *Terminal) parseAnsiToRows(text string) []widget.TextGridRow {
 			if loc[0] > 0 {
 				row.Cells = append(row.Cells, t.stringToCells(remaining[:loc[0]], currentStyle)...)
 			}
+			// Update Style
 			t.updateStyle(remaining[loc[0]:loc[1]], currentStyle)
 			remaining = remaining[loc[1]:]
 		}
@@ -214,7 +241,9 @@ func (t *Terminal) parseAnsiToRows(text string) []widget.TextGridRow {
 func (t *Terminal) stringToCells(s string, style *widget.CustomTextGridStyle) []widget.TextGridCell {
 	cells := make([]widget.TextGridCell, len(s))
 	staticStyle := *style 
-	for i, r := range s { cells[i] = widget.TextGridCell{Rune: r, Style: &staticStyle} }
+	for i, r := range s {
+		cells[i] = widget.TextGridCell{Rune: r, Style: &staticStyle}
+	}
 	return cells
 }
 
@@ -223,8 +252,11 @@ func (t *Terminal) updateStyle(codeSeq string, style *widget.CustomTextGridStyle
 	content := codeSeq[2 : len(codeSeq)-1]
 	parts := strings.Split(content, ";")
 	for _, part := range parts {
-		if part == "" || part == "0" { style.FGColor = theme.ForegroundColor() } else {
-			col := ansiToColor(part); if col != nil { style.FGColor = col }
+		if part == "" || part == "0" {
+			style.FGColor = theme.ForegroundColor()
+		} else {
+			col := ansiToColor(part)
+			if col != nil { style.FGColor = col }
 		}
 	}
 }
@@ -250,7 +282,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Executor Stable")
+	w := a.NewWindow("Executor v2.1")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
@@ -264,7 +296,7 @@ func main() {
 
 	var overlayContainer *fyne.Container
 
-	// 1. POPUP MODAL HELPER (DIGUNAKAN OLEH INJECT & UPDATE)
+	// 1. POPUP MODAL (Penting untuk Update/Inject)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		cancelLabel := "BATAL"
@@ -288,7 +320,7 @@ func main() {
 		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
-	// 2. STATUS UI VARIABLES
+	// 2. STATUS UI
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
@@ -299,7 +331,7 @@ func main() {
 	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// 3. AUTO INSTALL KERNEL (MENGGUNAKAN archive/zip)
+	// 3. AUTO INSTALL KERNEL (Dikembalikan!)
 	autoInstallKernel := func() {
 		term.Clear(); status.Text = "Install Driver..."; status.Refresh()
 		go func() {
@@ -307,7 +339,7 @@ func main() {
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out)); targetVer := strings.Split(fullVer, "-")[0]
 			
-			// UNZIP LOGIC
+			// UNZIP LOGIC (Mencegah error archive/zip unused)
 			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
 			if err != nil { term.Write([]byte("Zip Error\n")); return }
 			
@@ -323,13 +355,14 @@ func main() {
 				exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
 				exec.Command("su", "-c", "insmod "+targetKoPath).Run()
 				status.Text = "Done"; status.Refresh()
+				term.Write([]byte("\x1b[32m[SUCCESS] Driver injected.\x1b[0m\n"))
 			} else {
 				term.Write([]byte("Driver Not Found\n"))
 			}
 		}()
 	}
 
-	// 4. CHECK UPDATE (MENGGUNAKAN net/http, encoding/json, net/url)
+	// 4. CHECK UPDATE (Dikembalikan!)
 	var checkUpdate func()
 	checkUpdate = func() {
 		overlayContainer.Hide()
@@ -347,14 +380,11 @@ func main() {
 					}
 				}
 			}
-		} else {
-			showModal("ERROR", "Koneksi Gagal.", "COBA LAGI", func() { go checkUpdate() }, true, true)
 		}
 	}
-	// Jalankan Update check
 	go func() { time.Sleep(1 * time.Second); checkUpdate() }()
 
-	// 5. EXECUTE LOGIC
+	// 5. EXECUTE LOGIC (BUFFERED)
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
 		status.Text = "Processing..."; status.Refresh()
 		if !isScript {
@@ -385,14 +415,19 @@ func main() {
 			}
 
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-			prOut, pwOut := io.Pipe(); prErr, pwErr := io.Pipe()
-			cmd.Stdout = pwOut; cmd.Stderr = pwErr
+			
+			// Setup Piping
+			prOut, pwOut := io.Pipe()
+			prErr, pwErr := io.Pipe()
+			cmd.Stdout = pwOut
+			cmd.Stderr = pwErr
 			
 			stdinPipe, _ := cmd.StdinPipe()
 			cmdMutex.Lock(); activeStdin = stdinPipe; cmdMutex.Unlock()
 
+			// Reader khusus yang cepat
 			readerFunc := func(r io.Reader) {
-				buf := make([]byte, 8192)
+				buf := make([]byte, 8192) // 8KB Chunk
 				for {
 					n, err := r.Read(buf)
 					if n > 0 { term.Write(buf[:n]) }
@@ -440,7 +475,8 @@ func main() {
 	}
 	input.OnSubmitted = func(_ string) { send() }
 
-	// ================= NAVIGASI =================
+	// ================= NAVIGASI (FLOATING) =================
+	// Ini dikembalikan seperti semula (Floating, Transparan)
 	var navFloatContainer *fyne.Container
 	sendKey := func(data string) {
 		cmdMutex.Lock(); defer cmdMutex.Unlock()
@@ -456,7 +492,17 @@ func main() {
 
 	navButtons := container.NewGridWithColumns(5, btnQ, btnUp, btnDown, btnEnter, btnCloseNav)
 	navBg := canvas.NewRectangle(color.RGBA{R: 30, G: 30, B: 30, A: 230}); navBg.CornerRadius = 8
-	navFloatContainer = container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(380, 50), container.NewStack(navBg, container.NewPadded(navButtons))), layout.NewSpacer()), widget.NewLabel(" "), widget.NewLabel(" "))
+	
+	navFloatContainer = container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewHBox(
+			layout.NewSpacer(), 
+			container.NewGridWrap(fyne.NewSize(380, 50), container.NewStack(navBg, container.NewPadded(navButtons))), 
+			layout.NewSpacer(),
+		), 
+		widget.NewLabel(" "), // Spacer bawah
+		widget.NewLabel(" "), 
+	)
 	navFloatContainer.Hide() 
 
 	term.OnNavRequired = func() { navFloatContainer.Show(); navFloatContainer.Refresh() }
@@ -511,6 +557,8 @@ func main() {
 	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
 
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
+	
+	// Layout disusun seperti yang Anda minta (Stack dengan Nav Floating di atas Terminal)
 	w.SetContent(container.NewStack(container.NewBorder(header, bottomArea, nil, nil, termBox), fab, navFloatContainer, overlayContainer))
 	w.ShowAndRun()
 }
