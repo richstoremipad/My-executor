@@ -35,7 +35,7 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.2" // Versi dengan Full TUI Support
+const AppVersion = "1.1" // Versi dengan Full TUI Support
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
