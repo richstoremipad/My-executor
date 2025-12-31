@@ -36,7 +36,7 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM
+   CONFIG & UPDATE SYSTEM (ORIGINAL)
 ========================================== */
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
@@ -49,7 +49,7 @@ var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
-// Variabel Tambahan untuk Game Tools
+// --- VARIABEL GAME TOOLS ---
 const AccountFile = "/sdcard/akun.ini"
 const OnlineAccFile = "/sdcard/accml_online.ini"
 const UrlConfigFile = "/sdcard/ml_url_config.ini"
@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORI)
+   TERMINAL LOGIC (ORIGINAL)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -151,6 +151,14 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
+	case "90": return color.Gray{Y: 100}
+	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
+	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
+	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
+	case "94": return color.RGBA{R: 100, G: 100, B: 255, A: 255}
+	case "95": return color.RGBA{R: 255, G: 100, B: 255, A: 255}
+	case "96": return color.RGBA{R: 100, G: 255, B: 255, A: 255}
+	case "97": return color.White
 	default: return nil
 	}
 }
@@ -239,6 +247,13 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
+func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
+	lbl := canvas.NewText(text, color)
+	lbl.TextSize = size; lbl.Alignment = fyne.TextAlignCenter
+	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
+	return lbl
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil { return err }
@@ -250,15 +265,8 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
-	lbl := canvas.NewText(text, color)
-	lbl.TextSize = size; lbl.Alignment = fyne.TextAlignCenter
-	if bold { lbl.TextStyle = fyne.TextStyle{Bold: true} }
-	return lbl
-}
-
 /* ===============================
-   TAMBAHAN: LOGIKA GAME TOOLS (FIXED)
+   LOGIKA MLBB (FIXED)
 ================================ */
 func cleanString(s string) string {
 	s = strings.ReplaceAll(s, "\ufeff", "")
@@ -282,20 +290,43 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// FIX: Menggunakan Root untuk membaca file jika os.Open ditolak (Permission Denied Fix)
+// FIX: Download dengan Fallback Root jika Permission Denied
+func downloadFile(url string, filepath string) error {
+	// 1. Coba cara normal
+	resp, err := http.Get(url)
+	if err == nil && resp.StatusCode == 200 {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		
+		// Coba tulis langsung
+		if os.WriteFile(filepath, data, 0644) == nil {
+			return nil
+		}
+		
+		// Jika gagal tulis (permission), simpan ke temp lalu pindah pakai Root
+		tmpPath := os.TempDir() + "/temp_download"
+		os.WriteFile(tmpPath, data, 0644)
+		cmd := exec.Command("su", "-c", "cp "+tmpPath+" "+filepath+" && rm "+tmpPath)
+		return cmd.Run()
+	}
+	
+	// 2. Jika HTTP Get gagal/diblokir, gunakan CURL via Root (Paling Ampuh)
+	cmd := exec.Command("su", "-c", "curl -k -L -o "+filepath+" "+url)
+	return cmd.Run()
+}
+
+// FIX: Baca file menggunakan Root jika akses biasa ditolak
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	
-	// 1. Coba baca biasa
 	b, err := os.ReadFile(path)
 	if err == nil {
 		content = string(b)
 	} else {
-		// 2. Jika gagal (Permission Denied), baca pakai SU
-		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
-		out, err2 := cmd.Output()
+		// Fallback baca pakai root
+		out, err2 := exec.Command("su", "-c", "cat \""+path+"\"").Output()
 		if err2 != nil {
-			return nil, nil, nil, fmt.Errorf("gagal baca file (root): %v", err)
+			return nil, nil, nil, errors.New("Gagal baca file (Permission/Root)")
 		}
 		content = string(out)
 	}
@@ -316,11 +347,11 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 			
 			ids = append(ids, id)
 			names = append(names, name)
-			displays = append(displays, fmt.Sprintf("%s (%s)", name, id))
+			displays = append(displays, name) // HANYA NAMA (Sesuai Request)
 		}
 	}
 	
-	if len(ids) == 0 { return nil, nil, nil, errors.New("file kosong/format salah") }
+	if len(ids) == 0 { return nil, nil, nil, errors.New("File kosong") }
 	return ids, names, displays, nil
 }
 
@@ -349,169 +380,221 @@ func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, cust
 	term.Write([]byte("\x1b[32m[SUKSES] ID Berhasil diterapkan.\x1b[0m\n"))
 }
 
-func downloadFile(url string, filepath string) error {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	
-	out, err := os.Create(filepath)
-	if err != nil { return err }
-	defer out.Close()
-	
-	_, err = io.Copy(out, resp.Body)
-	return err
-}
-
 /* ==========================================
-   TAMBAHAN: MENU SAMPING & GESTURE
+   SIDE MENU & UI
 ========================================== */
 type EdgeTrigger struct {
-	widget.BaseWidget; OnOpen func()
+	widget.BaseWidget
+	OnOpen func()
 }
 func NewEdgeTrigger(onOpen func()) *EdgeTrigger {
-	e := &EdgeTrigger{OnOpen: onOpen}; e.ExtendBaseWidget(e); return e
+	e := &EdgeTrigger{OnOpen: onOpen}
+	e.ExtendBaseWidget(e)
+	return e
 }
 func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) {
-	if event.Dragged.DX > 10 && e.OnOpen != nil { e.OnOpen() }
+	if event.Dragged.DX > 10 { if e.OnOpen != nil { e.OnOpen() } }
 }
-func (e *EdgeTrigger) DragEnd() {}; func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
+func (e *EdgeTrigger) DragEnd() {}
+func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
+// --- MENU GAME TOOLS DENGAN TAMPILAN PILIH & BATAL ---
 func makeSideMenu(w fyne.Window, term *Terminal, onClose func()) (*fyne.Container, func()) {
 	dimmer := canvas.NewRectangle(color.RGBA{0, 0, 0, 150})
-	btnDimmer := widget.NewButton("", onClose); btnDimmer.Importance = widget.LowImportance
+	btnDimmer := widget.NewButton("", onClose)
+	btnDimmer.Importance = widget.LowImportance
 	dimmerContainer := container.NewStack(dimmer, btnDimmer)
 	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
 
-	// HEADER
 	lblTitle := widget.NewLabelWithStyle("GAME TOOLS", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
-	// 1. SELECT GAME
+	// SELECT GAME
 	selGame := widget.NewSelect(AppNames, func(s string) {
 		for i, v := range AppNames { if v == s { SelectedGameIdx = i } }
 	})
 	selGame.SetSelected(AppNames[0])
 	cardTarget := widget.NewCard("Target Game", "", container.NewPadded(selGame))
 
-	// 2. MANAGER AKUN
-	btnLogin := widget.NewButtonWithIcon("Login", theme.LoginIcon(), func() {
+	// LOGIN AKUN (MODIFIKASI TAMPILAN LIST)
+	btnLogin := widget.NewButtonWithIcon("Login Akun", theme.LoginIcon(), func() {
 		onClose()
-		dialog.ShowCustomConfirm("Pilih Metode", "Online", "Offline", widget.NewLabel("Sumber Akun:"), func(isOnline bool) {
+		dialog.ShowCustomConfirm("Pilih Metode Login", "Online", "Offline", widget.NewLabel("Sumber Akun:"), func(isOnline bool) {
 			
-			// PROSES FILE
-			processPath := func(fPath string) {
-				ids, rNames, dList, err := parseAccountFile(fPath)
+			// Logic Handler
+			handleFile := func(path string) {
+				ids, rNames, dList, err := parseAccountFile(path)
 				if err != nil {
 					term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-					return
+					return 
 				}
+
+				// Variabel Pilihan
+				selectedIndex := -1
 				
-				list := widget.NewList(
+				// List UI
+				listWidget := widget.NewList(
 					func() int { return len(dList) },
-					func() fyne.CanvasObject { return widget.NewLabel("Template") },
-					func(i int, o fyne.CanvasObject) { o.(*widget.Label).SetText(dList[i]) },
+					func() fyne.CanvasObject { 
+						// Template Item
+						icon := widget.NewIcon(theme.ConfirmIcon) // Icon Ceklis (Hidden by default)
+						icon.Hide()
+						label := widget.NewLabel("Template Name")
+						label.TextStyle = fyne.TextStyle{Bold: true}
+						return container.NewHBox(icon, label)
+					},
+					func(i int, o fyne.CanvasObject) { 
+						box := o.(*fyne.Container)
+						icon := box.Objects[0].(*widget.Icon)
+						lbl := box.Objects[1].(*widget.Label)
+						
+						lbl.SetText(dList[i])
+						
+						// Tampilkan Ceklis jika dipilih
+						if i == selectedIndex {
+							icon.Show()
+							lbl.TextStyle.Italic = true // Visual cue tambahan
+						} else {
+							icon.Hide()
+							lbl.TextStyle.Italic = false
+						}
+					},
 				)
-				var d dialog.Dialog
-				list.OnSelected = func(id int) {
-					d.Hide()
-					runMLBBTask(term, "Login "+rNames[id], func() {
-						applyDeviceIDLogic(term, ids[id], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rNames[id])
-						exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
-						if isOnline { os.Remove(OnlineAccFile) }
-					})
+
+				// Container List agar bisa refresh
+				listContainer := container.NewStack(listWidget)
+
+				// Dialog Custom manual
+				var popup *widget.PopUp
+				
+				// Tombol Bawah
+				btnPilih := widget.NewButton("PILIH", func() {
+					if selectedIndex >= 0 {
+						popup.Hide()
+						runMLBBTask(term, "Login: "+rNames[selectedIndex], func() {
+							applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rNames[selectedIndex])
+							exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
+							if isOnline { os.Remove(OnlineAccFile) }
+						})
+					}
+				})
+				btnPilih.Importance = widget.HighImportance
+				btnPilih.Disable() // Disable sampai ada yang dipilih
+
+				btnBatal := widget.NewButton("BATAL", func() {
+					popup.Hide()
+				})
+				btnBatal.Importance = widget.DangerImportance
+
+				// Event saat Item diklik
+				listWidget.OnSelected = func(id int) {
+					selectedIndex = id
+					btnPilih.Enable()
+					listWidget.Refresh() // Refresh UI untuk update ceklis
 				}
-				cont := container.NewStack(list)
-				d = dialog.NewCustom("Pilih Akun", "Batal", container.NewGridWrap(fyne.NewSize(300, 500), cont), w)
-				d.Show()
+
+				// Layout Popup
+				content := container.NewBorder(
+					widget.NewLabelWithStyle("DAFTAR AKUN", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+					container.NewGridWithColumns(2, btnBatal, btnPilih),
+					nil, nil,
+					listContainer,
+				)
+				
+				popup = widget.NewModalPopUp(container.NewGridWrap(fyne.NewSize(320, 500), content), w.Canvas())
+				popup.Show()
 			}
 
+			// PROSES DOWNLOAD / READ
 			if isOnline {
-				// Cek Config
-				urlContent, err := os.ReadFile(UrlConfigFile)
-				if err == nil && len(urlContent) > 5 {
-					// Auto
-					tUrl := cleanString(string(urlContent))
-					term.Write([]byte(fmt.Sprintf("\x1b[33m[DL] URL tersimpan: %s\x1b[0m\n", tUrl)))
+				defaultUrl := ""
+				if content, err := os.ReadFile(UrlConfigFile); err == nil {
+					defaultUrl = cleanString(string(content))
+				}
+
+				if defaultUrl != "" {
 					go func() {
-						if err := downloadFile(tUrl, OnlineAccFile); err == nil {
-							processPath(OnlineAccFile)
+						term.Write([]byte(fmt.Sprintf("\x1b[33m[DL] URL tersimpan: %s\x1b[0m\n", defaultUrl)))
+						if err := downloadFile(defaultUrl, OnlineAccFile); err == nil {
+							term.Write([]byte("\x1b[32m[DL] Sukses.\x1b[0m\n"))
+							handleFile(OnlineAccFile)
 						} else {
-							term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
+							term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download: %s\x1b[0m\n", err.Error())))
 						}
 					}()
 				} else {
-					// Manual
-					entry := widget.NewEntry(); entry.PlaceHolder = "https://..."
-					dialog.ShowCustomConfirm("Input URL", "DL", "Batal", entry, func(dl bool) {
-						if dl && entry.Text != "" {
-							os.WriteFile(UrlConfigFile, []byte(entry.Text), 0644)
+					entryUrl := widget.NewEntry(); entryUrl.SetPlaceHolder("https://...")
+					dialog.ShowCustomConfirm("Input URL", "DL", "Batal", entryUrl, func(dl bool) {
+						if dl && entryUrl.Text != "" {
+							os.WriteFile(UrlConfigFile, []byte(entryUrl.Text), 0644)
 							go func() {
-								if err := downloadFile(entry.Text, OnlineAccFile); err == nil {
-									processPath(OnlineAccFile)
+								term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
+								if err := downloadFile(entryUrl.Text, OnlineAccFile); err == nil {
+									handleFile(OnlineAccFile)
 								} else {
-									term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
+									term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download: %s\x1b[0m\n", err.Error())))
 								}
 							}()
 						}
 					}, w)
 				}
 			} else {
-				term.Write([]byte("\x1b[33m[INFO] Membaca akun.ini...\x1b[0m\n"))
-				processPath(AccountFile)
+				term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n"))
+				handleFile(AccountFile)
 			}
 		}, w)
 	})
-
+	
 	btnReset := widget.NewButtonWithIcon("Reset ID", theme.ViewRefreshIcon(), func() {
 		onClose()
-		dialog.ShowConfirm("Reset", "Ganti ID Random?", func(b bool) {
+		dialog.ShowConfirm("Reset ID", "Ganti ID Random?", func(b bool) {
 			if b {
-				runMLBBTask(term, "Reset ID", func() {
-					applyDeviceIDLogic(term, generateRandomID(), PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "Random Guest")
+				runMLBBTask(term, "Reset ID Random", func() {
+					newID := generateRandomID()
+					applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
 				})
 			}
 		}, w)
 	})
 	
-	cardAccount := widget.NewCard("Akun", "", container.NewPadded(container.NewGridWithColumns(2, btnLogin, btnReset)))
+	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(2, btnLogin, btnReset)))
 
-	// 3. UTILS
+	// UTILS
 	btnCopy := widget.NewButtonWithIcon("Salin ID", theme.ContentCopyIcon(), func() {
 		onClose()
-		selSrc := widget.NewSelect(AppNames, nil); selSrc.PlaceHolder = "Sumber"
+		selSrc := widget.NewSelect(AppNames, nil); selSrc.PlaceHolder = "Pilih Sumber"
 		dialog.ShowCustomConfirm("Salin ID", "Salin", "Batal", container.NewVBox(widget.NewLabel("Dari:"), selSrc), func(b bool) {
 			if b && selSrc.Selected != "" {
-				sIdx := 0; for i, v := range AppNames { if v == selSrc.Selected { sIdx = i } }
-				runMLBBTask(term, "Copy ID", func() {
-					cmd := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[sIdx], PackageNames[sIdx])
-					out, _ := exec.Command("su", "-c", cmd).Output()
-					if id := cleanString(string(out)); len(id) > 5 {
-						applyDeviceIDLogic(term, id, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "Copy Result")
+				srcIdx := 0
+				for i, v := range AppNames { if v == selSrc.Selected { srcIdx = i } }
+				runMLBBTask(term, "Salin ID", func() {
+					cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
+					out, err := exec.Command("su", "-c", cmdStr).Output()
+					srcID := cleanString(string(out))
+					if err == nil && len(srcID) > 5 {
+						applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "HASIL COPY")
 					} else {
-						term.Write([]byte("\x1b[31m[ERR] Gagal ambil ID sumber.\x1b[0m\n"))
+						term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n"))
 					}
 				})
 			}
 		}, w)
 	})
-	
-	// FIX: Mengganti theme.SecurityIcon (Error) -> theme.InfoIcon
+
 	btnSel := widget.NewButtonWithIcon("Switch SELinux", theme.InfoIcon(), func() {
 		onClose()
-		runMLBBTask(term, "SELinux", func() {
+		runMLBBTask(term, "Toggle SELinux", func() {
 			exec.Command("su", "-c", "setenforce 0").Run()
 			term.Write([]byte("\x1b[33m[INFO] Perintah setenforce 0 dikirim.\x1b[0m\n"))
 		})
 	})
 	
-	cardUtils := widget.NewCard("Utils", "", container.NewPadded(container.NewVBox(btnCopy, btnSel)))
-	
+	cardUtils := widget.NewCard("System", "", container.NewPadded(container.NewVBox(btnCopy, btnSel)))
+
 	btnClean := widget.NewButtonWithIcon("Clear Terminal", theme.ContentClearIcon(), func() { term.Clear(); onClose() })
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
-	// SCROLL CONTENT
 	scrollContent := container.NewVBox(
 		container.NewPadded(lblTitle), widget.NewSeparator(),
 		cardTarget, cardAccount, cardUtils,
@@ -521,8 +604,9 @@ func makeSideMenu(w fyne.Window, term *Terminal, onClose func()) (*fyne.Containe
 	panel := container.NewStack(bgMenu, container.NewPadded(container.NewVScroll(scrollContent)))
 	slideContainer := container.NewHBox(container.NewGridWrap(fyne.NewSize(280, 700), panel))
 	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
-	
-	return finalMenu, func() { if finalMenu.Visible() { finalMenu.Hide() } else { finalMenu.Show(); finalMenu.Refresh() } }
+
+	toggle := func() { if finalMenu.Visible() { finalMenu.Hide() } else { finalMenu.Show(); finalMenu.Refresh() } }
+	return finalMenu, toggle
 }
 
 /* ===============================
@@ -690,7 +774,7 @@ func main() {
 		executeTask("", true, tmpPath, isBinary)
 	}
 
-	var overlayContainer *fyne.Container // FIX: Deklarasi yang benar
+	var overlayContainer *fyne.Container // FIX
 	
 	// FUNGSI POPUP (UPDATED: LOGIKA WARNA TOMBOL RETRY)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
@@ -843,18 +927,17 @@ func main() {
 		}()
 	}
 
-	// DEFINISI FUNGSI UPDATE (AGAR BISA DI-RETRY)
+	// DEFINISI FUNGSI UPDATE (WARNA FIX: 90 = Abu-abu)
 	var checkUpdate func()
 	checkUpdate = func() {
-		// Reset tampilan saat retry
 		overlayContainer.Hide()
 		
-		time.Sleep(500 * time.Millisecond) // Jeda sedikit saat retry
+		time.Sleep(500 * time.Millisecond) 
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
+		// FIX WARNA: \x1b[90m
 		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
 		
 		client := &http.Client{Timeout: 10 * time.Second}
-		// FIX: Menggunakan imports net/url dan encoding/json di sini
 		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
 		
 		if err == nil && resp.StatusCode == 200 {
@@ -872,14 +955,12 @@ func main() {
 				}
 			}
 		} else {
-			// POPUP RETRY
 			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
-				go checkUpdate() // Retry logic
+				go checkUpdate()
 			}, true, true)
 		}
 	}
 
-	// JALANKAN CHECK UPDATE PERTAMA KALI
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		checkUpdate()
@@ -957,23 +1038,19 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
-	// --- SETUP SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
+	// --- INIT SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
 	var toggleMenu func() 
 	
-	// Menu Samping dengan Game Tools Cantik + FIX Baca File
 	sideMenuContainer, toggleFunc := makeSideMenu(w, term, func() { toggleMenu() })
 	toggleMenu = toggleFunc
 
-	// Gesture Trigger
 	edgeTrigger := NewEdgeTrigger(func() {
 		if !sideMenuContainer.Visible() { toggleMenu() }
 	})
 	triggerZone := container.NewHBox(container.NewGridWrap(fyne.NewSize(20, 1000), edgeTrigger), layout.NewSpacer())
 
-	// FIX: Overlay Container harus *fyne.Container
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
 
-	// STACK LAYOUT
 	w.SetContent(container.NewStack(
 		container.NewBorder(header, bottom, nil, nil, termBox), // Main UI
 		triggerZone,       // Layer 2
