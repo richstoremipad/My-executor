@@ -526,6 +526,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
         },
     )
     
+    // UKURAN TETAP (PENGECUALIAN SESUAI PERMINTAAN)
     listContainer := container.NewGridWrap(fyne.NewSize(300, 350), listWidget)
     
     showGamePopup(w, overlay, "DAFTAR AKUN",
@@ -550,7 +551,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
                 }
             }
         },
-        fyne.NewSize(350, 450))
+        fyne.NewSize(350, 450)) // TIDAK DI RUBAH
     
     listWidget.OnSelected = func(id int) { 
         selectedIndex = id
@@ -605,7 +606,7 @@ func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 }()
             }
         },
-        fyne.NewSize(350, 200))
+        fyne.NewSize(350, 600)) // DIPERBESAR 3X
 }
 
 func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
@@ -624,7 +625,7 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
         "COBA LAGI", func() {
             showURLInputPopup(w, overlay, term)
         },
-        fyne.NewSize(350, 250))
+        fyne.NewSize(350, 600)) // DIPERBESAR 3X
 }
 
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
@@ -663,7 +664,7 @@ func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 })
             }
         },
-        fyne.NewSize(350, 200))
+        fyne.NewSize(350, 600)) // DIPERBESAR 3X
 }
 
 /* ==========================================
@@ -725,7 +726,19 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		
 		btnOnline := widget.NewButton("ONLINE", nil)
 		btnOffline := widget.NewButton("OFFLINE", nil)
-		content := container.NewGridWithColumns(2, btnOffline, btnOnline)
+		
+		// BUAT TOMBOL BATAL MANUAL UNTUK POSISI TENGAH BAWAH
+		btnBatal := widget.NewButton("BATAL", func() {
+			overlayContainer.Hide()
+		})
+		btnBatal.Importance = widget.DangerImportance
+		
+		// LAYOUT TOMBOL: Grid tombol Online/Offline, Spacer, Tombol Batal
+		content := container.NewVBox(
+			container.NewGridWithColumns(2, btnOffline, btnOnline),
+			layout.NewSpacer(),
+			container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 40), btnBatal)),
+		)
 		
 		// Process offline account file
 		processOfflineAccount := func() {
@@ -775,11 +788,12 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			processOfflineAccount()
 		}
 		
+		// Panggil Popup dengan Content khusus & Ukuran 3x
 		showGamePopup(w, overlayContainer, "SUMBER AKUN", 
 			content,
-			"BATAL", nil,
-			"", nil,
-			fyne.NewSize(300, 150))
+			"", nil, // Kosongkan tombol standar btn1
+			"", nil, // Kosongkan tombol standar btn2
+			fyne.NewSize(350, 450)) // DIPERBESAR 3X
 	})
 	
 	// --- RESET ID (RANDOM / MANUAL) ---
@@ -806,7 +820,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						AppNames[SelectedGameIdx], "GUEST/NEW")
 				})
 			},
-			fyne.NewSize(350, 180))
+			fyne.NewSize(350, 540)) // DIPERBESAR 3X
 	})
 	
 	// --- SALIN ID ---
@@ -853,7 +867,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					})
 				}
 			},
-			fyne.NewSize(350, 180))
+			fyne.NewSize(350, 540)) // DIPERBESAR 3X
 	})
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
