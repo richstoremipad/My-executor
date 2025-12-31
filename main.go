@@ -35,13 +35,13 @@ import (
 /* ==========================================
    CONFIG & SYSTEM
 ========================================== */
-const AppVersion = "1.5" // Ultra Performance
+const AppVersion = "1.1" // Ultra Performance
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // BATAS BARIS (Penting agar HP tidak lag)
 // Hanya menyimpan 300 baris terakhir di layar
-const MaxScrollback = 300 
+const MaxScrollback = 100 
 
 var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
