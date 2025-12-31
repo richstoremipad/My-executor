@@ -400,7 +400,274 @@ func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, cust
 }
 
 /* ==========================================
-   SIDE MENU & UI (ORIGINAL DENGAN PERBAIKAN CENTER)
+   HELPER POPUP KHUSUS GAME TOOLS
+========================================== */
+func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content fyne.CanvasObject, 
+                  btn1Text string, act1 func(), btn2Text string, act2 func(), size fyne.Size) {
+    
+    // Reset overlay
+    overlay.Objects = nil
+    
+    // Background semi-transparent
+    bg := canvas.NewRectangle(color.RGBA{0, 0, 0, 200})
+    
+    // Main popup container with fixed size
+    popupContainer := container.NewVBox()
+    
+    // Title
+    titleLabel := canvas.NewText(title, color.White)
+    titleLabel.TextSize = 18
+    titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+    titleLabel.Alignment = fyne.TextAlignCenter
+    
+    popupContainer.Add(container.NewCenter(titleLabel))
+    popupContainer.Add(widget.NewSeparator())
+    
+    // Content
+    if content != nil {
+        popupContainer.Add(container.NewPadded(content))
+    }
+    
+    // Buttons
+    buttonsContainer := container.NewHBox()
+    
+    if btn1Text != "" {
+        btn1 := widget.NewButton(btn1Text, func() {
+            overlay.Hide()
+            if act1 != nil {
+                act1()
+            }
+        })
+        btn1.Importance = widget.DangerImportance
+        buttonsContainer.Add(container.NewCenter(btn1))
+    }
+    
+    if btn2Text != "" {
+        // Add spacer between buttons
+        if btn1Text != "" {
+            buttonsContainer.Add(layout.NewSpacer())
+        }
+        
+        btn2 := widget.NewButton(btn2Text, func() {
+            overlay.Hide()
+            if act2 != nil {
+                act2()
+            }
+        })
+        btn2.Importance = widget.HighImportance
+        buttonsContainer.Add(container.NewCenter(btn2))
+    }
+    
+    popupContainer.Add(layout.NewSpacer())
+    popupContainer.Add(buttonsContainer)
+    
+    // Card container
+    card := widget.NewCard("", "", container.NewPadded(
+        container.NewVBox(popupContainer),
+    ))
+    
+    // Fixed size wrapper
+    wrapper := container.NewCenter(
+        container.NewPadded(
+            container.NewStack(
+                canvas.NewRectangle(color.Gray{Y: 30}),
+                container.NewPadded(card),
+            ),
+        ),
+    )
+    
+    // Set fixed size
+    wrapper.Resize(size)
+    
+    // Center in overlay
+    centered := container.NewCenter(wrapper)
+    
+    overlay.Objects = []fyne.CanvasObject{bg, centered}
+    overlay.Show()
+    overlay.Refresh()
+}
+
+func maskURL(urlStr string) string {
+    // Simple URL masking - only show domain
+    u, err := url.Parse(urlStr)
+    if err != nil {
+        return "https://***.***/***"
+    }
+    
+    // Mask path and query parameters
+    masked := fmt.Sprintf("https://%s/***", u.Host)
+    return masked
+}
+
+/* ==========================================
+   FUNGSI POPUP UNTUK GAME TOOLS
+========================================== */
+func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal, ids, names, displays []string, isOnline bool) {
+    selectedIndex := -1
+    
+    listWidget := widget.NewList(
+        func() int { return len(displays) },
+        func() fyne.CanvasObject { 
+            icon := widget.NewIcon(theme.AccountIcon())
+            lbl := widget.NewLabel("Account Name")
+            lbl.TextStyle = fyne.TextStyle{Bold: true}
+            return container.NewHBox(icon, lbl)
+        },
+        func(i int, o fyne.CanvasObject) { 
+            box := o.(*fyne.Container)
+            lbl := box.Objects[1].(*widget.Label)
+            lbl.SetText(displays[i])
+            
+            if i == selectedIndex {
+                lbl.TextStyle.Italic = true
+            } else {
+                lbl.TextStyle.Italic = false
+            }
+        },
+    )
+    
+    listContainer := container.NewGridWrap(fyne.NewSize(300, 350), listWidget)
+    
+    showGamePopup(w, overlay, "DAFTAR AKUN",
+        listContainer,
+        "BATAL", func() {
+            if isOnline {
+                removeFileRoot(OnlineAccFile)
+            }
+        },
+        "PILIH", func() {
+            if selectedIndex >= 0 {
+                runMLBBTask(term, "Login: "+names[selectedIndex], func() {
+                    applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], names[selectedIndex])
+                    exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
+                    if isOnline {
+                        removeFileRoot(OnlineAccFile)
+                    }
+                })
+            } else {
+                if isOnline {
+                    removeFileRoot(OnlineAccFile)
+                }
+            }
+        },
+        fyne.NewSize(350, 450))
+    
+    listWidget.OnSelected = func(id int) { 
+        selectedIndex = id
+        listWidget.Refresh()
+    }
+}
+
+func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
+    // Create URL input form
+    urlEntry := widget.NewEntry()
+    urlEntry.SetPlaceHolder("https://example.com/accounts.txt")
+    urlEntry.Validator = func(s string) error {
+        if s == "" {
+            return errors.New("URL cannot be empty")
+        }
+        if !strings.HasPrefix(s, "http") {
+            return errors.New("Must be a valid URL")
+        }
+        return nil
+    }
+    
+    content := container.NewVBox(
+        widget.NewLabel("Masukkan URL akun online:"),
+        widget.NewSeparator(),
+        urlEntry,
+    )
+    
+    showGamePopup(w, overlay, "INPUT URL", 
+        content,
+        "BATAL", nil,
+        "DOWNLOAD", func() {
+            if urlEntry.Text != "" {
+                // Save URL for future use
+                exec.Command("su", "-c", fmt.Sprintf("echo \"%s\" > %s", urlEntry.Text, UrlConfigFile)).Run()
+                
+                go func() {
+                    term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
+                    
+                    // Show masked URL in logs
+                    term.Write([]byte(fmt.Sprintf("\x1b[90mDari: %s\x1b[0m\n", maskURL(urlEntry.Text))))
+                    
+                    if err := downloadGameConfig(urlEntry.Text, OnlineAccFile); err == nil {
+                        term.Write([]byte("\x1b[32m[DL] Berhasil diunduh.\x1b[0m\n"))
+                        processAccountFileLogic(w, overlay, term, OnlineAccFile, true)
+                    } else {
+                        term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
+                        removeFileRoot(OnlineAccFile)
+                        
+                        // Show error popup and retry
+                        showDownloadErrorPopup(w, overlay, term)
+                    }
+                }()
+            }
+        },
+        fyne.NewSize(350, 200))
+}
+
+func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
+    content := container.NewVBox(
+        canvas.NewText("Download Gagal!", theme.ErrorColor()),
+        widget.NewLabel(""),
+        widget.NewLabel("Kemungkinan penyebab:"),
+        widget.NewLabel("• URL tidak valid"),
+        widget.NewLabel("• Server offline"),
+        widget.NewLabel("• Koneksi error"),
+    )
+    
+    showGamePopup(w, overlay, "DOWNLOAD ERROR",
+        content,
+        "BATAL", nil,
+        "COBA LAGI", func() {
+            showURLInputPopup(w, overlay, term)
+        },
+        fyne.NewSize(350, 250))
+}
+
+func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
+    ids, names, displays, err := parseAccountFile(path)
+    if err != nil {
+        term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
+        if isOnline {
+            removeFileRoot(OnlineAccFile)
+        }
+        return
+    }
+    
+    // Show account list popup
+    showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
+}
+
+func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
+    entry := widget.NewEntry()
+    entry.SetPlaceHolder("Masukkan Device ID...")
+    
+    content := container.NewVBox(
+        widget.NewLabel("Input Device ID Manual:"),
+        widget.NewSeparator(),
+        entry,
+    )
+    
+    showGamePopup(w, overlay, "INPUT MANUAL",
+        content,
+        "BATAL", nil,
+        "TERAPKAN", func() {
+            if len(entry.Text) > 5 {
+                runMLBBTask(term, "Set Manual ID", func() {
+                    term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", entry.Text)))
+                    applyDeviceIDLogic(term, entry.Text, PackageNames[SelectedGameIdx], 
+                        AppNames[SelectedGameIdx], "MANUAL")
+                })
+            }
+        },
+        fyne.NewSize(350, 200))
+}
+
+/* ==========================================
+   SIDE MENU & UI
 ========================================== */
 type EdgeTrigger struct { widget.BaseWidget; OnOpen func() }
 func NewEdgeTrigger(onOpen func()) *EdgeTrigger { e := &EdgeTrigger{OnOpen: onOpen}; e.ExtendBaseWidget(e); return e }
@@ -408,7 +675,7 @@ func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) { if event.Dragged.DX > 10 
 func (e *EdgeTrigger) DragEnd() {}
 func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent)) }
 
-// HELPER OVERLAY YANG DIPERBAIKI UNTUK CENTER
+// HELPER OVERLAY
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
@@ -430,194 +697,10 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		container.NewPadded(container.NewCenter(lblTitle)), container.NewPadded(content), widget.NewLabel(""), btnBox,
 	)
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
-	
-	// PERBAIKAN: Gunakan container.NewCenter untuk membuat popup benar-benar di tengah
-	wrapper := container.NewCenter(
-		container.NewGridWrap(fyne.NewSize(340, 600), container.NewPadded(card)),
-	)
+	wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(340, 600), container.NewPadded(card)))
 	
 	overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
 	overlay.Show(); overlay.Refresh()
-}
-
-// FUNGSI POPUP UPDATE ERROR YANG DIPERBAIKI
-func showUpdateErrorPopup(term *Terminal, overlayContainer *fyne.Container, message string, canChangeURL bool) {
-	lblMsg := widget.NewLabel(message)
-	lblMsg.Alignment = fyne.TextAlignCenter
-	lblMsg.Wrapping = fyne.TextWrapWord
-	
-	var btnBox *fyne.Container
-	
-	if canChangeURL {
-		btn1 := widget.NewButton("HAPUS URL", func() {
-			overlayContainer.Hide()
-			term.Write([]byte("\x1b[33m[!] URL config dihapus\x1b[0m\n"))
-			removeFileRoot(UrlConfigFile)
-		})
-		btn1.Importance = widget.DangerImportance
-		
-		btn2 := widget.NewButton("GANTI URL", func() {
-			overlayContainer.Hide()
-			showURLConfigPopup(term, overlayContainer)
-		})
-		btn2.Importance = widget.HighImportance
-		
-		btnBox = container.NewHBox(
-			layout.NewSpacer(),
-			container.NewGridWrap(fyne.NewSize(110,40), btn1),
-			widget.NewLabel(" "),
-			container.NewGridWrap(fyne.NewSize(110,40), btn2),
-			layout.NewSpacer(),
-		)
-	} else {
-		btn1 := widget.NewButton("OK", func() { overlayContainer.Hide() })
-		btn1.Importance = widget.HighImportance
-		btnBox = container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(110,40), btn1), layout.NewSpacer())
-	}
-	
-	lblTitle := createLabel("ERROR UPDATE", theme.ErrorColor(), 18, true)
-	cardContent := container.NewVBox(
-		container.NewPadded(container.NewCenter(lblTitle)), 
-		container.NewPadded(lblMsg), 
-		widget.NewLabel(""), 
-		btnBox,
-	)
-	card := widget.NewCard("", "", container.NewPadded(cardContent))
-	
-	wrapper := container.NewCenter(
-		container.NewGridWrap(fyne.NewSize(340, 220), container.NewPadded(card)),
-	)
-	
-	overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
-	overlayContainer.Show(); overlayContainer.Refresh()
-}
-
-// FUNGSI KONFIGURASI URL YANG DIPERBAIKI
-func showURLConfigPopup(term *Terminal, overlayContainer *fyne.Container) {
-	entry := widget.NewEntry()
-	entry.SetPlaceHolder("https://raw.githubusercontent.com/.../config.txt")
-	entry.Wrapping = fyne.TextWrapWord
-	
-	statusLabel := widget.NewLabel("")
-	statusLabel.Alignment = fyne.TextAlignCenter
-	
-	content := container.NewVBox(
-		widget.NewLabel("Masukkan URL config baru:"),
-		container.NewPadded(entry),
-		statusLabel,
-	)
-	
-	testAndSave := func() {
-		urlStr := strings.TrimSpace(entry.Text)
-		if urlStr == "" {
-			statusLabel.SetText("URL tidak boleh kosong")
-			statusLabel.Show()
-			return
-		}
-		
-		statusLabel.SetText("Menguji koneksi...")
-		statusLabel.Show()
-		
-		go func() {
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Head(urlStr)
-			
-			if err != nil || resp == nil || resp.StatusCode != 200 {
-				statusLabel.SetText("❌ URL tidak valid")
-				statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-				statusLabel.Refresh()
-				return
-			}
-			
-			// Simpan URL ke config
-			cmd := fmt.Sprintf("echo \"%s\" > %s", urlStr, UrlConfigFile)
-			exec.Command("su", "-c", cmd).Run()
-			
-			statusLabel.SetText("✅ URL berhasil disimpan")
-			statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-			statusLabel.Refresh()
-			
-			time.Sleep(1 * time.Second)
-			overlayContainer.Hide()
-			term.Write([]byte("\x1b[32m[✓] URL config diperbarui\x1b[0m\n"))
-		}()
-	}
-	
-	showCustomOverlay(overlayContainer, "KONFIGURASI URL", content, "BATAL", nil, "SIMPAN", testAndSave)
-}
-
-// FUNGSI CHECK UPDATE YANG DIPERBAIKI (TIDAK TAMPILKAN URL DI LOG)
-func checkUpdate(term *Terminal, overlayContainer *fyne.Container) {
-	overlayContainer.Hide()
-	time.Sleep(300 * time.Millisecond)
-	
-	term.Write([]byte("\n\x1b[90m[*] Memeriksa pembaruan...\x1b[0m\n"))
-	
-	// Ambil URL dari config jika ada, atau gunakan default
-	configURL := ConfigURL
-	if cmd := exec.Command("su", "-c", "cat "+UrlConfigFile); cmd.Run() == nil {
-		if out, err := cmd.Output(); err == nil {
-			customURL := cleanString(string(out))
-			if customURL != "" && strings.HasPrefix(customURL, "http") {
-				configURL = customURL
-				term.Write([]byte("\x1b[33m[!] Menggunakan URL custom\x1b[0m\n"))
-			}
-		}
-	}
-	
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s?v=%d", configURL, time.Now().Unix()), nil)
-	if err != nil {
-		term.Write([]byte("\x1b[33m[!] Konfigurasi URL tidak valid\x1b[0m\n"))
-		return
-	}
-	
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Android; Simple-Executor)")
-	resp, err := client.Do(req)
-	
-	if err != nil || resp == nil || resp.StatusCode != 200 {
-		term.Write([]byte("\x1b[33m[!] Gagal terhubung ke server\x1b[0m\n"))
-		
-		// Tampilkan popup error dengan pilihan
-		msg := "Gagal menghubungi server pembaruan.\n\n"
-		if strings.Contains(configURL, "github.com") {
-			msg += "Server: GitHub\n"
-		} else {
-			msg += "Server: Custom\n"
-		}
-		msg += "\nPeriksa koneksi atau ganti URL config."
-		
-		showUpdateErrorPopup(term, overlayContainer, msg, configURL != ConfigURL)
-		return
-	}
-	
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		term.Write([]byte("\x1b[33m[!] Gagal membaca respons\x1b[0m\n"))
-		return
-	}
-	
-	// Decrypt dan proses
-	if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
-		var cfg OnlineConfig
-		if json.Unmarshal(dec, &cfg) == nil {
-			if cfg.Version != "" && cfg.Version != AppVersion {
-				// Show update available popup
-				lblMsg := widget.NewLabel(cfg.Message)
-				lblMsg.Alignment = fyne.TextAlignCenter
-				lblMsg.Wrapping = fyne.TextWrapWord
-				
-				showCustomOverlay(overlayContainer, "UPDATE TERSEDIA", lblMsg, "NANTI", nil, "UPDATE", func() {
-					if u, err := url.Parse(cfg.Link); err == nil {
-						fyne.CurrentApp().OpenURL(u)
-					}
-				})
-			} else {
-				term.Write([]byte("\x1b[32m[✓] Sistem sudah versi terbaru\x1b[0m\n"))
-			}
-		}
-	}
 }
 
 func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Container, onClose func()) (*fyne.Container, func()) {
@@ -636,128 +719,141 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	selGame.SetSelected(AppNames[0])
 	cardTarget := widget.NewCard("Target Game", "", container.NewPadded(selGame))
 
-	// --- LOGIN AKUN (ORIGINAL WORKING VERSION) ---
+	// --- LOGIN AKUN ---
 	btnLogin := widget.NewButtonWithIcon("Login Akun", theme.LoginIcon(), func() {
 		onClose()
-		btnOnline := widget.NewButton("ONLINE", nil); btnOffline := widget.NewButton("OFFLINE", nil)
+		
+		btnOnline := widget.NewButton("ONLINE", nil)
+		btnOffline := widget.NewButton("OFFLINE", nil)
 		content := container.NewGridWithColumns(2, btnOffline, btnOnline)
 		
-		processAccountFile := func(path string, isOnline bool) {
-			ids, rNames, dList, err := parseAccountFile(path)
-			if err != nil { 
+		// Process offline account file
+		processOfflineAccount := func() {
+			overlayContainer.Hide()
+			term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n"))
+			ids, names, displays, err := parseAccountFile(AccountFile)
+			if err != nil {
 				term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-				if isOnline { removeFileRoot(OnlineAccFile) } 
-				return 
+				return
 			}
-			selectedIndex := -1
-			listWidget := widget.NewList(
-				func() int { return len(dList) },
-				func() fyne.CanvasObject { 
-					icon := widget.NewIcon(theme.ConfirmIcon()); icon.Hide(); lbl := widget.NewLabel("Name"); lbl.TextStyle = fyne.TextStyle{Bold:true}
-					return container.NewHBox(icon, lbl)
-				},
-				func(i int, o fyne.CanvasObject) { 
-					box := o.(*fyne.Container); icon := box.Objects[0].(*widget.Icon); lbl := box.Objects[1].(*widget.Label)
-					lbl.SetText(dList[i])
-					if i==selectedIndex { icon.Show(); lbl.TextStyle.Italic=true } else { icon.Hide(); lbl.TextStyle.Italic=false }
-				},
-			)
-			listContainer := container.NewGridWrap(fyne.NewSize(300, 400), listWidget)
-			showCustomOverlay(overlayContainer, "DAFTAR AKUN", listContainer, "BATAL", func() {
-				if isOnline { removeFileRoot(OnlineAccFile) }
-			}, "PILIH", func() {
-				if selectedIndex >= 0 {
-					runMLBBTask(term, "Login: "+rNames[selectedIndex], func() {
-						applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rNames[selectedIndex])
-						exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
-						if isOnline { removeFileRoot(OnlineAccFile) }
-					})
-				} else { if isOnline { removeFileRoot(OnlineAccFile) } }
-			})
-			listWidget.OnSelected = func(id int) { selectedIndex = id; listWidget.Refresh() }
+			showAccountListPopup(w, overlayContainer, term, ids, names, displays, false)
 		}
 
 		btnOnline.OnTapped = func() {
 			overlayContainer.Hide()
-			defaultUrl := ""
-			cmd := exec.Command("su", "-c", "cat "+UrlConfigFile); out, err := cmd.Output(); if err == nil { defaultUrl = cleanString(string(out)) }
+			
+			// First, try to use saved URL
+			var defaultUrl string
+			cmd := exec.Command("su", "-c", "cat "+UrlConfigFile)
+			out, err := cmd.Output()
+			if err == nil {
+				defaultUrl = cleanString(string(out))
+			}
+			
 			if defaultUrl != "" && strings.HasPrefix(defaultUrl, "http") {
 				go func() {
-					term.Write([]byte("\x1b[33m[DL] Mengunduh data akun...\x1b[0m\n"))
+					term.Write([]byte(fmt.Sprintf("\x1b[33m[DL] Download dari URL tersimpan...\x1b[0m\n")))
+					
 					if err := downloadGameConfig(defaultUrl, OnlineAccFile); err == nil {
 						term.Write([]byte("\x1b[32m[DL] Sukses.\x1b[0m\n"))
-						processAccountFile(OnlineAccFile, true)
+						processAccountFileLogic(w, overlayContainer, term, OnlineAccFile, true)
 					} else {
-						term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")); removeFileRoot(OnlineAccFile)
-						showUpdateErrorPopup(term, overlayContainer, "Gagal mengunduh data akun.\nPeriksa URL atau koneksi.", true)
+						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal download dari URL tersimpan.\x1b[0m\n")))
+						removeFileRoot(OnlineAccFile)
+						
+						// Show URL input popup on failure
+						showURLInputPopup(w, overlayContainer, term)
 					}
 				}()
 			} else {
-				entryUrl := widget.NewEntry(); entryUrl.SetPlaceHolder("https://...")
-				showCustomOverlay(overlayContainer, "INPUT URL", entryUrl, "BATAL", nil, "DOWNLOAD", func() {
-					if entryUrl.Text != "" {
-						exec.Command("su", "-c", fmt.Sprintf("echo \"%s\" > %s", entryUrl.Text, UrlConfigFile)).Run()
-						go func() {
-							term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
-							if err := downloadGameConfig(entryUrl.Text, OnlineAccFile); err == nil {
-								processAccountFile(OnlineAccFile, true)
-							} else {
-								term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")); removeFileRoot(OnlineAccFile)
-								showUpdateErrorPopup(term, overlayContainer, "Gagal mengunduh data akun.\nPeriksa URL atau koneksi.", true)
-							}
-						}()
-					}
-				})
+				// Show URL input popup directly
+				showURLInputPopup(w, overlayContainer, term)
 			}
 		}
-		btnOffline.OnTapped = func() { overlayContainer.Hide(); term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n")); processAccountFile(AccountFile, false) }
-		showCustomOverlay(overlayContainer, "SUMBER AKUN", content, "BATAL", nil, "", nil)
+		
+		btnOffline.OnTapped = func() { 
+			processOfflineAccount()
+		}
+		
+		showGamePopup(w, overlayContainer, "SUMBER AKUN", 
+			content,
+			"BATAL", nil,
+			"", nil,
+			fyne.NewSize(300, 150))
 	})
 	
 	// --- RESET ID (RANDOM / MANUAL) ---
 	btnReset := widget.NewButtonWithIcon("Reset ID", theme.ViewRefreshIcon(), func() {
 		onClose()
-		content := widget.NewLabel("Pilih Metode Reset ID:")
-		content.Alignment = fyne.TextAlignCenter
 		
-		showCustomOverlay(overlayContainer, "RESET ID", content, "MANUAL", func() {
-			// LOGIC MANUAL
-			entryID := widget.NewEntry(); entryID.SetPlaceHolder("Masukkan ID Baru...")
-			showCustomOverlay(overlayContainer, "INPUT MANUAL", entryID, "BATAL", nil, "TERAPKAN", func() {
-				if len(entryID.Text) > 5 {
-					runMLBBTask(term, "Set Manual ID", func() {
-						term.Write([]byte("\x1b[36m[INFO] ID Baru diterapkan\x1b[0m\n"))
-						applyDeviceIDLogic(term, entryID.Text, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "MANUAL")
-					})
-				}
-			})
-		}, "RANDOM", func() {
-			// LOGIC RANDOM
-			runMLBBTask(term, "Reset ID Random", func() {
-				newID := generateRandomID()
-				term.Write([]byte("\x1b[36m[INFO] ID Random dibuat\x1b[0m\n"))
-				applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
-			})
-		})
+		content := container.NewVBox(
+			widget.NewLabel("Pilih metode reset ID:"),
+			widget.NewSeparator(),
+		)
+		
+		showGamePopup(w, overlayContainer, "RESET ID",
+			content,
+			"MANUAL", func() {
+				// Manual input
+				showManualIDPopup(w, overlayContainer, term)
+			},
+			"RANDOM", func() {
+				// Random ID
+				runMLBBTask(term, "Reset ID Random", func() {
+					newID := generateRandomID()
+					term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", newID)))
+					applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], 
+						AppNames[SelectedGameIdx], "GUEST/NEW")
+				})
+			},
+			fyne.NewSize(350, 180))
 	})
 	
+	// --- SALIN ID ---
 	btnCopy := widget.NewButtonWithIcon("Salin ID", theme.ContentCopyIcon(), func() {
 		onClose()
-		selSrc := widget.NewSelect(AppNames, nil); selSrc.PlaceHolder = "Pilih Sumber"
-		content := container.NewVBox(widget.NewLabel("Salin ID Dari:"), selSrc)
-		showCustomOverlay(overlayContainer, "SALIN ID", content, "BATAL", nil, "SALIN", func() {
-			if selSrc.Selected != "" {
-				srcIdx := 0; for i, v := range AppNames { if v == selSrc.Selected { srcIdx = i } }
-				runMLBBTask(term, "Salin ID", func() {
-					cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
-					out, err := exec.Command("su", "-c", cmdStr).Output(); srcID := cleanString(string(out))
-					if err == nil && len(srcID) > 5 {
-						term.Write([]byte("\x1b[36m[INFO] ID berhasil disalin\x1b[0m\n"))
-						applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "HASIL COPY")
-					} else { term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n")) }
-				})
-			}
-		})
+		
+		selSrc := widget.NewSelect(AppNames, nil)
+		selSrc.PlaceHolder = "Pilih Sumber"
+		
+		content := container.NewVBox(
+			widget.NewLabel("Salin ID Dari:"),
+			widget.NewSeparator(),
+			selSrc,
+		)
+		
+		showGamePopup(w, overlayContainer, "SALIN ID",
+			content,
+			"BATAL", nil,
+			"SALIN", func() {
+				if selSrc.Selected != "" {
+					srcIdx := 0
+					for i, v := range AppNames {
+						if v == selSrc.Selected {
+							srcIdx = i
+							break
+						}
+					}
+					
+					runMLBBTask(term, "Salin ID", func() {
+						cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' "+
+							"/data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", 
+							PackageNames[srcIdx], PackageNames[srcIdx])
+						
+						out, err := exec.Command("su", "-c", cmdStr).Output()
+						srcID := cleanString(string(out))
+						
+						if err == nil && len(srcID) > 5 {
+							term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Salinan: %s\x1b[0m\n", srcID)))
+							applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], 
+								AppNames[SelectedGameIdx], "HASIL COPY")
+						} else {
+							term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n"))
+						}
+					})
+				}
+			},
+			fyne.NewSize(350, 180))
 	})
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
@@ -956,6 +1052,64 @@ func main() {
 
 	var overlayContainer *fyne.Container
 	
+	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
+		w.Canvas().Refresh(w.Content())
+		
+		cancelLabel := "BATAL"
+		cancelFunc := func() { overlayContainer.Hide() }
+		
+		if isForce {
+			cancelLabel = "KELUAR"
+			cancelFunc = func() { os.Exit(0) }
+		}
+		
+		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
+		btnCancel.Importance = widget.DangerImportance
+		
+		btnOk := widget.NewButton(confirm, func() {
+			if !isForce { overlayContainer.Hide() }
+			if action != nil { action() }
+		})
+		
+		if confirm == "COBA LAGI" {
+			btnOk.Importance = widget.HighImportance
+		} else {
+			if isErr { 
+				btnOk.Importance = widget.DangerImportance 
+			} else { 
+				btnOk.Importance = widget.HighImportance 
+			}
+		}
+		
+		btnBox := container.NewHBox(
+			layout.NewSpacer(), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnCancel), 
+			widget.NewLabel("   "), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnOk), 
+			layout.NewSpacer(),
+		)
+		
+		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
+		if isErr { lblTitle.Color = theme.ErrorColor() }
+		
+		lblMsg := widget.NewLabel(msg)
+		lblMsg.Alignment = fyne.TextAlignCenter 
+		lblMsg.Wrapping = fyne.TextWrapWord
+		
+		content := container.NewVBox(
+			container.NewPadded(container.NewCenter(lblTitle)), 
+			container.NewPadded(lblMsg), 
+			widget.NewLabel(""), 
+			btnBox,
+		)
+		
+		card := widget.NewCard("", "", container.NewPadded(content))
+		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
+		
+		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
+		overlayContainer.Show(); overlayContainer.Refresh()
+	}
+
 	autoInstallKernel := func() {
 		term.Clear()
 		status.Text = "Sistem: Memproses..."
@@ -1047,10 +1201,40 @@ func main() {
 		}()
 	}
 
-	// Start check update
+	var checkUpdate func()
+	checkUpdate = func() {
+		overlayContainer.Hide()
+		time.Sleep(500 * time.Millisecond) 
+		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
+		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
+		
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
+		
+		if err == nil && resp.StatusCode == 200 {
+			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
+			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
+				var cfg OnlineConfig
+				if json.Unmarshal(dec, &cfg) == nil {
+					if cfg.Version != "" && cfg.Version != AppVersion {
+						showCustomOverlay(overlayContainer, "UPDATE", widget.NewLabel(cfg.Message), "BATAL", nil, "UPDATE", func(){ 
+							if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
+						})
+					} else {
+						term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
+					}
+				}
+			}
+		} else {
+			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
+				go checkUpdate()
+			}, true, true)
+		}
+	}
+
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
-		checkUpdate(term, overlayContainer)
+		checkUpdate()
 	}()
 
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
@@ -1125,7 +1309,7 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
-	// --- INIT SIDE MENU & GESTURE ---
+	// --- INIT SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
 	var toggleMenu func() 
 	
 	// Init Overlay first
@@ -1135,7 +1319,7 @@ func main() {
 	sideMenuContainer, toggleFunc := makeSideMenu(w, term, overlayContainer, func() { toggleMenu() })
 	toggleMenu = toggleFunc
 
-	// UPDATE SENSITIVITAS SLIDE MENU
+	// UPDATE SENSITIVITAS SLIDE MENU (50 Width)
 	edgeTrigger := NewEdgeTrigger(func() {
 		if !sideMenuContainer.Visible() { toggleMenu() }
 	})
