@@ -606,7 +606,7 @@ func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 }()
             }
         },
-        fyne.NewSize(350, 400)) // UKURAN 2X
+        fyne.NewSize(350, 1200)) // UKURAN 6X
 }
 
 func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
@@ -625,7 +625,7 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
         "COBA LAGI", func() {
             showURLInputPopup(w, overlay, term)
         },
-        fyne.NewSize(350, 500)) // UKURAN 2X
+        fyne.NewSize(350, 1500)) // UKURAN 6X
 }
 
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
@@ -664,7 +664,7 @@ func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 })
             }
         },
-        fyne.NewSize(350, 400)) // UKURAN 2X
+        fyne.NewSize(350, 1200)) // UKURAN 6X
 }
 
 /* ==========================================
@@ -788,12 +788,12 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			processOfflineAccount()
 		}
 		
-		// Panggil Popup dengan Content khusus & Ukuran 2x dari asli (sekarang 350x300)
+		// Panggil Popup dengan Content khusus & Ukuran 6x dari asli (Original 150 -> 900)
 		showGamePopup(w, overlayContainer, "SUMBER AKUN", 
 			content,
 			"", nil, // Kosongkan tombol standar btn1
 			"", nil, // Kosongkan tombol standar btn2
-			fyne.NewSize(350, 300)) // UKURAN 2X
+			fyne.NewSize(350, 900)) // UKURAN 6X
 	})
 	
 	// --- RESET ID (RANDOM / MANUAL) ---
@@ -820,7 +820,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						AppNames[SelectedGameIdx], "GUEST/NEW")
 				})
 			},
-			fyne.NewSize(350, 360)) // UKURAN 2X
+			fyne.NewSize(350, 1080)) // UKURAN 6X (Original ~180 -> 1080)
 	})
 	
 	// --- SALIN ID ---
@@ -867,7 +867,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					})
 				}
 			},
-			fyne.NewSize(350, 360)) // UKURAN 2X
+			fyne.NewSize(350, 1080)) // UKURAN 6X (Original ~180 -> 1080)
 	})
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
