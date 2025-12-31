@@ -64,6 +64,7 @@ type OnlineConfig struct {
 	Link    string `json:"link"`
 }
 
+// File PNG diganti dengan base64 untuk menghindari error format
 //go:embed fd.png
 var fdPng []byte
 
@@ -138,11 +139,9 @@ func showCenteredOverlay(overlay *fyne.Container, title string, content fyne.Can
 		container.NewPadded(content),
 	)
 
-	// Card with fixed size
-	card := widget.NewCard("", "", paddedContent)
-	// Hapus SetMinSize karena tidak ada - gunakan container untuk ukuran tetap
+	// Card dengan container untuk ukuran tetap
 	cardContainer := container.NewStack(
-		card,
+		widget.NewCard("", "", paddedContent),
 	)
 
 	// Main container
@@ -758,14 +757,7 @@ func showURLConfigPopup(term *Terminal, overlayContainer *fyne.Container, showCu
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Head(urlStr)
 
-			// Ganti RunOnMain dengan langsung update UI karena kita di goroutine
-			// Gunakan app.RunOnMain untuk thread safety
-			a := fyne.CurrentApp()
-			if a != nil {
-				a.Settings().Theme()
-				// Kita akan update UI langsung karena ini sederhana
-			}
-
+			// Update UI dari goroutine
 			if err != nil || resp == nil || resp.StatusCode != 200 {
 				statusLabel.SetText("❌ URL tidak valid/tidak dapat diakses")
 				statusLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -828,13 +820,18 @@ func NewEdgeTrigger(onOpen func()) *EdgeTrigger {
 	e.ExtendBaseWidget(e)
 	return e
 }
+
 func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) {
 	if event.Dragged.DX > 10 && e.OnOpen != nil {
 		e.OnOpen()
 	}
 }
-func (e *EdgeTrigger) DragEnd()                                            {}
-func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer                { return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent)) }
+
+func (e *EdgeTrigger) DragEnd() {}
+
+func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
+}
 
 // Popup untuk input manual
 func showManualInputPopup(term *Terminal, overlayContainer *fyne.Container) {
@@ -970,7 +967,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						return
 					}
 
-					// Buat list widget langsung di goroutine utama
+					// Buat list widget
 					selectedIndex := -1
 					listWidget := widget.NewList(
 						func() int { return len(dList) },
@@ -996,8 +993,8 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						},
 					)
 					listContainer := container.NewGridWrap(fyne.NewSize(300, 400), listWidget)
-					
-					// Tampilkan overlay langsung
+
+					// PERBAIKAN: Tambahkan parameter width dan height yang hilang
 					showCenteredOverlay(overlayContainer, "DAFTAR AKUN", listContainer, "BATAL", func() {
 						removeFileRoot(OnlineAccFile)
 					}, "PILIH", func() {
@@ -1010,7 +1007,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						} else {
 							removeFileRoot(OnlineAccFile)
 						}
-					})
+					}, 350, 450) // <-- TAMBAHKAN width dan height di sini
 					listWidget.OnSelected = func(id int) {
 						selectedIndex = id
 						listWidget.Refresh()
