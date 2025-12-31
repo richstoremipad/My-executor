@@ -10,13 +10,13 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json" // Digunakan untuk JSON unmarshal
 	"errors"
 	"fmt"
 	"image/color"
 	"io"
 	"net/http"
-	"net/url"
+	"net/url" // Digunakan untuk parsing URL update
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +56,7 @@ var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
+// Struct ini menggunakan encoding/json
 type OnlineConfig struct {
 	Version string `json:"version"`
 	Message string `json:"message"`
@@ -359,7 +360,8 @@ func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 
 // VIEW MANAGER
 var currentView = "TERMINAL" // TERMINAL or GAMETOOLS
-var contentContainer *container.Stack
+// Perbaikan Tipe Data: *container.Stack diubah menjadi *fyne.Container
+var contentContainer *fyne.Container 
 var terminalView *fyne.Container
 var gameToolsView *fyne.Container
 
@@ -395,6 +397,35 @@ func main() {
 	if !CheckRoot() { currentDir = "/sdcard" }
 
 	/* ---------------------------
+	   UPDATE CHECKER LOGIC (RE-ADDED TO USE IMPORTS)
+	   --------------------------- */
+	// Fungsi ini memastikan encoding/json dan net/url terpakai
+	go func() {
+		time.Sleep(2 * time.Second)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
+		
+		if err == nil && resp.StatusCode == 200 {
+			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
+			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
+				var cfg OnlineConfig
+				// Menggunakan encoding/json
+				if json.Unmarshal(dec, &cfg) == nil {
+					if cfg.Version != "" && cfg.Version != AppVersion {
+						// Menggunakan net/url
+						if u, e := url.Parse(cfg.Link); e == nil {
+							term.Write([]byte(fmt.Sprintf("\x1b[33m[UPDATE] Versi baru tersedia: %s\x1b[0m\n", cfg.Version)))
+							dialog.ShowConfirm("Update", cfg.Message, func(b bool) {
+								if b { a.OpenURL(u) }
+							}, w)
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	/* ---------------------------
 	   UI COMPONENTS - TERMINAL
 	   --------------------------- */
 	input := widget.NewEntry()
@@ -416,7 +447,7 @@ func main() {
 	go func() {
 		for {
 			func() {
-				defer func() { recover() }()
+				defer func() { if r := recover(); r != nil {} }()
 				if CheckRoot() { lblSystemValue.Text = "GRANTED"; lblSystemValue.Color = successGreen } else { lblSystemValue.Text = "DENIED"; lblSystemValue.Color = failRed }
 				if CheckKernelDriver() { lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen } else { lblKernelValue.Text = "MISSING"; lblKernelValue.Color = failRed }
 				se := CheckSELinux()
