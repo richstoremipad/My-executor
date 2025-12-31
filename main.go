@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL 100%)
+   TERMINAL LOGIC (ORIGINAL - UTUH)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -226,7 +226,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   SYSTEM HELPERS (ORIGINAL - LENGKAP)
+   SYSTEM HELPERS (ORIGINAL - RESTORED)
 ================================ */
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
@@ -264,7 +264,7 @@ func RequestStoragePermission(term *Terminal) {
 	}
 }
 
-// FUNGSI DOWNLOAD ASLI (TETAP ADA)
+// FUNGSI DOWNLOAD ASLI (TETAP ADA DAN DIPAKAI UNTUK UPDATE)
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
@@ -309,8 +309,13 @@ func copyFile(src, dst string) error {
 }
 
 /* ===============================
-   LOGIKA MLBB & HELPER (BARU - ROOT)
+   HELPER KHUSUS GAME TOOLS (BARU)
 ================================ */
+// Helper Hapus File via Root (PASTI BERSIH)
+func removeFileRoot(path string) {
+	exec.Command("su", "-c", "rm -f \""+path+"\"").Run()
+}
+
 func cleanString(s string) string {
 	s = strings.ReplaceAll(s, "\ufeff", "")
 	s = strings.TrimSpace(s)
@@ -333,14 +338,14 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// Download via CURL (Root) - FORCE Root agar tidak error
+// Download khusus MLBB via CURL (Root) - FORCE Root agar tidak error
 func downloadGameConfig(url string, filepath string) error {
-	exec.Command("su", "-c", "rm -f "+filepath).Run()
+	removeFileRoot(filepath)
 	cmd := exec.Command("su", "-c", fmt.Sprintf("curl -k -L -f --connect-timeout 20 -o %s %s", filepath, url))
 	return cmd.Run()
 }
 
-// Baca File via CAT (Root)
+// Baca File khusus MLBB via CAT (Root)
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	
@@ -428,7 +433,7 @@ func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-// HELPER POPUP CARD
+// HELPER POPUP CARD (FIXED UI)
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
@@ -453,7 +458,7 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		btnBox,
 	)
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
-	// UKURAN POPUP TINGGI
+	// UKURAN POPUP LEBIH TINGGI AGAR LIST MUAT
 	wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(340, 600), container.NewPadded(card)))
 	
 	overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
@@ -466,6 +471,10 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	btnDimmer.Importance = widget.LowImportance
 	dimmerContainer := container.NewStack(dimmer, btnDimmer)
 	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
+	
+	// FIX LEBAR MENU
+	spacerWidth := canvas.NewRectangle(color.Transparent)
+	spacerWidth.SetMinSize(fyne.NewSize(310, 10))
 
 	lblTitle := widget.NewLabelWithStyle("GAME TOOLS", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
@@ -486,13 +495,13 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			ids, rNames, dList, err := parseAccountFile(path)
 			if err != nil { 
 				term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-				if isOnline { os.Remove(OnlineAccFile) } 
+				if isOnline { removeFileRoot(OnlineAccFile) } 
 				return 
 			}
 
 			selectedIndex := -1
 			
-			// LIST AKUN (Ceklis + Nama)
+			// LIST (Nama + Ceklis)
 			listWidget := widget.NewList(
 				func() int { return len(dList) },
 				func() fyne.CanvasObject { 
@@ -511,20 +520,20 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 				},
 			)
 			
+			// Wrapper List agar aman
 			listContainer := container.NewGridWrap(fyne.NewSize(300, 400), listWidget)
 
 			showCustomOverlay(overlayContainer, "DAFTAR AKUN", listContainer, "BATAL", func() {
-				if isOnline { os.Remove(OnlineAccFile) }
+				if isOnline { removeFileRoot(OnlineAccFile) }
 			}, "PILIH", func() {
 				if selectedIndex >= 0 {
 					runMLBBTask(term, "Login: "+rNames[selectedIndex], func() {
 						applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rNames[selectedIndex])
 						exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
-						// HAPUS FILE SETELAH SUKSES
-						if isOnline { os.Remove(OnlineAccFile) }
+						if isOnline { removeFileRoot(OnlineAccFile) }
 					})
 				} else {
-					if isOnline { os.Remove(OnlineAccFile) }
+					if isOnline { removeFileRoot(OnlineAccFile) }
 				}
 			})
 			listWidget.OnSelected = func(id int) { selectedIndex = id; listWidget.Refresh() }
@@ -548,7 +557,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						processAccountFile(OnlineAccFile, true)
 					} else {
 						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")))
-						os.Remove(OnlineAccFile)
+						removeFileRoot(OnlineAccFile)
 					}
 				}()
 			} else {
@@ -565,7 +574,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 								processAccountFile(OnlineAccFile, true)
 							} else {
 								term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")))
-								os.Remove(OnlineAccFile)
+								removeFileRoot(OnlineAccFile)
 							}
 						}()
 					}
@@ -618,22 +627,23 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	// TOMBOL KELUAR
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
-	// SUSUN KONTEN MENU
-	scrollContent := container.NewVBox(
+	// CONTENT MENU TENGAH (SCROLLABLE)
+	menuContent := container.NewVBox(
 		container.NewPadded(lblTitle), widget.NewSeparator(),
 		cardTarget, cardAccount, 
 		layout.NewSpacer(), 
 		widget.NewSeparator(), 
 	)
 	
-	// FIX LAYOUT: Gunakan Border agar Tombol Keluar Selalu di Bawah
-	finalLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(scrollContent))
+	// FIX LAYOUT: Menggunakan Border. Bottom=btnExit memaksa tombol keluar SELALU di bawah.
+	finalMenuLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
 	
-	// BACKGROUND + LAYOUT
-	panel := container.NewStack(bgMenu, container.NewPadded(finalLayout))
+	// PANEL UTAMA
+	panel := container.NewStack(bgMenu, spacerWidth, container.NewPadded(finalMenuLayout))
 	
-	// SIZE UPDATE: Lebar 310
-	slideContainer := container.NewHBox(container.NewGridWrap(fyne.NewSize(310, 700), panel))
+	// SLIDE CONTAINER
+	slideContainer := container.NewBorder(nil, nil, panel, nil)
+	
 	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
 
 	toggle := func() { if finalMenu.Visible() { finalMenu.Hide() } else { finalMenu.Show(); finalMenu.Refresh() } }
@@ -645,7 +655,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 ================================ */
 func main() {
 	// 1. Cleanup awal
-	os.Remove(OnlineAccFile)
+	removeFileRoot(OnlineAccFile)
 
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
@@ -809,7 +819,6 @@ func main() {
 
 	var overlayContainer *fyne.Container
 	
-	// FUNGSI POPUP (UPDATED: LOGIKA WARNA TOMBOL RETRY)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -829,7 +838,6 @@ func main() {
 			if action != nil { action() }
 		})
 		
-		// LOGIKA WARNA
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
 		} else {
@@ -960,14 +968,11 @@ func main() {
 		}()
 	}
 
-	// DEFINISI FUNGSI UPDATE (WARNA FIX: 90 = Abu-abu)
 	var checkUpdate func()
 	checkUpdate = func() {
 		overlayContainer.Hide()
-		
 		time.Sleep(500 * time.Millisecond) 
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
-		// WARNA SESUAI ASLI: \x1b[90m
 		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
 		
 		client := &http.Client{Timeout: 10 * time.Second}
@@ -979,7 +984,6 @@ func main() {
 				var cfg OnlineConfig
 				if json.Unmarshal(dec, &cfg) == nil {
 					if cfg.Version != "" && cfg.Version != AppVersion {
-						// UPDATE MENGGUNAKAN CUSTOM OVERLAY AGAR SERAGAM
 						showCustomOverlay(overlayContainer, "UPDATE", widget.NewLabel(cfg.Message), "BATAL", nil, "UPDATE", func(){ 
 							if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
 						})
@@ -989,7 +993,6 @@ func main() {
 				}
 			}
 		} else {
-			// POPUP RETRY
 			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
 				go checkUpdate()
 			}, true, true)
@@ -1010,7 +1013,6 @@ func main() {
 	)
 
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { 
-		// INJECT MENGGUNAKAN CUSTOM OVERLAY
 		showCustomOverlay(overlayContainer, "INJECT", widget.NewLabel("Mulai Inject Driver?"), "BATAL", nil, "MULAI", func(){ autoInstallKernel() }) 
 	})
 	btnInj.Importance = widget.HighImportance
@@ -1074,10 +1076,10 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
-	// --- SETUP SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
+	// --- INIT SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
 	var toggleMenu func() 
 	
-	// Define Overlay First
+	// Init Overlay first
 	overlayContainer = container.NewStack()
 	overlayContainer.Hide()
 
