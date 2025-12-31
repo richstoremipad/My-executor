@@ -615,11 +615,11 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
-	// TOMBOL KELUAR (FIX: MUNCUL DI BAWAH)
+	// TOMBOL KELUAR
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
-	// CONTENT MENU
-	menuContent := container.NewVBox(
+	// SUSUN KONTEN MENU
+	scrollContent := container.NewVBox(
 		container.NewPadded(lblTitle), widget.NewSeparator(),
 		cardTarget, cardAccount, 
 		layout.NewSpacer(), 
@@ -627,7 +627,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	)
 	
 	// FIX LAYOUT: Gunakan Border agar Tombol Keluar Selalu di Bawah
-	finalLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
+	finalLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(scrollContent))
 	
 	// BACKGROUND + LAYOUT
 	panel := container.NewStack(bgMenu, container.NewPadded(finalLayout))
@@ -650,7 +650,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("CODE BY TANGSAN")
+	w := a.NewWindow("Simple Exec by TANGSAN")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
