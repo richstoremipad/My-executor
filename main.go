@@ -49,7 +49,7 @@ var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
-// --- VARIABEL TAMBAHAN GAME TOOLS ---
+// --- VARIABEL GAME TOOLS ---
 const AccountFile = "/sdcard/akun.ini"
 const OnlineAccFile = "/sdcard/accml_online.ini"
 const UrlConfigFile = "/sdcard/ml_url_config.ini"
@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL)
+   TERMINAL LOGIC (KEMBALI KE ORIGINAL 100%)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -151,7 +151,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100} // ABU-ABU
+	case "90": return color.Gray{Y: 100} // Warna Abu-abu (FIXED)
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -228,7 +228,6 @@ func (t *Terminal) printText(text string) {
 /* ===============================
    SYSTEM HELPERS (ORIGINAL - LENGKAP)
 ================================ */
-// SAYA KEMBALIKAN FUNGSI INI (MESKIPUN BELUM DIPAKAI DI MAIN UTAMA, TAPI ADA DI SCRIPT ASLI)
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
 	for i := 0; i < barLength; i++ { if i < filledLength { bar += "█" } else { bar += "░" } }
@@ -255,7 +254,6 @@ func CheckSELinux() string {
 	return strings.TrimSpace(string(out))
 }
 
-// SAYA KEMBALIKAN FUNGSI INI SESUAI SCRIPT ASLI
 func RequestStoragePermission(term *Terminal) {
 	if term != nil { term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n")) }
 	pkgName := "com.tangsan.executor"
@@ -266,26 +264,30 @@ func RequestStoragePermission(term *Terminal) {
 	}
 }
 
-// UPDATE: FUNGSI DOWNLOAD DI SCRIPT ASLI TIDAK WORK UNTUK CONFIG,
-// JADI SAYA UPDATE ISINYA MENGGUNAKAN CURL (ROOT) TAPI NAMANYA TETAP SAMA
+// FUNGSI DOWNLOAD ASLI (TETAP ADA)
 func downloadFile(url string, filepath string) (error, string) {
-	// Hapus file lama
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
-	
-	// Gunakan CURL via Root (Solusi Permission Denied)
-	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 20 -o %s %s", filepath, url)
+	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
 	cmd := exec.Command("su", "-c", cmdStr)
-	
-	if err := cmd.Run(); err != nil {
-		return err, "Fail"
+	err := cmd.Run()
+	if err == nil {
+		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
+		if checkCmd.Run() == nil { return nil, "Success" }
 	}
-	
-	// Cek apakah file ada
-	check := exec.Command("su", "-c", "[ -s "+filepath+" ]")
-	if check.Run() == nil {
-		return nil, "Success"
-	}
-	return errors.New("Download failed"), "Fail"
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil { return err, "Init Fail" }
+	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
+	resp, err := client.Do(req)
+	if err != nil { return err, "Net Err" }
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
+	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
+	stdin, err := writeCmd.StdinPipe()
+	if err != nil { return err, "Pipe Err" }
+	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
+	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
+	return nil, "Success"
 }
 
 func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
@@ -331,7 +333,14 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// BACA FILE VIA ROOT (Solusi Permission Denied)
+// Download via CURL (Root) - FORCE Root agar tidak error
+func downloadGameConfig(url string, filepath string) error {
+	exec.Command("su", "-c", "rm -f "+filepath).Run()
+	cmd := exec.Command("su", "-c", fmt.Sprintf("curl -k -L -f --connect-timeout 20 -o %s %s", filepath, url))
+	return cmd.Run()
+}
+
+// Baca File via CAT (Root)
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	
@@ -340,7 +349,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 	if err == nil {
 		content = string(b)
 	} else {
-		// Fallback root cat
+		// Fallback root
 		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
 		out, err2 := cmd.Output()
 		if err2 != nil {
@@ -356,6 +365,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 		line := cleanString(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") { continue }
 		
+		// Format: DEVICEID<spasi>NAMA
 		parts := strings.Fields(line)
 		if len(parts) >= 1 {
 			id := parts[0]
@@ -364,7 +374,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 			
 			ids = append(ids, id)
 			names = append(names, name)
-			displays = append(displays, name) // HANYA NAMA
+			displays = append(displays, name) // HANYA NAMA (SESUAI REQUEST)
 		}
 	}
 	
@@ -381,7 +391,7 @@ func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, cust
 	if customAccName != "" { term.Write([]byte(fmt.Sprintf("\x1b[35mAkun: %s\x1b[0m\n", customAccName))) }
 
 	if exec.Command("su", "-c", fmt.Sprintf("[ -f '%s' ]", targetFile)).Run() != nil {
-		term.Write([]byte("\x1b[31m[ERR] Data game belum ada!\x1b[0m\n"))
+		term.Write([]byte("\x1b[31m[ERR] Data game belum ada! Login game dulu minimal sekali.\x1b[0m\n"))
 		return
 	}
 
@@ -418,7 +428,7 @@ func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-// Helper Custom Overlay (Card Style - Anti Crash)
+// HELPER POPUP CARD
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
@@ -443,6 +453,7 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		btnBox,
 	)
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
+	// UKURAN POPUP TINGGI
 	wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(340, 600), container.NewPadded(card)))
 	
 	overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
@@ -464,6 +475,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	selGame.SetSelected(AppNames[0])
 	cardTarget := widget.NewCard("Target Game", "", container.NewPadded(selGame))
 
+	// --- LOGIN AKUN ---
 	btnLogin := widget.NewButtonWithIcon("Login Akun", theme.LoginIcon(), func() {
 		onClose()
 		btnOnline := widget.NewButton("ONLINE", nil)
@@ -480,7 +492,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 			selectedIndex := -1
 			
-			// LIST (Nama + Ceklis)
+			// LIST AKUN (Ceklis + Nama)
 			listWidget := widget.NewList(
 				func() int { return len(dList) },
 				func() fyne.CanvasObject { 
@@ -508,6 +520,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					runMLBBTask(term, "Login: "+rNames[selectedIndex], func() {
 						applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rNames[selectedIndex])
 						exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
+						// HAPUS FILE SETELAH SUKSES
 						if isOnline { os.Remove(OnlineAccFile) }
 					})
 				} else {
@@ -528,8 +541,8 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			if defaultUrl != "" && strings.HasPrefix(defaultUrl, "http") {
 				go func() {
 					term.Write([]byte(fmt.Sprintf("\x1b[33m[DL] URL tersimpan: %s\x1b[0m\n", defaultUrl)))
-					err, _ := downloadFile(defaultUrl, OnlineAccFile) // Pakai downloadFile yg sudah diupdate ke Curl
-					if err == nil {
+					// DOWNLOAD VIA ROOT (Game Config)
+					if err := downloadGameConfig(defaultUrl, OnlineAccFile); err == nil {
 						term.Write([]byte("\x1b[32m[DL] Sukses.\x1b[0m\n"))
 						dialog.NewCustom("Loading", "Hide", widget.NewLabel(""), w).Hide() 
 						processAccountFile(OnlineAccFile, true)
@@ -542,13 +555,13 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 				entryUrl := widget.NewEntry(); entryUrl.SetPlaceHolder("https://...")
 				showCustomOverlay(overlayContainer, "INPUT URL", entryUrl, "BATAL", nil, "DOWNLOAD", func() {
 					if entryUrl.Text != "" {
-						// Simpan config via root agar permission aman
+						// Simpan config via root
 						exec.Command("su", "-c", fmt.Sprintf("echo \"%s\" > %s", entryUrl.Text, UrlConfigFile)).Run()
 						
 						go func() {
 							term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
-							err, _ := downloadFile(entryUrl.Text, OnlineAccFile)
-							if err == nil {
+							// DOWNLOAD VIA ROOT
+							if err := downloadGameConfig(entryUrl.Text, OnlineAccFile); err == nil {
 								processAccountFile(OnlineAccFile, true)
 							} else {
 								term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")))
@@ -572,7 +585,10 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		onClose()
 		showCustomOverlay(overlayContainer, "RESET ID", widget.NewLabel("Ganti ID menjadi Random?"), "TIDAK", nil, "YA", func() {
 			runMLBBTask(term, "Reset ID Random", func() {
-				applyDeviceIDLogic(term, generateRandomID(), PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
+				// LOG ID RANDOM DI TERMINAL
+				newID := generateRandomID()
+				term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", newID)))
+				applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
 			})
 		})
 	})
@@ -588,6 +604,8 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
 					out, err := exec.Command("su", "-c", cmdStr).Output(); srcID := cleanString(string(out))
 					if err == nil && len(srcID) > 5 {
+						// LOG ID HASIL COPY DI TERMINAL
+						term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Salinan: %s\x1b[0m\n", srcID)))
 						applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "HASIL COPY")
 					} else { term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n")) }
 				})
@@ -597,6 +615,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
+	// TOMBOL KELUAR
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
 	scrollContent := container.NewVBox(
@@ -618,7 +637,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
               MAIN UI
 ================================ */
 func main() {
-	// Cleanup File
+	// 1. Cleanup awal
 	os.Remove(OnlineAccFile)
 
 	a := app.New()
@@ -666,6 +685,7 @@ func main() {
 				}
 				lblSystemValue.Refresh()
 				
+				// Panggil Deteksi Kallsyms
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				} else {
@@ -803,6 +823,7 @@ func main() {
 			if action != nil { action() }
 		})
 		
+		// LOGIKA WARNA
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
 		} else {
@@ -936,6 +957,7 @@ func main() {
 	// DEFINISI FUNGSI UPDATE (WARNA FIX: 90 = Abu-abu)
 	var checkUpdate func()
 	checkUpdate = func() {
+		// Reset tampilan saat retry
 		overlayContainer.Hide()
 		
 		time.Sleep(500 * time.Millisecond) 
@@ -952,7 +974,7 @@ func main() {
 				var cfg OnlineConfig
 				if json.Unmarshal(dec, &cfg) == nil {
 					if cfg.Version != "" && cfg.Version != AppVersion {
-						// UPDATE MENGGUNAKAN CUSTOM OVERLAY
+						// UPDATE MENGGUNAKAN CUSTOM OVERLAY AGAR SERAGAM
 						showCustomOverlay(overlayContainer, "UPDATE", widget.NewLabel(cfg.Message), "BATAL", nil, "UPDATE", func(){ 
 							if u, e := url.Parse(cfg.Link); e == nil { app.New().OpenURL(u) } 
 						})
