@@ -61,7 +61,7 @@ var SelectedGameIdx = 0
 type OnlineConfig struct {
 	Version string `json:"version"`
 	Message string `json:"message"`
-	Link    string `json:"link"`}
+	Link    string `json:"link"`
 }
 
 //go:embed fd.png
