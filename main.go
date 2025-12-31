@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -10,13 +9,13 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json" // Digunakan untuk JSON unmarshal
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/color"
 	"io"
 	"net/http"
-	"net/url" // Digunakan untuk parsing URL update
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,22 +40,18 @@ import (
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
+
+// BATAS MAX BARIS AGAR TIDAK LEMOT/CRASH
 const MaxScrollback = 100 
-
-// Game Configs
-const AccountFile = "/sdcard/akun.ini"
-const OnlineAccFile = "/sdcard/accml_online.ini"
-const UrlConfigFile = "/sdcard/ml_url_config.ini"
-
-var PackageNames = []string{"com.mobile.legends", "com.hhgame.mlbbvn", "com.mobile.legends.usa", "com.mobile.v2l"}
-var AppNames     = []string{"🌍 Global", "🇻🇳 VNG", "🇺🇸 USA", "🇮🇳 M6"}
-var SelectedGameIdx = 0 // Default Global
 
 var currentDir string = "/sdcard" 
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
-// Struct ini menggunakan encoding/json
+// Variabel Global untuk MLBB Tools
+var PackageNames = []string{"com.mobile.legends", "com.hhgame.mlbbvn", "com.mobile.legends.usa", "com.mobile.v2l"}
+var AppNames     = []string{"Global", "VNG", "USA", "M6"}
+
 type OnlineConfig struct {
 	Version string `json:"version"`
 	Message string `json:"message"`
@@ -95,16 +90,40 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   MLBB LOGIC INTEGRATION
+   GESTURE & SIDE MENU LOGIC
 ========================================== */
-func cleanGhostSpaces(s string) string {
-	s = strings.ReplaceAll(s, "\ufeff", "")
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\n", "")
-	s = strings.ReplaceAll(s, "\r", "")
-	return s
+
+// EdgeTrigger mendeteksi geseran dari sisi kiri layar
+type EdgeTrigger struct {
+	widget.BaseWidget
+	OnOpen func()
 }
 
+func NewEdgeTrigger(onOpen func()) *EdgeTrigger {
+	e := &EdgeTrigger{OnOpen: onOpen}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) {
+	// Jika menggeser ke kanan (DX positif) lebih dari 10 pixel
+	if event.Dragged.DX > 10 {
+		if e.OnOpen != nil {
+			e.OnOpen()
+		}
+	}
+}
+
+func (e *EdgeTrigger) DragEnd() {}
+
+func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
+	// Render transparan
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
+}
+
+/* ==========================================
+   MLBB LOGIC (Diadaptasi ke Fyne)
+========================================== */
 func generateRandomID() string {
 	randHex := func(n int) string {
 		bytes := make([]byte, n/2)
@@ -114,42 +133,140 @@ func generateRandomID() string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", randHex(56), randHex(4), randHex(4), randHex(4), randHex(12))
 }
 
-// Fungsi core untuk inject ID
-func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, customAccName string) bool {
-	targetID = cleanGhostSpaces(targetID)
+// Fungsi helper untuk menjalankan perintah root dan menulis ke terminal GUI
+func runMLBBTask(term *Terminal, cmdName string, cmdFunc func()) {
+	term.Write([]byte(fmt.Sprintf("\n\x1b[33m[MLBB] Menjalankan: %s...\x1b[0m\n", cmdName)))
+	go cmdFunc()
+}
+
+func applyDeviceID(term *Terminal, targetPkg string, targetName string) {
+	newID := generateRandomID()
+	term.Write([]byte(fmt.Sprintf("\x1b[36mTarget: %s (%s)\nID Baru: %s\x1b[0m\n", targetName, targetPkg, newID)))
+
 	targetFile := fmt.Sprintf("/data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml", targetPkg, targetPkg)
-
-	term.Write([]byte(fmt.Sprintf("\x1b[35m[PROCESS] Target: %s (%s)\x1b[0m\n", targetAppName, targetPkg)))
-	if customAccName != "" {
-		term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] Akun: %s\x1b[0m\n", customAccName)))
-	} else {
-		term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", targetID)))
-	}
-
-	// Cek File
-	if exec.Command("su", "-c", fmt.Sprintf("[ -f '%s' ]", targetFile)).Run() != nil {
-		term.Write([]byte("\x1b[31m[ERROR] File data game belum ada! Login dulu sekali.\x1b[0m\n"))
-		return false
-	}
-
+	
+	// Cek root command
 	cmds := []string{
 		fmt.Sprintf("am force-stop %s", targetPkg),
 		fmt.Sprintf("rm -rf /data/user/0/%s/shared_prefs/__gpm__.xml", targetPkg),
-		fmt.Sprintf("sed -i 's/.*<string name=\"JsonDeviceID\">.*/    <string name=\"JsonDeviceID\">%s<\\/string>/' %s", targetID, targetFile),
-		fmt.Sprintf("sed -i 's/.*<string name=\"__Java_JsonDeviceID__\">.*/    <string name=\"__Java_JsonDeviceID\">%s<\\/string>/' %s", targetID, targetFile),
+		fmt.Sprintf("sed -i 's/.*<string name=\"JsonDeviceID\">.*/    <string name=\"JsonDeviceID\">%s<\\/string>/' %s", newID, targetFile),
+		fmt.Sprintf("sed -i 's/.*<string name=\"__Java_JsonDeviceID__\">.*/    <string name=\"__Java_JsonDeviceID\">%s<\\/string>/' %s", newID, targetFile),
 	}
 
 	for _, cmd := range cmds {
-		term.Write([]byte(fmt.Sprintf("\x1b[90m> %s\x1b[0m\n", cmd))) // Log verbose
-		exec.Command("su", "-c", cmd).Run()
+		err := exec.Command("su", "-c", cmd).Run()
+		if err != nil {
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal: %s\x1b[0m\n", cmd)))
+		} 
+	}
+	term.Write([]byte("\x1b[32m[SUKSES] ID Berhasil diganti.\x1b[0m\n"))
+}
+
+// Membuat Menu Samping dengan Menu MLBB
+func makeSideMenu(w fyne.Window, term *Terminal, onClose func()) (*fyne.Container, func()) {
+	// 1. Background Dimmer
+	dimmer := canvas.NewRectangle(color.RGBA{0, 0, 0, 150})
+	btnDimmer := widget.NewButton("", onClose)
+	btnDimmer.Importance = widget.LowImportance
+	dimmerContainer := container.NewStack(dimmer, btnDimmer)
+
+	// 2. Konten Menu
+	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
+	
+	lblMenu := canvas.NewText("MENU UTAMA", theme.PrimaryColor())
+	lblMenu.TextSize = 18; lblMenu.TextStyle = fyne.TextStyle{Bold: true}
+
+	// --- Menu Standard ---
+	itemClr := widget.NewButtonWithIcon("Bersihkan Terminal", theme.ContentClearIcon(), func() { 
+		term.Clear(); onClose() 
+	})
+	itemClr.Alignment = widget.ButtonAlignLeading
+
+	// --- Menu MLBB (Dari Script Ori MLBB) ---
+	lblGame := widget.NewLabel("MLBB TOOLS")
+	lblGame.TextStyle = fyne.TextStyle{Bold: true}
+
+	// Accordion untuk Reset ID
+	var resetButtons []fyne.CanvasObject
+	for i, name := range AppNames {
+		pkg := PackageNames[i]
+		appName := name
+		btn := widget.NewButton("Reset "+name, func() {
+			onClose()
+			runMLBBTask(term, "Reset ID "+appName, func() {
+				applyDeviceID(term, pkg, appName)
+			})
+		})
+		btn.Alignment = widget.ButtonAlignLeading
+		resetButtons = append(resetButtons, btn)
+	}
+	accReset := widget.NewAccordion(
+		widget.NewAccordionItem("♻️ Reset ID / Akun Tamu", container.NewVBox(resetButtons...)),
+	)
+
+	// Tombol SELinux
+	btnSel := widget.NewButton("🛡️ Switch SELinux", func() {
+		onClose()
+		runMLBBTask(term, "Switch SELinux", func() {
+			if CheckSELinux() == "Enforcing" {
+				exec.Command("su", "-c", "setenforce 0").Run()
+				term.Write([]byte("\x1b[33mSELinux: Permissive\x1b[0m\n"))
+			} else {
+				exec.Command("su", "-c", "setenforce 1").Run()
+				term.Write([]byte("\x1b[32mSELinux: Enforcing\x1b[0m\n"))
+			}
+		})
+	})
+	btnSel.Alignment = widget.ButtonAlignLeading
+
+	// Tombol Salin ID
+	btnCopy := widget.NewButton("📋 Salin ID", func() {
+		onClose()
+		term.Write([]byte("\x1b[33m[INFO] Fitur Salin ID belum diimplementasikan di GUI ini.\x1b[0m\n"))
+	})
+	btnCopy.Alignment = widget.ButtonAlignLeading
+
+	// Tombol Exit
+	itemExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) })
+	itemExit.Importance = widget.DangerImportance
+
+	// Susunan Menu
+	scrollContent := container.NewVBox(
+		container.NewPadded(lblMenu),
+		widget.NewSeparator(),
+		itemClr,
+		widget.NewSeparator(),
+		lblGame,
+		accReset,
+		btnSel,
+		btnCopy,
+		layout.NewSpacer(),
+		widget.NewSeparator(),
+		itemExit,
+	)
+	
+	panel := container.NewStack(bgMenu, container.NewPadded(container.NewVScroll(scrollContent)))
+	panelSize := fyne.NewSize(280, 700) 
+	
+	slideContainer := container.NewHBox(container.NewGridWrap(panelSize, panel))
+	
+	finalMenu := container.NewStack(dimmerContainer, slideContainer)
+	finalMenu.Hide()
+
+	toggle := func() {
+		if finalMenu.Visible() {
+			finalMenu.Hide()
+		} else {
+			finalMenu.Show()
+			finalMenu.Refresh()
+		}
 	}
 
-	term.Write([]byte("\x1b[32m[SUCCESS] Device ID Berhasil diterapkan.\x1b[0m\n"))
-	return true
+	return finalMenu, toggle
 }
 
 /* ==========================================
-   TERMINAL UI LOGIC
+   TERMINAL LOGIC (Original)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -319,63 +436,6 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func downloadFile(url string, filepath string) error {
-	resp, err := http.Get(url)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	out, err := os.Create(filepath)
-	if err != nil { return err }
-	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
-	return err
-}
-
-/* ==========================================
-   UI NAVIGATION LOGIC
-========================================== */
-
-// EdgeTrigger mendeteksi geseran dari sisi kiri layar
-type EdgeTrigger struct {
-	widget.BaseWidget
-	OnOpen func()
-}
-
-func NewEdgeTrigger(onOpen func()) *EdgeTrigger {
-	e := &EdgeTrigger{OnOpen: onOpen}
-	e.ExtendBaseWidget(e)
-	return e
-}
-
-func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) {
-	if event.Dragged.DX > 5 {
-		if e.OnOpen != nil { e.OnOpen() }
-	}
-}
-
-func (e *EdgeTrigger) DragEnd() {}
-
-func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
-}
-
-// VIEW MANAGER
-var currentView = "TERMINAL" // TERMINAL or GAMETOOLS
-// Perbaikan Tipe Data: *container.Stack diubah menjadi *fyne.Container
-var contentContainer *fyne.Container 
-var terminalView *fyne.Container
-var gameToolsView *fyne.Container
-
-func switchView(viewName string) {
-	currentView = viewName
-	contentContainer.Objects = nil
-	if viewName == "TERMINAL" {
-		contentContainer.Add(terminalView)
-	} else if viewName == "GAMETOOLS" {
-		contentContainer.Add(gameToolsView)
-	}
-	contentContainer.Refresh()
-}
-
 /* ===============================
               MAIN UI
 ================================ */
@@ -383,95 +443,80 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Executor Pro")
-	w.Resize(fyne.NewSize(400, 750))
+	w := a.NewWindow("Simple Exec by TANGSAN")
+	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
 	term := NewTerminal()
 	
-	// INIT ROOT & DIRS
 	go func() {
 		time.Sleep(1 * time.Second)
-		if !CheckRoot() { /* auto request */ }
+		if !CheckRoot() { /* Optional Auto Request */ }
 	}()
+
 	if !CheckRoot() { currentDir = "/sdcard" }
 
-	/* ---------------------------
-	   UPDATE CHECKER LOGIC (RE-ADDED TO USE IMPORTS)
-	   --------------------------- */
-	// Fungsi ini memastikan encoding/json dan net/url terpakai
-	go func() {
-		time.Sleep(2 * time.Second)
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
-		
-		if err == nil && resp.StatusCode == 200 {
-			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
-			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
-				var cfg OnlineConfig
-				// Menggunakan encoding/json
-				if json.Unmarshal(dec, &cfg) == nil {
-					if cfg.Version != "" && cfg.Version != AppVersion {
-						// Menggunakan net/url
-						if u, e := url.Parse(cfg.Link); e == nil {
-							term.Write([]byte(fmt.Sprintf("\x1b[33m[UPDATE] Versi baru tersedia: %s\x1b[0m\n", cfg.Version)))
-							dialog.ShowConfirm("Update", cfg.Message, func(b bool) {
-								if b { a.OpenURL(u) }
-							}, w)
-						}
-					}
-				}
-			}
-		}
-	}()
-
-	/* ---------------------------
-	   UI COMPONENTS - TERMINAL
-	   --------------------------- */
-	input := widget.NewEntry()
-	input.SetPlaceHolder("Command...")
-	
-	status := canvas.NewText("System: Ready", color.Gray{Y: 180})
-	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
-
-	// Status Grid (Kernel, SELinux, Root)
 	brightYellow := color.RGBA{R: 255, G: 255, B: 0, A: 255}
 	successGreen := color.RGBA{R: 0, G: 255, B: 0, A: 255}
 	failRed := color.RGBA{R: 255, G: 50, B: 50, A: 255}
+	silverColor := color.Gray{Y: 180}
 
+	input := widget.NewEntry()
+	input.SetPlaceHolder("Terminal Command...")
+	status := canvas.NewText("System: Ready", silverColor)
+	status.TextSize = 12; status.Alignment = fyne.TextAlignCenter
+
+	lblKernelTitle := createLabel("KERNEL", brightYellow, 10, true)
 	lblKernelValue := createLabel("...", color.Gray{Y: 150}, 11, true)
+	lblSELinuxTitle := createLabel("SELINUX", brightYellow, 10, true)
 	lblSELinuxValue := createLabel("...", color.Gray{Y: 150}, 11, true)
+	lblSystemTitle := createLabel("ROOT", brightYellow, 10, true)
 	lblSystemValue := createLabel("...", color.Gray{Y: 150}, 11, true)
 
-	// Monitor System loop
+	// Update Monitor Loop
 	go func() {
+		time.Sleep(1 * time.Second)
 		for {
 			func() {
 				defer func() { if r := recover(); r != nil {} }()
-				if CheckRoot() { lblSystemValue.Text = "GRANTED"; lblSystemValue.Color = successGreen } else { lblSystemValue.Text = "DENIED"; lblSystemValue.Color = failRed }
-				if CheckKernelDriver() { lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen } else { lblKernelValue.Text = "MISSING"; lblKernelValue.Color = failRed }
+				if CheckRoot() {
+					lblSystemValue.Text = "GRANTED"; lblSystemValue.Color = successGreen
+				} else {
+					lblSystemValue.Text = "DENIED"; lblSystemValue.Color = failRed
+				}
+				lblSystemValue.Refresh()
+				
+				if CheckKernelDriver() {
+					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
+				} else {
+					lblKernelValue.Text = "MISSING"; lblKernelValue.Color = failRed
+				}
+				lblKernelValue.Refresh()
+				
 				se := CheckSELinux()
 				lblSELinuxValue.Text = strings.ToUpper(se)
-				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else { lblSELinuxValue.Color = failRed }
-				
-				lblSystemValue.Refresh(); lblKernelValue.Refresh(); lblSELinuxValue.Refresh()
+				if se == "Enforcing" { lblSELinuxValue.Color = successGreen } else if se == "Permissive" { lblSELinuxValue.Color = failRed } else { lblSELinuxValue.Color = color.Gray{Y: 150} }
+				lblSELinuxValue.Refresh()
 			}()
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
-	// Execute Logic
+	// Executor Function
 	executeTask := func(cmdText string, isScript bool, scriptPath string, isBinary bool) {
-		status.Text = "Status: Busy..."
+		status.Text = "Status: Processing..."
 		status.Refresh()
+
 		if !isScript {
 			displayDir := currentDir
-			if len(displayDir) > 20 { displayDir = "..." + displayDir[len(displayDir)-17:] }
+			if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }
 			term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0m%s\n", displayDir, cmdText)))
 		}
+
 		go func() {
 			var cmd *exec.Cmd
 			isRoot := CheckRoot()
+
 			if isScript {
 				if isRoot {
 					target := "/data/local/tmp/temp_exec"
@@ -485,23 +530,36 @@ func main() {
 				if isRoot {
 					cmd = exec.Command("su", "-c", fmt.Sprintf("cd \"%s\" && %s", currentDir, cmdText))
 				} else {
-					// Local shell fallback logic
 					runCmd := cmdText
-					if strings.HasPrefix(cmdText, "ls") && !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) }
+					if strings.HasPrefix(cmdText, "ls") { if !strings.Contains(cmdText, "-a") { runCmd = strings.Replace(cmdText, "ls", "ls -a", 1) } }
+					if strings.HasPrefix(cmdText, "./") {
+						fileName := strings.TrimPrefix(cmdText, "./")
+						fullPath := filepath.Join(currentDir, fileName)
+						if strings.HasSuffix(fileName, ".sh") {
+							runCmd = fmt.Sprintf("sh \"%s\"", fullPath)
+						} else {
+							tmpBin := filepath.Join(os.TempDir(), fileName)
+							if err := copyFile(fullPath, tmpBin); err == nil { os.Chmod(tmpBin, 0755); runCmd = tmpBin } else { runCmd = fullPath }
+						}
+					}
 					cmd = exec.Command("sh", "-c", runCmd)
 					cmd.Dir = currentDir
 				}
 			}
+
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 			stdin, _ := cmd.StdinPipe()
 			stdout, _ := cmd.StdoutPipe()
 			stderr, _ := cmd.StderrPipe()
 			cmdMutex.Lock(); activeStdin = stdin; cmdMutex.Unlock()
+
 			if err := cmd.Start(); err != nil {
 				term.Write([]byte(fmt.Sprintf("\x1b[31mError: %s\x1b[0m\n", err.Error())))
-				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock(); return
+				cmdMutex.Lock(); activeStdin = nil; cmdMutex.Unlock()
+				return
 			}
-			var wg sync.WaitGroup; wg.Add(2)
+			var wg sync.WaitGroup
+			wg.Add(2)
 			go func() { defer wg.Done(); io.Copy(term, stdout) }()
 			go func() { defer wg.Done(); io.Copy(term, stderr) }()
 			wg.Wait(); cmd.Wait()
@@ -518,346 +576,314 @@ func main() {
 		if activeStdin != nil { io.WriteString(activeStdin, text+"\n"); term.Write([]byte(text + "\n")); cmdMutex.Unlock(); return }
 		cmdMutex.Unlock()
 		if strings.TrimSpace(text) == "" { return }
+		
 		if strings.HasPrefix(text, "cd") {
-			// CD Logic simplified
 			parts := strings.Fields(text)
 			newPath := currentDir
-			if len(parts) > 1 { newPath = filepath.Join(currentDir, parts[1]) }
-			currentDir = newPath // Basic naive impl for UI
-			term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", currentDir, parts[1])))
+			if len(parts) == 1 { if CheckRoot() { newPath = "/data/local/tmp" } else { h, _ := os.UserHomeDir(); newPath = h } } else { arg := parts[1]; if filepath.IsAbs(arg) { newPath = arg } else { newPath = filepath.Join(currentDir, arg) } }
+			newPath = filepath.Clean(newPath)
+			exist := false
+			if CheckRoot() { if exec.Command("su", "-c", "[ -d \""+newPath+"\" ]").Run() == nil { exist = true } } else { if info, err := os.Stat(newPath); err == nil && info.IsDir() { exist = true } }
+			if exist { currentDir = newPath; displayDir := currentDir; if len(displayDir) > 25 { displayDir = "..." + displayDir[len(displayDir)-20:] }; term.Write([]byte(fmt.Sprintf("\x1b[33m%s \x1b[36m> \x1b[0mcd %s\n", displayDir, parts[1]))) } else { term.Write([]byte(fmt.Sprintf("\x1b[31mcd: %s: No such directory\x1b[0m\n", parts[1]))) }
 			return
 		}
 		executeTask(text, false, "", false)
 	}
 	input.OnSubmitted = func(_ string) { send() }
 
-	// Header Widgets
-	infoGrid := container.NewGridWithColumns(3, 
-		container.NewVBox(createLabel("KERNEL", brightYellow, 10, true), lblKernelValue), 
-		container.NewVBox(createLabel("SELINUX", brightYellow, 10, true), lblSELinuxValue), 
-		container.NewVBox(createLabel("ROOT", brightYellow, 10, true), lblSystemValue),
-	)
+	runFile := func(reader fyne.URIReadCloser) {
+		defer reader.Close(); term.Clear()
+		data, err := io.ReadAll(reader)
+		if err != nil { term.Write([]byte("\x1b[31m[ERR] Read Failed\x1b[0m\n")); return }
+		isBinary := bytes.HasPrefix(data, []byte("\x7fELF"))
+		tmpFile, err := os.CreateTemp("", "exec_tmp")
+		if err != nil { term.Write([]byte("\x1b[31m[ERR] Write Failed\x1b[0m\n")); return }
+		tmpPath := tmpFile.Name(); tmpFile.Write(data); tmpFile.Close(); os.Chmod(tmpPath, 0755)
+		executeTask("", true, tmpPath, isBinary)
+	}
+
+	var overlayContainer *fyne.Container
 	
-	// Inject Logic
+	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
+		w.Canvas().Refresh(w.Content())
+		
+		cancelLabel := "BATAL"
+		cancelFunc := func() { overlayContainer.Hide() }
+		
+		if isForce {
+			cancelLabel = "KELUAR"
+			cancelFunc = func() { os.Exit(0) }
+		}
+		
+		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
+		btnCancel.Importance = widget.DangerImportance
+		
+		btnOk := widget.NewButton(confirm, func() {
+			if !isForce { overlayContainer.Hide() }
+			if action != nil { action() }
+		})
+		
+		if confirm == "COBA LAGI" {
+			btnOk.Importance = widget.HighImportance
+		} else {
+			if isErr { 
+				btnOk.Importance = widget.DangerImportance 
+			} else { 
+				btnOk.Importance = widget.HighImportance 
+			}
+		}
+		
+		btnBox := container.NewHBox(
+			layout.NewSpacer(), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnCancel), 
+			widget.NewLabel("   "), 
+			container.NewGridWrap(fyne.NewSize(110,40), btnOk), 
+			layout.NewSpacer(),
+		)
+		
+		lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
+		if isErr { lblTitle.Color = theme.ErrorColor() }
+		
+		lblMsg := widget.NewLabel(msg)
+		lblMsg.Alignment = fyne.TextAlignCenter 
+		lblMsg.Wrapping = fyne.TextWrapWord
+		
+		content := container.NewVBox(
+			container.NewPadded(container.NewCenter(lblTitle)), 
+			container.NewPadded(lblMsg), 
+			widget.NewLabel(""), 
+			btnBox,
+		)
+		
+		card := widget.NewCard("", "", container.NewPadded(content))
+		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
+		
+		// Update objek overlayContainer
+		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
+		overlayContainer.Show(); overlayContainer.Refresh()
+	}
+
 	autoInstallKernel := func() {
 		term.Clear()
-		term.Write([]byte("\x1b[36m[*] Memulai Inject Driver...\x1b[0m\n"))
+		status.Text = "Sistem: Memproses..."
+		status.Refresh()
+
 		go func() {
+			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
+
 			out, _ := exec.Command("uname", "-r").Output()
-			ver := strings.TrimSpace(string(out))
-			targetVer := strings.Split(ver, "-")[0]
-			term.Write([]byte(fmt.Sprintf("Kernel: %s\n", ver)))
+			fullVer := strings.TrimSpace(string(out))
+			targetVer := strings.Split(fullVer, "-")[0]
 			
-			targetKo := "/data/local/tmp/module_inject.ko"
-			exec.Command("su", "-c", "rm -f "+targetKo).Run()
+			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
+
+			targetKoPath := "/data/local/tmp/module_inject.ko"
+			defer func() {
+				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
+			}()
+
+			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
+			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
+			if err != nil {
+				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
+			}
+
+			var fileToExtract *zip.File
+			for _, f := range zipReader.File {
+				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
+					fileToExtract = f; break
+				}
+			}
 			
-			zr, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
-			if err != nil { term.Write([]byte("\x1b[31m[ERR] Zip Corrupt\x1b[0m\n")); return }
+			if fileToExtract == nil {
+				for _, f := range zipReader.File {
+					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
+				}
+			}
+
+			if fileToExtract == nil {
+				term.Write([]byte("\x1b[31m[GAGAL] Modul .ko tidak ditemukan di dalam Zip!\x1b[0m\n"))
+				status.Text = "File Hilang"; status.Refresh()
+				return
+			}
+
+			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
+			rc, _ := fileToExtract.Open()
+			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
 			
-			var f *zip.File
-			for _, zf := range zr.File { if strings.Contains(zf.Name, targetVer) && strings.HasSuffix(zf.Name, ".ko") { f = zf; break } }
-			if f == nil { for _, zf := range zr.File { if strings.HasSuffix(zf.Name, ".ko") { f = zf; break } } } // fallback
+			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
+			os.WriteFile(userTmp, buf.Bytes(), 0644)
 			
-			if f != nil {
-				rc, _ := f.Open()
-				buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
-				os.WriteFile(os.TempDir()+"/tmp.ko", buf.Bytes(), 0644)
-				exec.Command("su", "-c", fmt.Sprintf("cp %s %s && chmod 777 %s", os.TempDir()+"/tmp.ko", targetKo, targetKo)).Run()
-				if exec.Command("su", "-c", "insmod "+targetKo).Run() == nil {
-					term.Write([]byte("\x1b[32m[OK] Driver Loaded.\x1b[0m\n"))
-				} else { term.Write([]byte("\x1b[31m[FAIL] Insmod Failed/Exists.\x1b[0m\n")) }
-			} else { term.Write([]byte("\x1b[31m[ERR] Driver not found in zip.\x1b[0m\n")) }
+			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
+			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
+			os.Remove(userTmp) 
+
+			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
+			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
+			output, err := cmdInsmod.CombinedOutput()
+			outputStr := string(output)
+
+			if err == nil {
+				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
+				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
+				status.Text = "Berhasil Install"
+			} else if strings.Contains(outputStr, "File exists") {
+				term.Write([]byte("\x1b[33m[INFO] Driver Sudah Ada Ketik insmod untuk cek lebih lanjut\x1b[0m\n"))
+				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
+				status.Text = "Sudah Aktif"
+			} else {
+				term.Write([]byte("\x1b[31m[GAGAL] Gagal install\x1b[0m\n"))
+				term.Write([]byte("\x1b[31m" + outputStr + "\x1b[0m\n"))
+				lblKernelValue.Text = "ERROR"; lblKernelValue.Color = failRed
+				status.Text = "Gagal Install"
+			}
+			
+			lblKernelValue.Refresh()
+			status.Refresh()
 		}()
 	}
 
-	btnInj := widget.NewButton("Inject Driver", autoInstallKernel)
-	btnInj.Importance = widget.HighImportance
-
-	/* ---------------------------
-	   UI COMPONENTS - GAME TOOLS (NEW)
-	   --------------------------- */
-	
-	// Select Target Game
-	selectGame := widget.NewSelect(AppNames, func(s string) {
-		for i, v := range AppNames { if v == s { SelectedGameIdx = i } }
-	})
-	selectGame.SetSelected(AppNames[0])
-
-	// Feature: Reset ID
-	btnResetID := widget.NewButtonWithIcon("Reset ID (Random)", theme.ViewRefreshIcon(), func() {
-		dialog.ShowConfirm("Reset ID", "Yakin ingin ganti ID Baru?", func(b bool) {
-			if b {
-				newID := generateRandomID()
-				applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "")
-				switchView("TERMINAL") // Switch back to see logs
-			}
-		}, w)
-	})
-
-	// Feature: Copy ID
-	btnCopyID := widget.NewButtonWithIcon("Salin ID dari Game Lain", theme.ContentCopyIcon(), func() {
-		// Custom Dialog for Source Selection
-		selSrc := widget.NewSelect(AppNames, nil)
-		selSrc.PlaceHolder = "Pilih Sumber"
-		dialog.ShowCustomConfirm("Salin ID", "Salin", "Batal", container.NewVBox(widget.NewLabel("Salin ID Dari:"), selSrc), func(b bool) {
-			if b && selSrc.Selected != "" {
-				srcIdx := 0
-				for i, v := range AppNames { if v == selSrc.Selected { srcIdx = i } }
-				
-				// Get ID via shell
-				cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
-				out, err := exec.Command("su", "-c", cmdStr).Output()
-				srcID := strings.TrimSpace(string(out))
-				
-				if err == nil && len(srcID) > 5 {
-					dialog.ShowConfirm("Konfirmasi", fmt.Sprintf("ID Ditemukan: %s\nTempel ke %s?", srcID, AppNames[SelectedGameIdx]), func(yes bool) {
-						if yes {
-							applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "")
-							switchView("TERMINAL")
+	var checkUpdate func()
+	checkUpdate = func() {
+		overlayContainer.Hide()
+		
+		time.Sleep(500 * time.Millisecond) 
+		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
+		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
+		
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("%s?v=%d", ConfigURL, time.Now().Unix()))
+		
+		if err == nil && resp.StatusCode == 200 {
+			body, _ := io.ReadAll(resp.Body); resp.Body.Close()
+			if dec, err := decryptConfig(string(bytes.TrimSpace(body))); err == nil {
+				var cfg OnlineConfig
+				if json.Unmarshal(dec, &cfg) == nil {
+					if cfg.Version != "" && cfg.Version != AppVersion {
+						// Perbaikan: Menggunakan url.Parse dengan benar
+						if u, e := url.Parse(cfg.Link); e == nil {
+							showModal("UPDATE", cfg.Message, "UPDATE", func() { 
+								 app.New().OpenURL(u) 
+							}, false, true)
 						}
-					}, w)
-				} else {
-					dialog.ShowError(errors.New("Gagal mengambil ID Sumber"), w)
-				}
-			}
-		}, w)
-	})
-
-	// Feature: Login Account (Complex)
-	btnLogin := widget.NewButtonWithIcon("Login Akun", theme.AccountIcon(), func() {
-		// Step 1: Choose Source
-		dialog.ShowCustomConfirm("Pilih Sumber Akun", "Online (Cloud)", "Offline (Lokal)", widget.NewLabel("Dari mana ambil data akun?"), func(isOnline bool) {
-			
-			processFile := func(filePath string) {
-				// Parse File
-				f, err := os.Open(filePath)
-				if err != nil { dialog.ShowError(errors.New("File tidak ditemukan"), w); return }
-				defer f.Close()
-				
-				var accList []string
-				var rawIDs []string
-				var rawNames []string
-				
-				scanner := bufio.NewScanner(f)
-				for scanner.Scan() {
-					line := strings.TrimSpace(scanner.Text())
-					if line != "" && !strings.HasPrefix(line, "#") {
-						parts := strings.Fields(line)
-						if len(parts) > 0 {
-							rawIDs = append(rawIDs, parts[0])
-							nm := "No Name"
-							if len(parts) > 1 { nm = strings.Join(parts[1:], " ") }
-							rawNames = append(rawNames, nm)
-							accList = append(accList, nm)
-						}
+					} else {
+						term.Write([]byte("\x1b[32m[V] System Updated.\x1b[0m\n"))
 					}
 				}
-
-				if len(accList) == 0 { dialog.ShowError(errors.New("Tidak ada akun di file"), w); return }
-
-				// Step 2: List Account
-				list := widget.NewList(
-					func() int { return len(accList) },
-					func() fyne.CanvasObject { return widget.NewLabel("template") },
-					func(i int, o fyne.CanvasObject) { o.(*widget.Label).SetText(accList[i]) },
-				)
-				
-				var d dialog.Dialog
-				list.OnSelected = func(id int) {
-					d.Hide()
-					// Step 3: Execute
-					applyDeviceIDLogic(term, rawIDs[id], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], rawNames[id])
-					switchView("TERMINAL")
-					
-					// Auto Launch
-					exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
-					if isOnline { os.Remove(OnlineAccFile) } // Cleanup
-				}
-
-				cont := container.NewStack(list)
-				d = dialog.NewCustom("Pilih Akun", "Batal", container.NewGridWrap(fyne.NewSize(300, 400), cont), w)
-				d.Show()
 			}
-
-			if isOnline {
-				// Online Logic
-				entryUrl := widget.NewEntry()
-				entryUrl.PlaceHolder = "https://..."
-				// Auto load saved url
-				if b, e := os.ReadFile(UrlConfigFile); e == nil { entryUrl.SetText(string(b)) }
-				
-				dialog.ShowCustomConfirm("Download Akun", "Download", "Batal", entryUrl, func(dl bool) {
-					if dl && entryUrl.Text != "" {
-						os.WriteFile(UrlConfigFile, []byte(entryUrl.Text), 0644)
-						prog := dialog.NewProgressInfinite("Downloading...", "Mohon tunggu", w)
-						prog.Show()
-						go func() {
-							err := downloadFile(entryUrl.Text, OnlineAccFile)
-							prog.Hide()
-							if err != nil { dialog.ShowError(err, w); return }
-							processFile(OnlineAccFile)
-						}()
-					}
-				}, w)
-			} else {
-				// Offline Logic
-				processFile(AccountFile)
-			}
-		}, w)
-	})
-	btnLogin.Importance = widget.HighImportance
-
-	// Feature: SELinux Switch
-	btnSELinux := widget.NewButton("Switch SELinux", func() {
-		if CheckSELinux() == "Enforcing" {
-			exec.Command("su", "-c", "setenforce 0").Run()
 		} else {
-			exec.Command("su", "-c", "setenforce 1").Run()
+			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
+				go checkUpdate() 
+			}, true, true)
 		}
-		switchView("TERMINAL") // To refresh header status
-	})
-
-	// Layout Game Tools
-	toolsContent := container.NewVBox(
-		widget.NewCard("Target Game", "Pilih Versi MLBB", selectGame),
-		widget.NewSeparator(),
-		widget.NewLabel("Fitur Akun"),
-		container.NewGridWithColumns(2, btnLogin, btnResetID),
-		btnCopyID,
-		widget.NewSeparator(),
-		widget.NewLabel("System"),
-		btnSELinux,
-		widget.NewLabel(""),
-		widget.NewCard("Info", "", widget.NewLabel("Pastikan Root aktif sebelum menggunakan fitur ini.")),
-	)
-	
-	// Create Scrollable Views
-	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng})
-	bg.FillMode = canvas.ImageFillStretch
-
-	// 1. TERMINAL VIEW
-	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
-	bottomTerm := container.NewBorder(nil, nil, nil, sendBtn, input)
-	
-	// Header Section (Always Visible in Terminal)
-	headerTerm := container.NewVBox(
-		createLabel("TERMINAL EXECUTOR", color.White, 14, true),
-		container.NewPadded(infoGrid),
-		container.NewPadded(btnInj),
-		status,
-		widget.NewSeparator(),
-	)
-
-	terminalView = container.NewStack(
-		canvas.NewRectangle(color.Black), 
-		bg, 
-		canvas.NewRectangle(color.RGBA{0,0,0,200}),
-		container.NewBorder(headerTerm, bottomTerm, nil, nil, term.scroll),
-	)
-
-	// 2. GAMETOOLS VIEW
-	headerGame := container.NewVBox(
-		createLabel("MLBB TOOLS", theme.PrimaryColor(), 18, true),
-		createLabel("By Tangsan", color.Gray{Y:150}, 10, false),
-		widget.NewSeparator(),
-	)
-	
-	gameToolsView = container.NewStack(
-		canvas.NewRectangle(color.Black),
-		bg,
-		canvas.NewRectangle(color.RGBA{0,0,0,220}), // Darker bg for tools
-		container.NewBorder(headerGame, nil, nil, nil, container.NewPadded(container.NewVScroll(toolsContent))),
-	)
-
-	// MAIN CONTAINER STACK
-	contentContainer = container.NewStack(terminalView) // Default Terminal
-
-	/* ---------------------------
-	   SIDE MENU LOGIC
-	   --------------------------- */
-	var toggleMenu func()
-	
-	// Menu Content
-	menuBg := canvas.NewRectangle(theme.BackgroundColor())
-	lblMenu := createLabel("MENU UTAMA", theme.PrimaryColor(), 16, true)
-	
-	btnMenuTerm := widget.NewButtonWithIcon("Terminal", theme.ComputerIcon(), func() {
-		switchView("TERMINAL")
-		toggleMenu()
-	})
-	btnMenuTerm.Alignment = widget.ButtonAlignLeading
-	
-	btnMenuGame := widget.NewButtonWithIcon("Game Tools", theme.GridIcon(), func() {
-		switchView("GAMETOOLS")
-		toggleMenu()
-	})
-	btnMenuGame.Alignment = widget.ButtonAlignLeading
-
-	btnMenuInfo := widget.NewButtonWithIcon("Tentang", theme.InfoIcon(), func() {
-		dialog.ShowInformation("About", "Executor Pro v"+AppVersion+"\nGUI Version of MLBB Script\nCreated by Tangsan", w)
-		toggleMenu()
-	})
-
-	menuItems := container.NewVBox(
-		container.NewPadded(lblMenu),
-		widget.NewSeparator(),
-		btnMenuTerm,
-		btnMenuGame,
-		btnMenuInfo,
-		layout.NewSpacer(),
-		widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func(){ os.Exit(0) }),
-	)
-	
-	sidePanel := container.NewStack(menuBg, container.NewPadded(menuItems))
-	sideContainer := container.NewHBox(container.NewGridWrap(fyne.NewSize(260, 800), sidePanel))
-	
-	// Dimmer (Click to close menu)
-	dimmer := canvas.NewRectangle(color.RGBA{0,0,0,150})
-	btnDimmer := widget.NewButton("", func(){ toggleMenu() })
-	btnDimmer.Importance = widget.LowImportance
-	menuStack := container.NewStack(container.NewStack(dimmer, btnDimmer), sideContainer)
-	menuStack.Hide()
-
-	toggleMenu = func() {
-		if menuStack.Visible() { menuStack.Hide() } else { menuStack.Show(); menuStack.Refresh() }
 	}
 
-	// Gesture Trigger
-	edgeTrigger := NewEdgeTrigger(func() { if !menuStack.Visible() { toggleMenu() } })
-	triggerZone := container.NewHBox(container.NewGridWrap(fyne.NewSize(20, 1000), edgeTrigger), layout.NewSpacer())
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		checkUpdate()
+	}()
 
-	/* ---------------------------
-	   FINAL ASSEMBLY
-	   --------------------------- */
+	// LAYOUT SETUP
+	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
 	
-	// FAB (File Open) - Only show in Terminal View ideally, but kept global for simplicity
+	infoGrid := container.NewGridWithColumns(3, 
+		container.NewVBox(lblKernelTitle, lblKernelValue), 
+		container.NewVBox(lblSELinuxTitle, lblSELinuxValue), 
+		container.NewVBox(lblSystemTitle, lblSystemValue),
+	)
+
+	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() { 
+		showModal("INJECT", "Mulai Inject Driver?", "MULAI", autoInstallKernel, false, false) 
+	})
+	btnInj.Importance = widget.HighImportance
+
+	btnSel := widget.NewButtonWithIcon("SELinux", theme.ViewRefreshIcon(), func() { 
+		go func() { 
+			if CheckSELinux() == "Enforcing" { 
+				exec.Command("su","-c","setenforce 0").Run() 
+			} else { 
+				exec.Command("su","-c","setenforce 1").Run() 
+			}
+			time.Sleep(100 * time.Millisecond)
+			se := CheckSELinux()
+			lblSELinuxValue.Text = strings.ToUpper(se)
+			if se == "Enforcing" { 
+				lblSELinuxValue.Color = successGreen 
+			} else if se == "Permissive" { 
+				lblSELinuxValue.Color = failRed 
+			} else { 
+				lblSELinuxValue.Color = color.Gray{Y: 150} 
+			}
+			lblSELinuxValue.Refresh()
+		}() 
+	})
+	btnSel.Importance = widget.HighImportance
+
+	btnClr := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() { 
+		term.Clear() 
+	})
+	btnClr.Importance = widget.DangerImportance
+	
+	headerContent := container.NewVBox(
+		container.NewPadded(titleText), 
+		container.NewPadded(infoGrid), 
+		container.NewPadded(container.NewGridWithColumns(3, btnInj, btnSel, btnClr)), 
+		container.NewPadded(status), 
+		widget.NewSeparator(),
+	)
+	header := container.NewStack(canvas.NewRectangle(color.Gray{Y: 45}), headerContent)
+
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), send)
+	cpyLbl := createLabel("Code by TANGSAN", silverColor, 10, false)
+	bottom := container.NewVBox(container.NewPadded(cpyLbl), container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, input)))
+	bg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "bg.png", StaticContent: bgPng}); bg.FillMode = canvas.ImageFillStretch
+	termBox := container.NewStack(canvas.NewRectangle(color.Black), bg, canvas.NewRectangle(color.RGBA{0,0,0,180}), term.scroll)
+	
 	fdImg := canvas.NewImageFromResource(&fyne.StaticResource{StaticName: "fd.png", StaticContent: fdPng})
 	fdImg.FillMode = canvas.ImageFillContain
+	
 	fdBtn := widget.NewButton("", func() { 
 		dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) { 
-			if r != nil { 
-				// Logic run file
-				defer r.Close(); term.Clear()
-				data, _ := io.ReadAll(r)
-				tmp := os.TempDir()+"/exec_tmp"
-				os.WriteFile(tmp, data, 0755)
-				isBin := bytes.HasPrefix(data, []byte("\x7fELF"))
-				executeTask("", true, tmp, isBin)
-				switchView("TERMINAL")
-			} 
+			if r != nil { runFile(r) } 
 		}, w).Show() 
 	})
 	fdBtn.Importance = widget.LowImportance
-	fab := container.NewVBox(layout.NewSpacer(), container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(60,60), container.NewStack(fdImg, fdBtn))), widget.NewLabel(" "))
-
-	rootStack := container.NewStack(
-		contentContainer, // Changes between Terminal / GameTools
-		triggerZone,      // Left edge swipe
-		fab,              // Floating button
-		menuStack,        // Side Menu Overlay
+	
+	fabWrapper := container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn))
+	fab := container.NewVBox(
+		layout.NewSpacer(), 
+		container.NewPadded(container.NewHBox(layout.NewSpacer(), fabWrapper)), 
+		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
-	w.SetContent(rootStack)
+	// --- INIT SIDE MENU & GESTURE (Pembaruan) ---
+	var toggleMenu func() 
+	// Memasukkan Menu MLBB kedalam makeSideMenu
+	sideMenuContainer, toggleFunc := makeSideMenu(w, term, func() { toggleMenu() })
+	toggleMenu = toggleFunc
+
+	// Gesture (Geser dari kiri)
+	edgeTrigger := NewEdgeTrigger(func() {
+		if !sideMenuContainer.Visible() {
+			toggleMenu()
+		}
+	})
+	// Trigger zone 20 pixel di kiri layar
+	triggerZone := container.NewHBox(container.NewGridWrap(fyne.NewSize(20, 1000), edgeTrigger), layout.NewSpacer())
+
+	// UI UTAMA
+	mainUI := container.NewBorder(header, bottom, nil, nil, termBox)
+	overlayContainer = container.NewStack(); overlayContainer.Hide()
+
+	// STACK LAYOUT FINAL
+	w.SetContent(container.NewStack(
+		mainUI,            // Layer 1: Aplikasi Ori
+		triggerZone,       // Layer 2: Detektor Geser
+		fab,               // Layer 3: Tombol FD
+		sideMenuContainer, // Layer 4: Menu Samping
+		overlayContainer,  // Layer 5: Popup
+	))
+
 	w.ShowAndRun()
 }
 
