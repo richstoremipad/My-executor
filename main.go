@@ -35,7 +35,7 @@ import (
 /* ==========================================
    CONFIG & UPDATE SYSTEM
 ========================================== */
-const AppVersion = "1.1"
+const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
@@ -81,6 +81,100 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil { return nil, err }
 	return plaintext, nil
+}
+
+/* ==========================================
+   GESTURE & SIDE MENU LOGIC
+========================================== */
+
+// EdgeTrigger mendeteksi geseran dari sisi kiri layar
+type EdgeTrigger struct {
+	widget.BaseWidget
+	OnOpen func()
+}
+
+func NewEdgeTrigger(onOpen func()) *EdgeTrigger {
+	e := &EdgeTrigger{OnOpen: onOpen}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) {
+	// Jika menggeser ke kanan (DX positif) lebih dari 5 pixel
+	if event.Dragged.DX > 5 {
+		if e.OnOpen != nil {
+			e.OnOpen()
+		}
+	}
+}
+
+func (e *EdgeTrigger) DragEnd() {}
+
+func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
+	// Render transparan
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
+}
+
+// Membuat Menu Samping
+func makeSideMenu(w fyne.Window, onClose func()) (*fyne.Container, func()) {
+	// 1. Background Dimmer (Gelap transparan)
+	dimmer := canvas.NewRectangle(color.RGBA{0, 0, 0, 150})
+	btnDimmer := widget.NewButton("", onClose)
+	btnDimmer.Importance = widget.LowImportance
+	dimmerContainer := container.NewStack(dimmer, btnDimmer)
+
+	// 2. Konten Menu
+	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
+	
+	lblMenu := canvas.NewText("MENU UTAMA", theme.PrimaryColor())
+	lblMenu.TextSize = 18
+	lblMenu.TextStyle = fyne.TextStyle{Bold: true}
+
+	item1 := widget.NewButtonWithIcon("Terminal", theme.ComputerIcon(), func() { onClose() })
+	item1.Alignment = widget.ButtonAlignLeading
+	
+	item2 := widget.NewButtonWithIcon("Pengaturan", theme.SettingsIcon(), func() { onClose() })
+	item2.Alignment = widget.ButtonAlignLeading
+	
+	item3 := widget.NewButtonWithIcon("Tentang", theme.InfoIcon(), func() { 
+		dialog.ShowInformation("Tentang", "Simple Exec v1.0\nBy Tangsan", w)
+		onClose()
+	})
+	item3.Alignment = widget.ButtonAlignLeading
+
+	itemExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) })
+	itemExit.Importance = widget.DangerImportance
+	itemExit.Alignment = widget.ButtonAlignLeading
+
+	menuContent := container.NewVBox(
+		container.NewPadded(lblMenu),
+		widget.NewSeparator(),
+		item1,
+		item2,
+		item3,
+		layout.NewSpacer(),
+		widget.NewSeparator(),
+		itemExit,
+	)
+	
+	panel := container.NewStack(bgMenu, container.NewPadded(menuContent))
+	panelSize := fyne.NewSize(260, 700) 
+	
+	slideContainer := container.NewHBox(container.NewGridWrap(panelSize, panel))
+	
+	finalMenu := container.NewStack(dimmerContainer, slideContainer)
+	finalMenu.Hide()
+
+	toggle := func() {
+		if finalMenu.Visible() {
+			finalMenu.Hide()
+		} else {
+			finalMenu.Show()
+			finalMenu.Refresh()
+		}
+	}
+
+	return finalMenu, toggle
 }
 
 /* ==========================================
@@ -216,12 +310,6 @@ func (t *Terminal) printText(text string) {
 /* ===============================
    SYSTEM HELPERS
 ================================ */
-func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
-	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
-	for i := 0; i < barLength; i++ { if i < filledLength { bar += "█" } else { bar += "░" } }
-	term.Write([]byte(fmt.Sprintf("\r%s %s [%s] %d%%", colorCode, label, bar, percent)))
-}
-
 func CheckRoot() bool {
 	cmd := exec.Command("su", "-c", "id -u")
 	out, err := cmd.Output()
@@ -229,7 +317,6 @@ func CheckRoot() bool {
 	return strings.TrimSpace(string(out)) == "0"
 }
 
-// Cek Driver via Kallsyms
 func CheckKernelDriver() bool {
 	signature := "read_physical_address"
 	cmd := exec.Command("su", "-c", fmt.Sprintf("grep -q '%s' /proc/kallsyms", signature))
@@ -241,41 +328,6 @@ func CheckSELinux() string {
 	out, err := cmd.Output()
 	if err != nil { return "Unknown" }
 	return strings.TrimSpace(string(out))
-}
-
-func RequestStoragePermission(term *Terminal) {
-	if term != nil { term.Write([]byte("\x1b[33m[*] Opening Settings: All Files Access...\x1b[0m\n")) }
-	pkgName := "com.tangsan.executor"
-	cmd1 := exec.Command("sh", "-c", fmt.Sprintf("am start -a android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION -d package:%s", pkgName))
-	if cmd1.Run() != nil {
-		if term != nil { term.Write([]byte("\x1b[33m[!] Trying generic settings...\x1b[0m\n")) }
-		exec.Command("sh", "-c", "am start -a android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION").Run()
-	}
-}
-
-func downloadFile(url string, filepath string) (error, string) {
-	exec.Command("su", "-c", "rm -f "+filepath).Run()
-	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
-	cmd := exec.Command("su", "-c", cmdStr)
-	err := cmd.Run()
-	if err == nil {
-		checkCmd := exec.Command("su", "-c", "[ -s "+filepath+" ]")
-		if checkCmd.Run() == nil { return nil, "Success" }
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil { return err, "Init Fail" }
-	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120.0.0.0")
-	resp, err := client.Do(req)
-	if err != nil { return err, "Net Err" }
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode), "HTTP Err" }
-	writeCmd := exec.Command("su", "-c", "cat > "+filepath)
-	stdin, err := writeCmd.StdinPipe()
-	if err != nil { return err, "Pipe Err" }
-	go func() { defer stdin.Close(); io.Copy(stdin, resp.Body) }()
-	if err := writeCmd.Run(); err != nil { return err, "Write Err" }
-	return nil, "Success"
 }
 
 func createLabel(text string, color color.Color, size float32, bold bool) *canvas.Text {
@@ -345,7 +397,6 @@ func main() {
 				}
 				lblSystemValue.Refresh()
 				
-				// Panggil Deteksi Kallsyms
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				} else {
@@ -463,7 +514,6 @@ func main() {
 
 	var overlayContainer *fyne.Container
 	
-	// FUNGSI POPUP (UPDATED: LOGIKA WARNA TOMBOL RETRY)
 	showModal := func(title, msg, confirm string, action func(), isErr bool, isForce bool) {
 		w.Canvas().Refresh(w.Content())
 		
@@ -483,9 +533,6 @@ func main() {
 			if action != nil { action() }
 		})
 		
-		// LOGIKA WARNA:
-		// Jika Tombol adalah "COBA LAGI" (Retry), Beri Warna BIRU (HighImportance)
-		// Meskipun Judulnya ERROR (Merah)
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
 		} else {
@@ -533,29 +580,23 @@ func main() {
 		go func() {
 			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
 
-			// 1. Cek Versi Kernel
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out))
 			targetVer := strings.Split(fullVer, "-")[0]
 			
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
 
-			// Path tujuan
 			targetKoPath := "/data/local/tmp/module_inject.ko"
-			
-			// DEFER cleanup
 			defer func() {
 				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
 			}()
 
-			// 2. Baca ZIP Embed
 			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
 			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
 			if err != nil {
 				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
 			}
 
-			// 3. Cari File .ko
 			var fileToExtract *zip.File
 			for _, f := range zipReader.File {
 				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
@@ -563,7 +604,6 @@ func main() {
 				}
 			}
 			
-			// Fallback
 			if fileToExtract == nil {
 				for _, f := range zipReader.File {
 					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
@@ -576,7 +616,6 @@ func main() {
 				return
 			}
 
-			// 4. Ekstrak
 			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
 			rc, _ := fileToExtract.Open()
 			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
@@ -584,18 +623,15 @@ func main() {
 			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
 			os.WriteFile(userTmp, buf.Bytes(), 0644)
 			
-			// Pindah ke root path
 			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
 			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
 			os.Remove(userTmp) 
 
-			// 5. Install (Insmod)
 			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
 			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
 			output, err := cmdInsmod.CombinedOutput()
 			outputStr := string(output)
 
-			// 6. Cek Hasil
 			if err == nil {
 				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
@@ -616,13 +652,11 @@ func main() {
 		}()
 	}
 
-	// DEFINISI FUNGSI UPDATE (AGAR BISA DI-RETRY)
 	var checkUpdate func()
 	checkUpdate = func() {
-		// Reset tampilan saat retry
 		overlayContainer.Hide()
 		
-		time.Sleep(500 * time.Millisecond) // Jeda sedikit saat retry
+		time.Sleep(500 * time.Millisecond) 
 		if strings.Contains(ConfigURL, "GANTI") { term.Write([]byte("\n\x1b[33m[WARN] ConfigURL!\x1b[0m\n")); return }
 		term.Write([]byte("\n\x1b[90m[*] Checking updates...\x1b[0m\n"))
 		
@@ -644,21 +678,18 @@ func main() {
 				}
 			}
 		} else {
-			// POPUP RETRY
-			// Tombol Kanan: "COBA LAGI" (Akan berwarna Biru karena logika showModal di atas)
-			// Action: Memanggil checkUpdate() kembali
 			showModal("ERROR", "Gagal terhubung ke server.\nPeriksa koneksi internet.", "COBA LAGI", func() {
-				go checkUpdate() // Retry logic
+				go checkUpdate() 
 			}, true, true)
 		}
 	}
 
-	// JALANKAN CHECK UPDATE PERTAMA KALI
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		checkUpdate()
 	}()
 
+	// LAYOUT SETUP
 	titleText := createLabel("SIMPLE EXECUTOR", color.White, 16, true)
 	
 	infoGrid := container.NewGridWithColumns(3, 
@@ -731,8 +762,32 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
+	// INIT SIDE MENU
+	var toggleMenu func() 
+	sideMenuContainer, toggleFunc := makeSideMenu(w, func() { toggleMenu() })
+	toggleMenu = toggleFunc
+
+	// INIT EDGE TRIGGER (Gesture Detector)
+	// Hanya 20 pixel dari kiri
+	edgeTrigger := NewEdgeTrigger(func() {
+		if !sideMenuContainer.Visible() {
+			toggleMenu()
+		}
+	})
+	triggerZone := container.NewHBox(container.NewGridWrap(fyne.NewSize(20, 1000), edgeTrigger), layout.NewSpacer())
+
+	// FINAL STACK
+	mainUI := container.NewBorder(header, bottom, nil, nil, termBox)
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), fab, overlayContainer))
+
+	w.SetContent(container.NewStack(
+		mainUI,          // Layer 1: Aplikasi Utama
+		triggerZone,     // Layer 2: Invisible Trigger di kiri
+		fab,             // Layer 3: Tombol File
+		sideMenuContainer, // Layer 4: Menu Samping
+		overlayContainer, // Layer 5: Popup Error/Update
+	))
+
 	w.ShowAndRun()
 }
 
