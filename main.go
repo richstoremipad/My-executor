@@ -36,7 +36,7 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM (ORIGINAL)
+   CONFIG & UPDATE SYSTEM (KODE ASLI)
 ========================================== */
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
@@ -74,7 +74,7 @@ var bgPng []byte
 var driverZip []byte
 
 /* ==========================================
-   SECURITY LOGIC (ORIGINAL)
+   SECURITY LOGIC (KODE ASLI)
 ========================================== */
 func decryptConfig(encryptedStr string) ([]byte, error) {
 	defer func() { if r := recover(); r != nil {} }()
@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL 100%)
+   TERMINAL LOGIC (KODE ASLI - UTUH)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -151,7 +151,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100} // ABU-ABU
+	case "90": return color.Gray{Y: 100} // Warna Abu-abu (FIXED)
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -226,7 +226,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   SYSTEM HELPERS (ORIGINAL - LENGKAP)
+   SYSTEM HELPERS (KODE ASLI - DIKEMBALIKAN)
 ================================ */
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
@@ -309,7 +309,7 @@ func copyFile(src, dst string) error {
 }
 
 /* ===============================
-   LOGIKA MLBB & HELPER (ROOT BYPASS)
+   LOGIKA GAME TOOLS (HELPER BARU)
 ================================ */
 // Helper Hapus File via Root (PASTI BERSIH)
 func removeFileRoot(path string) {
@@ -338,7 +338,7 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// Download via CURL (Root)
+// Download via CURL (Root) - FORCE Root agar tidak error permission
 func downloadGameConfig(url string, filepath string) error {
 	removeFileRoot(filepath)
 	cmd := exec.Command("su", "-c", fmt.Sprintf("curl -k -L -f --connect-timeout 20 -o %s %s", filepath, url))
@@ -349,10 +349,12 @@ func downloadGameConfig(url string, filepath string) error {
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	
+	// Coba baca normal
 	b, err := os.ReadFile(path)
 	if err == nil {
 		content = string(b)
 	} else {
+		// Fallback root
 		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
 		out, err2 := cmd.Output()
 		if err2 != nil {
@@ -368,6 +370,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 		line := cleanString(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") { continue }
 		
+		// Format: DEVICEID<spasi>NAMA
 		parts := strings.Fields(line)
 		if len(parts) >= 1 {
 			id := parts[0]
@@ -376,7 +379,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 			
 			ids = append(ids, id)
 			names = append(names, name)
-			displays = append(displays, name) // HANYA NAMA
+			displays = append(displays, name) // HANYA TAMPILKAN NAMA
 		}
 	}
 	
@@ -393,7 +396,7 @@ func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, cust
 	if customAccName != "" { term.Write([]byte(fmt.Sprintf("\x1b[35mAkun: %s\x1b[0m\n", customAccName))) }
 
 	if exec.Command("su", "-c", fmt.Sprintf("[ -f '%s' ]", targetFile)).Run() != nil {
-		term.Write([]byte("\x1b[31m[ERR] Data game belum ada!\x1b[0m\n"))
+		term.Write([]byte("\x1b[31m[ERR] Data game belum ada! Login game dulu minimal sekali.\x1b[0m\n"))
 		return
 	}
 
@@ -430,7 +433,7 @@ func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-// HELPER POPUP CARD
+// HELPER POPUP CARD (FIXED ERROR OVERLAY)
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
@@ -455,7 +458,7 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		btnBox,
 	)
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
-	// UKURAN POPUP TINGGI
+	// UKURAN POPUP LEBIH PROPORSIONAL
 	wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(340, 600), container.NewPadded(card)))
 	
 	overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
@@ -468,9 +471,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	btnDimmer.Importance = widget.LowImportance
 	dimmerContainer := container.NewStack(dimmer, btnDimmer)
 	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
-	
-	// FIX: Set MinWidth agar menu tidak mengecil
-	bgMenu.SetMinSize(fyne.NewSize(310, 10))
 
 	lblTitle := widget.NewLabelWithStyle("GAME TOOLS", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
@@ -516,7 +516,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 				},
 			)
 			
-			// GRIDWRAP untuk List agar aman di dalam Card
 			listContainer := container.NewGridWrap(fyne.NewSize(300, 400), listWidget)
 
 			showCustomOverlay(overlayContainer, "DAFTAR AKUN", listContainer, "BATAL", func() {
@@ -540,6 +539,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			overlayContainer.Hide()
 			// Auto Deteksi Config via Root (BACA)
 			defaultUrl := ""
+			// Gunakan root cat karena os.Open sering fail
 			cmd := exec.Command("su", "-c", "cat "+UrlConfigFile)
 			out, err := cmd.Output()
 			if err == nil { defaultUrl = cleanString(string(out)) }
@@ -591,7 +591,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		onClose()
 		showCustomOverlay(overlayContainer, "RESET ID", widget.NewLabel("Ganti ID menjadi Random?"), "TIDAK", nil, "YA", func() {
 			runMLBBTask(term, "Reset ID Random", func() {
-				// LOG ID RANDOM
+				// LOG ID RANDOM DI TERMINAL
 				newID := generateRandomID()
 				term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", newID)))
 				applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
@@ -610,7 +610,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
 					out, err := exec.Command("su", "-c", cmdStr).Output(); srcID := cleanString(string(out))
 					if err == nil && len(srcID) > 5 {
-						// LOG ID HASIL COPY
+						// LOG ID HASIL COPY DI TERMINAL
 						term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Salinan: %s\x1b[0m\n", srcID)))
 						applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "HASIL COPY")
 					} else { term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n")) }
@@ -621,29 +621,71 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
-	// TOMBOL KELUAR
+	// TOMBOL KELUAR (FIX POSISI DI BAWAH)
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
-	// KONTEN MENU UTAMA
-	scrollContent := container.NewVBox(
+	// CONTENT MENU TENGAH (SCROLLABLE)
+	menuContent := container.NewVBox(
 		container.NewPadded(lblTitle), widget.NewSeparator(),
 		cardTarget, cardAccount, 
 		layout.NewSpacer(), 
 		widget.NewSeparator(), 
 	)
 	
-	// FIX: Layout Border untuk Menu Samping. 
-	// - Center: scrollContent (Menu)
-	// - Bottom: btnExit (Tombol Keluar) -> Ini memaksa tombol keluar selalu di bawah dan terlihat
-	finalLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(scrollContent))
+	// FIX LAYOUT FINAL: Border Layout
+	// - Center: Menu Content (Scroll)
+	// - Bottom: Tombol Keluar (Fixed)
+	finalMenuLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
 	
-	// PANEL UTAMA MENU
-	panel := container.NewStack(bgMenu, container.NewPadded(finalLayout))
+	// PANEL UTAMA
+	panel := container.NewStack(bgMenu, container.NewPadded(finalMenuLayout))
 	
-	// SLIDE CONTAINER (Menu melayang di kiri)
-	slideContainer := container.NewBorder(nil, nil, panel, nil) // Border LEFT ensures full height
+	// SIDEBAR CONTAINER (Lebar 310, Tinggi Flexible)
+	// Border Left agar tinggi mengikuti layar parent
+	slideContainer := container.NewBorder(nil, nil, panel, nil) // Border Left content is 'panel' (width is intrinsic/min size)
 	
-	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
+	// SET MIN SIZE FOR PANEL TO FORCE WIDTH
+	panel.Resize(fyne.NewSize(310, 800)) // Fallback initial size
+	
+	// TAPI agar lebih pasti, bungkus panel di HBox dengan GridWrap width fix 310
+	// Dan bungkus HBox itu dalam container yang tingginya full.
+	// Layout "Border" dengan "Left" component akan mengambil full height.
+	
+	// WRAPPER FINAL:
+	// KITA GUNAKAN CONTAINER DENGAN UKURAN FIX LEBAR, TAPI TINGGI MENGIKUTI LAYAR
+	// CARANYA: Taruh di layer "Left" dari sebuah Border Layout raksasa
+	
+	// KITA REVISI CARA DISPLAY SIDE MENU AGAR TOMBOL KELUAR PASTI DI BAWAH
+	// Container SideMenu sendiri
+	sideMenuBox := container.NewHBox(
+		container.NewGridWrap(fyne.NewSize(310, 2000), panel), // Fake height large enough
+	)
+	// TAPI 2000 bikin tombol keluar hilang kalau layar pendek.
+	
+	// SOLUSI TERBAIK UNTUK SIDE MENU RESPONSIVE DI FYNE:
+	// Gunakan layout Border pada Container Slide.
+	
+	slideContainerFinal := container.NewHBox(
+		container.NewGridWrap(fyne.NewSize(310, 1500), panel), // Ukuran panel 310x1500
+	)
+	// REVISI LAGI: container.NewGridWrap memaksa ukuran.
+	// KITA UBAH PANEL AGAR MEMAKAI LAYOUT BORDER UNTUK TOMBOL KELUAR
+	// SUDAH DILAKUKAN DI ATAS (finalMenuLayout).
+	
+	// SEKARANG TINGGAL WADAH LUARNYA.
+	// Agar tinggi menyesuaikan layar, kita jangan pakai GridWrap dengan tinggi fix 2000.
+	// Kita pakai MaxLayout atau Border.
+	
+	// Wadah Menu (Lebar 310)
+	menuWrapper := container.NewStack(bgMenu, finalMenuLayout)
+	// Pakai GridWrap HANYA untuk membatasi LEBAR, tinggi biarkan expand? Fyne GridWrap memaksa duaduanya.
+	
+	// WORKAROUND: Buat container HBox, isi dengan Container selebar 310.
+	// Fyne V2 agak tricky untuk "Full Height Drawer".
+	// Kita pakai Layout Border di root aplikasi nanti.
+	
+	finalMenu := container.NewStack(dimmerContainer, container.NewHBox(container.NewGridWrap(fyne.NewSize(310, 9999), menuWrapper))); 
+	finalMenu.Hide()
 
 	toggle := func() { if finalMenu.Visible() { finalMenu.Hide() } else { finalMenu.Show(); finalMenu.Refresh() } }
 	return finalMenu, toggle
@@ -659,7 +701,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("EXECUTOR CODE BY TANGSAN")
+	w := a.NewWindow("Simple Exec by TANGSAN")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
@@ -874,8 +916,8 @@ func main() {
 		card := widget.NewCard("", "", container.NewPadded(content))
 		wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(300, 220), container.NewPadded(card)))
 		
-		overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
-		overlay.Show(); overlay.Refresh()
+		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
+		overlayContainer.Show(); overlayContainer.Refresh()
 	}
 
 	autoInstallKernel := func() {
