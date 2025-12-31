@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL)
+   TERMINAL LOGIC (ORIGINAL 100%)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -309,7 +309,7 @@ func copyFile(src, dst string) error {
 }
 
 /* ===============================
-   LOGIKA MLBB & HELPER (BARU)
+   LOGIKA MLBB & HELPER (BARU - ROOT)
 ================================ */
 func cleanString(s string) string {
 	s = strings.ReplaceAll(s, "\ufeff", "")
@@ -615,18 +615,24 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
-	// TOMBOL KELUAR
+	// TOMBOL KELUAR (FIX: MUNCUL DI BAWAH)
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
-	scrollContent := container.NewVBox(
+	// CONTENT MENU
+	menuContent := container.NewVBox(
 		container.NewPadded(lblTitle), widget.NewSeparator(),
 		cardTarget, cardAccount, 
 		layout.NewSpacer(), 
-		widget.NewSeparator(), btnExit,
+		widget.NewSeparator(), 
 	)
 	
-	// SIZE UPDATE: Lebar 310, Tinggi 2000
-	panel := container.NewStack(bgMenu, container.NewPadded(container.NewVScroll(scrollContent)))
+	// FIX LAYOUT: Gunakan Border agar Tombol Keluar Selalu di Bawah
+	finalLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
+	
+	// BACKGROUND + LAYOUT
+	panel := container.NewStack(bgMenu, container.NewPadded(finalLayout))
+	
+	// SIZE UPDATE: Lebar 310
 	slideContainer := container.NewHBox(container.NewGridWrap(fyne.NewSize(310, 2000), panel))
 	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
 
@@ -644,7 +650,7 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(theme.DarkTheme())
 
-	w := a.NewWindow("Simple Exec by TANGSAN")
+	w := a.NewWindow("CODE BY TANGSAN")
 	w.Resize(fyne.NewSize(400, 700))
 	w.SetMaster()
 
