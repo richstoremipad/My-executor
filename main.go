@@ -36,7 +36,7 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM (ORIGINAL)
+   CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
@@ -73,7 +73,7 @@ var bgPng []byte
 var driverZip []byte
 
 /* ==========================================
-   SECURITY LOGIC (ORIGINAL)
+   SECURITY LOGIC
 ========================================== */
 func decryptConfig(encryptedStr string) ([]byte, error) {
 	defer func() { if r := recover(); r != nil {} }()
@@ -107,7 +107,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL)
+   TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -283,7 +283,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   SYSTEM HELPERS (ORIGINAL - RESTORED)
+   SYSTEM HELPERS
 ================================ */
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20
@@ -337,7 +337,7 @@ func RequestStoragePermission(term *Terminal) {
 	}
 }
 
-// FUNGSI DOWNLOAD ASLI (HTTP)
+// Download HTTP Biasa (Original)
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
@@ -431,14 +431,12 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// Download khusus MLBB via CURL (Root)
 func downloadGameConfig(url string, filepath string) error {
 	removeFileRoot(filepath)
 	cmd := exec.Command("su", "-c", fmt.Sprintf("curl -k -L -f --connect-timeout 20 -o %s %s", filepath, url))
 	return cmd.Run()
 }
 
-// Baca File khusus MLBB via CAT (Root)
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	b, err := os.ReadFile(path)
@@ -530,7 +528,7 @@ func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-// HELPER POPUP CARD (POSISI DI TENGAH VISUAL)
+// HELPER POPUP CARD (CENTER POSISI - FIX 350 HEIGHT)
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	lblTitle := createLabel(title, theme.ForegroundColor(), 18, true)
@@ -567,7 +565,8 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		container.NewPadded(container.NewCenter(lblTitle)), container.NewPadded(content), widget.NewLabel(""), btnBox,
 	)
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
-	// FIX: Posisi Center
+	
+	// FIX: NewCenter agar presisi di tengah layar
 	wrapper := container.NewCenter(container.NewGridWrap(fyne.NewSize(340, 350), container.NewPadded(card)))
 
 	overlay.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0, 0, 0, 220}), wrapper}
@@ -662,7 +661,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			listWidget.OnSelected = func(id int) { selectedIndex = id; listWidget.Refresh() }
 		}
 
-		// FUNGSI REKURSIF UNTUK INPUT URL (AUTO POPUP JIKA GAGAL)
+		// REKURSIF UNTUK AUTO POPUP UPDATE URL
 		var showInputUrlFunc func(msg string)
 		showInputUrlFunc = func(msg string) {
 			entryUrl := widget.NewEntry()
@@ -704,15 +703,15 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 			if defaultUrl != "" && strings.HasPrefix(defaultUrl, "http") {
 				go func() {
-					// FIX: Hapus Log URL, ganti dengan pesan umum
+					// FIX: Hapus Log URL
 					term.Write([]byte("\x1b[33m[DL] Mengunduh konfigurasi...\x1b[0m\n"))
 					if err := downloadGameConfig(defaultUrl, OnlineAccFile); err == nil {
 						term.Write([]byte("\x1b[32m[DL] Sukses.\x1b[0m\n"))
 						dialog.NewCustom("Loading", "Hide", widget.NewLabel(""), w).Hide()
 						processAccountFile(OnlineAccFile, true)
 					} else {
-						// GAGAL DOWNLOAD -> POPUP UPDATE
-						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download. Update URL.\x1b[0m\n")))
+						// GAGAL -> POPUP
+						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal Download.\x1b[0m\n")))
 						removeFileRoot(OnlineAccFile)
 						showInputUrlFunc("Download Gagal. Masukkan URL Baru:")
 					}
@@ -736,7 +735,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		content.Alignment = fyne.TextAlignCenter
 
 		showCustomOverlay(overlayContainer, "RESET ID", content, "MANUAL", func() {
-			// LOGIC MANUAL
 			entryID := widget.NewEntry()
 			entryID.SetPlaceHolder("Masukkan ID Baru...")
 			showCustomOverlay(overlayContainer, "INPUT MANUAL", entryID, "BATAL", nil, "TERAPKAN", func() {
@@ -748,7 +746,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 				}
 			})
 		}, "RANDOM", func() {
-			// LOGIC RANDOM
 			runMLBBTask(term, "Reset ID Random", func() {
 				newID := generateRandomID()
 				term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", newID)))
@@ -1290,7 +1287,7 @@ func main() {
 	)
 
 	btnInj := widget.NewButtonWithIcon("Inject", theme.DownloadIcon(), func() {
-		showCustomOverlay(overlayContainer, "INJECT", widget.NewLabel("Mulai Inject Driver?"), "BATAL", nil, "MULAI", func() { doInject() })
+		showCustomOverlay(overlayContainer, "INJECT", widget.NewLabel("Mulai Inject Driver?"), "BATAL", nil, "MULAI", func() { autoInstallKernel() })
 	})
 	btnInj.Importance = widget.HighImportance
 
