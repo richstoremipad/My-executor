@@ -400,7 +400,7 @@ func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, cust
 }
 
 /* ==========================================
-   HELPER POPUP KHUSUS GAME TOOLS - DIPERBESAR
+   HELPER POPUP KHUSUS GAME TOOLS - DIPERBESAR LAGI
 ========================================== */
 func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content fyne.CanvasObject, 
                   btn1Text string, act1 func(), btn2Text string, act2 func(), isSingleCenterBtn bool) {
@@ -414,21 +414,21 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
     // Main popup container
     popupContainer := container.NewVBox()
     
-    // Title - DIPERBESAR
+    // Title - DIPERBESAR LAGI
     titleLabel := canvas.NewText(title, color.White)
-    titleLabel.TextSize = 20
+    titleLabel.TextSize = 22 // DIPERBESAR
     titleLabel.TextStyle = fyne.TextStyle{Bold: true}
     titleLabel.Alignment = fyne.TextAlignCenter
     
     popupContainer.Add(container.NewCenter(titleLabel))
     popupContainer.Add(widget.NewSeparator())
     
-    // Content - DIPERBESAR
+    // Content - DIPERBESAR LAGI
     if content != nil {
         popupContainer.Add(container.NewPadded(container.NewCenter(content)))
     }
     
-    // Buttons - DIPERBESAR dan POSISI DIPERBAIKI
+    // Buttons - DIPERBESAR LAGI dan POSISI DIPERBAIKI
     var buttonsContainer fyne.CanvasObject
     
     if isSingleCenterBtn {
@@ -440,7 +440,7 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
             }
         })
         btn1.Importance = widget.DangerImportance
-        btn1.Resize(fyne.NewSize(120, 40))
+        btn1.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
         buttonsContainer = container.NewCenter(btn1)
     } else if btn1Text != "" && btn2Text != "" {
         // Dua tombol horizontal
@@ -451,7 +451,7 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
             }
         })
         btn1.Importance = widget.DangerImportance
-        btn1.Resize(fyne.NewSize(120, 40))
+        btn1.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
         
         btn2 := widget.NewButton(btn2Text, func() {
             overlay.Hide()
@@ -460,7 +460,7 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
             }
         })
         btn2.Importance = widget.HighImportance
-        btn2.Resize(fyne.NewSize(120, 40))
+        btn2.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
         
         buttonsContainer = container.NewHBox(
             layout.NewSpacer(),
@@ -478,7 +478,7 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
             }
         })
         btn1.Importance = widget.DangerImportance
-        btn1.Resize(fyne.NewSize(120, 40))
+        btn1.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
         buttonsContainer = container.NewCenter(btn1)
     } else {
         buttonsContainer = container.NewHBox()
@@ -487,12 +487,12 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
     popupContainer.Add(layout.NewSpacer())
     popupContainer.Add(buttonsContainer)
     
-    // Card container - DIPERBESAR
+    // Card container - DIPERBESAR LAGI
     card := widget.NewCard("", "", container.NewPadded(
         container.NewVBox(popupContainer),
     ))
     
-    // Wrapper dengan ukuran lebih besar
+    // Wrapper dengan ukuran LEBIH BESAR
     wrapper := container.NewCenter(
         container.NewPadded(
             container.NewStack(
@@ -502,8 +502,8 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
         ),
     )
     
-    // Set fixed size BESAR
-    wrapper.Resize(fyne.NewSize(380, 500))
+    // Set fixed size LEBIH BESAR LAGI
+    wrapper.Resize(fyne.NewSize(450, 650)) // DIPERBESAR
     
     // Center in overlay
     centered := container.NewCenter(wrapper)
@@ -526,7 +526,7 @@ func maskURL(urlStr string) string {
 }
 
 /* ==========================================
-   FUNGSI POPUP UNTUK GAME TOOLS - DIPERBESAR
+   FUNGSI POPUP UNTUK GAME TOOLS - DIPERBESAR LAGI
 ========================================== */
 func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal, ids, names, displays []string, isOnline bool) {
     selectedIndex := -1
@@ -552,7 +552,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
         },
     )
     
-    listContainer := container.NewGridWrap(fyne.NewSize(340, 380), listWidget) // DIPERBESAR
+    listContainer := container.NewGridWrap(fyne.NewSize(400, 500), listWidget) // DIPERBESAR
     
     showGamePopup(w, overlay, "DAFTAR AKUN",
         listContainer,
@@ -701,26 +701,26 @@ func (e *EdgeTrigger) Dragged(event *fyne.DragEvent) { if event.Dragged.DX > 10 
 func (e *EdgeTrigger) DragEnd() {}
 func (e *EdgeTrigger) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent)) }
 
-// HELPER OVERLAY - DIPERBAIKI UNTUK INJECT KERNEL
+// HELPER OVERLAY - DIPERBAIKI UNTUK INJECT KERNEL (DIPERBESAR)
 func showCustomOverlay(overlay *fyne.Container, title string, content fyne.CanvasObject, btn1Text string, act1 func(), btn2Text string, act2 func()) {
 	overlay.Objects = nil
 	
 	// Background semi-transparent
 	bg := canvas.NewRectangle(color.RGBA{0, 0, 0, 220})
 	
-	// Title - DITENGAHKAN
-	lblTitle := createLabel(title, theme.ForegroundColor(), 20, true)
+	// Title - DITENGAHKAN dan DIPERBESAR
+	lblTitle := createLabel(title, theme.ForegroundColor(), 22, true) // DIPERBESAR
 	lblTitle.Alignment = fyne.TextAlignCenter
 	
 	var btnBox *fyne.Container
 	if btn2Text != "" {
 		b1 := widget.NewButton(btn1Text, func(){ overlay.Hide(); if act1 != nil { act1() } })
 		b1.Importance = widget.DangerImportance
-		b1.Resize(fyne.NewSize(120, 40))
+		b1.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
 		
 		b2 := widget.NewButton(btn2Text, func(){ overlay.Hide(); if act2 != nil { act2() } })
 		b2.Importance = widget.HighImportance
-		b2.Resize(fyne.NewSize(120, 40))
+		b2.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
 		
 		// TOMBOL DI TENGAH
 		btnBox = container.NewHBox(
@@ -733,7 +733,7 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 	} else {
 		b1 := widget.NewButton(btn1Text, func(){ overlay.Hide(); if act1 != nil { act1() } })
 		b1.Importance = widget.HighImportance
-		b1.Resize(fyne.NewSize(120, 40))
+		b1.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
 		
 		// TOMBOL DI TENGAH
 		btnBox = container.NewHBox(layout.NewSpacer(), container.NewCenter(b1), layout.NewSpacer())
@@ -751,7 +751,7 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 	
 	card := widget.NewCard("", "", container.NewPadded(cardContent))
 	
-	// Wrapper dengan ukuran sama seperti popup update/error
+	// Wrapper dengan ukuran sama seperti popup update/error (DIPERBESAR)
 	wrapper := container.NewCenter(
 		container.NewPadded(
 			container.NewStack(
@@ -761,8 +761,8 @@ func showCustomOverlay(overlay *fyne.Container, title string, content fyne.Canva
 		),
 	)
 	
-	// UKURAN SAMA DENGAN POPUP UPDATE/ERROR
-	wrapper.Resize(fyne.NewSize(300, 220))
+	// UKURAN SAMA DENGAN POPUP UPDATE/ERROR (DIPERBESAR)
+	wrapper.Resize(fyne.NewSize(400, 300)) // DIPERBESAR
 	
 	overlay.Objects = []fyne.CanvasObject{bg, wrapper}
 	overlay.Show()
@@ -1144,13 +1144,13 @@ func main() {
 		
 		btnCancel := widget.NewButton(cancelLabel, cancelFunc)
 		btnCancel.Importance = widget.DangerImportance
-		btnCancel.Resize(fyne.NewSize(120, 40))
+		btnCancel.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
 		
 		btnOk := widget.NewButton(confirm, func() {
 			if !isForce { overlayContainer.Hide() }
 			if action != nil { action() }
 		})
-		btnOk.Resize(fyne.NewSize(120, 40))
+		btnOk.Resize(fyne.NewSize(140, 50)) // DIPERBESAR
 		
 		if confirm == "COBA LAGI" {
 			btnOk.Importance = widget.HighImportance
@@ -1171,7 +1171,7 @@ func main() {
 			layout.NewSpacer(),
 		)
 		
-		lblTitle := createLabel(title, theme.ForegroundColor(), 20, true)
+		lblTitle := createLabel(title, theme.ForegroundColor(), 22, true) // DIPERBESAR
 		if isErr { lblTitle.Color = theme.ErrorColor() }
 		lblTitle.Alignment = fyne.TextAlignCenter
 		
@@ -1188,7 +1188,7 @@ func main() {
 		
 		card := widget.NewCard("", "", container.NewPadded(content))
 		
-		// Wrapper dengan ukuran tetap
+		// Wrapper dengan ukuran tetap (DIPERBESAR)
 		wrapper := container.NewCenter(
 			container.NewPadded(
 				container.NewStack(
@@ -1198,8 +1198,8 @@ func main() {
 			),
 		)
 		
-		// UKURAN SAMA DENGAN POPUP LAIN
-		wrapper.Resize(fyne.NewSize(300, 220))
+		// UKURAN SAMA DENGAN POPUP LAIN (DIPERBESAR)
+		wrapper.Resize(fyne.NewSize(400, 300)) // DIPERBESAR
 		
 		overlayContainer.Objects = []fyne.CanvasObject{canvas.NewRectangle(color.RGBA{0,0,0,220}), wrapper}
 		overlayContainer.Show()
