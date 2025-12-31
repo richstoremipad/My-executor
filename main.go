@@ -49,7 +49,7 @@ var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
-// --- VARIABEL GAME TOOLS ---
+// --- VARIABEL TAMBAHAN GAME TOOLS ---
 const AccountFile = "/sdcard/akun.ini"
 const OnlineAccFile = "/sdcard/accml_online.ini"
 const UrlConfigFile = "/sdcard/ml_url_config.ini"
@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (KEMBALI KE ORIGINAL 100%)
+   TERMINAL LOGIC (ORIGINAL)
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -151,7 +151,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100} // Warna Abu-abu (FIXED)
+	case "90": return color.Gray{Y: 100}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -625,6 +625,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		widget.NewSeparator(), btnExit,
 	)
 	
+	// SIZE UPDATE: Lebar 310, Tinggi 2000
 	panel := container.NewStack(bgMenu, container.NewPadded(container.NewVScroll(scrollContent)))
 	slideContainer := container.NewHBox(container.NewGridWrap(fyne.NewSize(310, 2000), panel))
 	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
@@ -685,7 +686,6 @@ func main() {
 				}
 				lblSystemValue.Refresh()
 				
-				// Panggil Deteksi Kallsyms
 				if CheckKernelDriver() {
 					lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
 				} else {
@@ -957,7 +957,6 @@ func main() {
 	// DEFINISI FUNGSI UPDATE (WARNA FIX: 90 = Abu-abu)
 	var checkUpdate func()
 	checkUpdate = func() {
-		// Reset tampilan saat retry
 		overlayContainer.Hide()
 		
 		time.Sleep(500 * time.Millisecond) 
