@@ -537,14 +537,12 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
             icon := widget.NewIcon(theme.AccountIcon())
             lbl := widget.NewLabel("Account Name")
             lbl.TextStyle = fyne.TextStyle{Bold: true}
-            lbl.TextSize = 14 // DIPERBESAR
             return container.NewHBox(icon, lbl)
         },
         func(i int, o fyne.CanvasObject) { 
             box := o.(*fyne.Container)
             lbl := box.Objects[1].(*widget.Label)
             lbl.SetText(displays[i])
-            lbl.TextSize = 14 // DIPERBESAR
             
             if i == selectedIndex {
                 lbl.TextStyle.Italic = true
@@ -599,7 +597,6 @@ func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
         }
         return nil
     }
-    urlEntry.TextSize = 14 // DIPERBESAR
     
     content := container.NewVBox(
         widget.NewLabelWithStyle("Masukkan URL akun online:", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
@@ -673,7 +670,6 @@ func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Termi
 func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
     entry := widget.NewEntry()
     entry.SetPlaceHolder("Masukkan Device ID...")
-    entry.TextSize = 14 // DIPERBESAR
     
     content := container.NewVBox(
         widget.NewLabelWithStyle("Input Device ID Manual:", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
@@ -784,11 +780,9 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	spacerWidth.SetMinSize(fyne.NewSize(310, 10))
 
 	lblTitle := widget.NewLabelWithStyle("GAME TOOLS", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	lblTitle.TextSize = 16 // DIPERBESAR
 
 	selGame := widget.NewSelect(AppNames, func(s string) { for i, v := range AppNames { if v == s { SelectedGameIdx = i } } })
 	selGame.SetSelected(AppNames[0])
-	selGame.TextSize = 14 // DIPERBESAR
 	cardTarget := widget.NewCard("Target Game", "", container.NewPadded(selGame))
 
 	// --- LOGIN AKUN ---
@@ -796,9 +790,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		onClose()
 		
 		btnOnline := widget.NewButton("ONLINE", nil)
-		btnOnline.TextSize = 14 // DIPERBESAR
 		btnOffline := widget.NewButton("OFFLINE", nil)
-		btnOffline.TextSize = 14 // DIPERBESAR
 		
 		// Container untuk tombol ONLINE/OFFLINE di tengah
 		buttonContainer := container.NewGridWithColumns(2,
@@ -867,7 +859,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			"", nil,
 			true) // true = single center button
 	})
-	btnLogin.TextSize = 14 // DIPERBESAR
 	
 	// --- RESET ID (RANDOM / MANUAL) ---
 	btnReset := widget.NewButtonWithIcon("Reset ID", theme.ViewRefreshIcon(), func() {
@@ -895,7 +886,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			},
 			false)
 	})
-	btnReset.TextSize = 14 // DIPERBESAR
 	
 	// --- SALIN ID ---
 	btnCopy := widget.NewButtonWithIcon("Salin ID", theme.ContentCopyIcon(), func() {
@@ -903,7 +893,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		
 		selSrc := widget.NewSelect(AppNames, nil)
 		selSrc.PlaceHolder = "Pilih Sumber"
-		selSrc.TextSize = 14 // DIPERBESAR
 		
 		content := container.NewVBox(
 			widget.NewLabelWithStyle("Salin ID Dari:", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
@@ -944,14 +933,12 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 			},
 			false)
 	})
-	btnCopy.TextSize = 14 // DIPERBESAR
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
 	// TOMBOL KELUAR (FIX POSISI)
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) })
 	btnExit.Importance = widget.DangerImportance
-	btnExit.TextSize = 14 // DIPERBESAR
 
 	// CONTENT MENU TENGAH (SCROLLABLE)
 	menuContent := container.NewVBox(
@@ -1191,7 +1178,6 @@ func main() {
 		lblMsg := widget.NewLabel(msg)
 		lblMsg.Alignment = fyne.TextAlignCenter 
 		lblMsg.Wrapping = fyne.TextWrapWord
-		lblMsg.TextSize = 14 // DIPERBESAR
 		
 		content := container.NewVBox(
 			container.NewPadded(container.NewCenter(lblTitle)), 
