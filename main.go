@@ -41,7 +41,7 @@ const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
 // BATAS BARIS (Penting agar HP tidak lag)
 // Hanya menyimpan 300 baris terakhir di layar
-const MaxScrollback = 100 
+const MaxScrollback = 300 
 
 var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
