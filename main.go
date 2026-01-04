@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -47,6 +48,7 @@ var currentDir string = "/sdcard"
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
+// --- VARIABEL GAME TOOLS ---
 const AccountFile = "/sdcard/akun.ini"
 const OnlineAccFile = "/sdcard/accml_online.ini"
 const UrlConfigFile = "/sdcard/ml_url_config.ini"
@@ -94,7 +96,9 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 
 func cleanString(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r == '\ufeff' || r == '\r' || r == '\n' { return -1 }
+		if r == '\ufeff' || r == '\r' || r == '\n' {
+			return -1
+		}
 		return r
 	}, s))
 }
@@ -288,7 +292,9 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 	go action()
 }
 
-// [CORE] FUNGSI PARSING DATA (DIPISAH AGAR BISA BACA DARI MEMORI)
+/* ==========================================
+   CORE PARSING LOGIC (MEMORY BASED)
+========================================== */
 func parseRawBytes(content []byte) ([]string, []string, []string, error) {
 	estLines := len(content) / 50
 	if estLines < 1 { estLines = 10 }
@@ -319,7 +325,6 @@ func parseRawBytes(content []byte) ([]string, []string, []string, error) {
 	return ids, names, displays, nil
 }
 
-// [WRAPPER] Parse dari File (Offline)
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	// Baca Native (Cepat)
 	b, err := os.ReadFile(path)
@@ -830,4 +835,3 @@ func main() {
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), container.NewHBox(container.NewGridWrap(fyne.NewSize(60, 1000), edgeTrigger), layout.NewSpacer()), fab, sideMenuContainer, overlayContainer))
 	w.ShowAndRun()
 }
-
