@@ -36,7 +36,7 @@ import (
 )
 
 /* ==========================================
-   CONFIG & UPDATE SYSTEM (ORIGINAL)
+   CONFIG & UPDATE SYSTEM
 ========================================== */
 const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
@@ -74,7 +74,7 @@ var bgPng []byte
 var driverZip []byte
 
 /* ==========================================
-   SECURITY LOGIC (ORIGINAL)
+   SECURITY LOGIC
 ========================================== */
 func decryptConfig(encryptedStr string) ([]byte, error) {
 	defer func() { if r := recover(); r != nil {} }()
@@ -96,7 +96,7 @@ func decryptConfig(encryptedStr string) ([]byte, error) {
 }
 
 /* ==========================================
-   TERMINAL LOGIC (ORIGINAL)
+   TERMINAL LOGIC
 ========================================== */
 type Terminal struct {
 	grid         *widget.TextGrid
@@ -226,7 +226,7 @@ func (t *Terminal) printText(text string) {
 }
 
 /* ===============================
-   SYSTEM HELPERS (ORIGINAL - RESTORED)
+   SYSTEM HELPERS
 ================================ */
 func drawProgressBar(term *Terminal, label string, percent int, colorCode string) {
 	barLength := 20; filledLength := (percent * barLength) / 100; bar := ""
@@ -264,7 +264,6 @@ func RequestStoragePermission(term *Terminal) {
 	}
 }
 
-// FUNGSI DOWNLOAD ASLI (TETAP ADA)
 func downloadFile(url string, filepath string) (error, string) {
 	exec.Command("su", "-c", "rm -f "+filepath).Run()
 	cmdStr := fmt.Sprintf("curl -k -L -f --connect-timeout 10 -o %s %s", filepath, url)
@@ -315,12 +314,14 @@ func removeFileRoot(path string) {
 	exec.Command("su", "-c", "rm -f \""+path+"\"").Run()
 }
 
+// [OPTIMIZED] Membersihkan string tanpa membebani memori
 func cleanString(s string) string {
-	s = strings.ReplaceAll(s, "\ufeff", "")
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\n", "")
-	s = strings.ReplaceAll(s, "\r", "")
-	return s
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r == '\ufeff' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s))
 }
 
 func generateRandomID() string {
@@ -343,25 +344,41 @@ func downloadGameConfig(url string, filepath string) error {
 	return cmd.Run()
 }
 
+// [OPTIMIZED] Membaca file secara native (cepat) -> fallback ke root jika gagal
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
+	
+	// PRIORITAS 1: Baca langsung (Sangat Cepat)
 	b, err := os.ReadFile(path)
 	if err == nil {
 		content = string(b)
 	} else {
+		// PRIORITAS 2: Fallback ke Root jika permission denied
 		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
 		out, err2 := cmd.Output()
 		if err2 != nil {
-			return nil, nil, nil, fmt.Errorf("Gagal baca file (Root): %v", err2)
+			return nil, nil, nil, fmt.Errorf("gagal baca file: %v", err2)
 		}
 		content = string(out)
 	}
 
-	var ids, names, displays []string
+	// Estimasi kapasitas array agar tidak resize berulang (Optimasi Memori)
+	estLines := len(content) / 50
+	if estLines < 1 { estLines = 10 }
+	
+	ids := make([]string, 0, estLines)
+	names := make([]string, 0, estLines)
+	displays := make([]string, 0, estLines)
+
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
-		line := cleanString(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") { continue }
+		rawLine := scanner.Text()
+		// Skip baris komentar/kosong dengan cepat
+		if len(rawLine) == 0 || rawLine[0] == '#' { continue }
+		
+		line := cleanString(rawLine)
+		if line == "" { continue }
+		
 		parts := strings.Fields(line)
 		if len(parts) >= 1 {
 			id := parts[0]
@@ -372,7 +389,7 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 			displays = append(displays, name) 
 		}
 	}
-	if len(ids) == 0 { return nil, nil, nil, errors.New("File kosong") }
+	if len(ids) == 0 { return nil, nil, nil, errors.New("file kosong atau format salah") }
 	return ids, names, displays, nil
 }
 
@@ -526,7 +543,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
         },
     )
     
-    // UKURAN TETAP (PENGECUALIAN SESUAI PERMINTAAN)
+    // UKURAN TETAP
     listContainer := container.NewGridWrap(fyne.NewSize(300, 350), listWidget)
     
     showGamePopup(w, overlay, "DAFTAR AKUN",
@@ -551,7 +568,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
                 }
             }
         },
-        fyne.NewSize(350, 450)) // TIDAK DI RUBAH
+        fyne.NewSize(350, 450))
     
     listWidget.OnSelected = func(id int) { 
         selectedIndex = id
@@ -589,18 +606,16 @@ func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 
                 go func() {
                     term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
-                    
-                    // Show masked URL in logs
                     term.Write([]byte(fmt.Sprintf("\x1b[90mDari: %s\x1b[0m\n", maskURL(urlEntry.Text))))
                     
                     if err := downloadGameConfig(urlEntry.Text, OnlineAccFile); err == nil {
                         term.Write([]byte("\x1b[32m[DL] Berhasil diunduh.\x1b[0m\n"))
+                        // [OPTIMIZED] Panggil fungsi logic non-blocking
                         processAccountFileLogic(w, overlay, term, OnlineAccFile, true)
                     } else {
                         term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
                         removeFileRoot(OnlineAccFile)
-                        
-                        // Show error popup and retry
+                        // Show error popup
                         showDownloadErrorPopup(w, overlay, term)
                     }
                 }()
@@ -628,18 +643,27 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
         fyne.NewSize(350, 1500)) // UKURAN 6X
 }
 
+// [OPTIMIZED] Logic utama bridging background process ke UI (Anti-Freeze)
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
-    ids, names, displays, err := parseAccountFile(path)
-    if err != nil {
-        term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-        if isOnline {
-            removeFileRoot(OnlineAccFile)
-        }
-        return
-    }
-    
-    // Show account list popup
-    showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
+	// Jalankan parsing di background (Goroutine)
+	go func() {
+		ids, names, displays, err := parseAccountFile(path)
+		
+		// Kembali ke UI Thread hanya untuk update layar
+		fyne.CurrentApp().QueueUpdate(func() {
+			if err != nil {
+				term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
+				if isOnline {
+					removeFileRoot(OnlineAccFile)
+					showDownloadErrorPopup(w, overlay, term)
+				}
+				return
+			}
+			// Sukses
+			term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
+			showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
+		})
+	}()
 }
 
 func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
@@ -733,29 +757,17 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		})
 		btnBatal.Importance = widget.DangerImportance
 		
-		// LAYOUT TOMBOL: Grid tombol Online/Offline, Spacer, Tombol Batal
+		// LAYOUT TOMBOL
 		content := container.NewVBox(
 			container.NewGridWithColumns(2, btnOffline, btnOnline),
 			layout.NewSpacer(),
 			container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 40), btnBatal)),
 		)
-		
-		// Process offline account file
-		processOfflineAccount := func() {
-			overlayContainer.Hide()
-			term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n"))
-			ids, names, displays, err := parseAccountFile(AccountFile)
-			if err != nil {
-				term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-				return
-			}
-			showAccountListPopup(w, overlayContainer, term, ids, names, displays, false)
-		}
 
 		btnOnline.OnTapped = func() {
 			overlayContainer.Hide()
 			
-			// First, try to use saved URL
+			// Try saved URL
 			var defaultUrl string
 			cmd := exec.Command("su", "-c", "cat "+UrlConfigFile)
 			out, err := cmd.Output()
@@ -773,8 +785,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					} else {
 						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal download dari URL tersimpan.\x1b[0m\n")))
 						removeFileRoot(OnlineAccFile)
-						
-						// Show URL input popup on failure
+						// Show URL input popup
 						showURLInputPopup(w, overlayContainer, term)
 					}
 				}()
@@ -785,14 +796,16 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		}
 		
 		btnOffline.OnTapped = func() { 
-			processOfflineAccount()
+			overlayContainer.Hide()
+			term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n"))
+			// [OPTIMIZED] Gunakan logic non-blocking untuk offline juga
+			processAccountFileLogic(w, overlayContainer, term, AccountFile, false)
 		}
 		
-		// Panggil Popup dengan Content khusus & Ukuran 6x dari asli (Original 150 -> 900)
 		showGamePopup(w, overlayContainer, "SUMBER AKUN", 
 			content,
-			"", nil, // Kosongkan tombol standar btn1
-			"", nil, // Kosongkan tombol standar btn2
+			"", nil, 
+			"", nil, 
 			fyne.NewSize(350, 900)) // UKURAN 6X
 	})
 	
@@ -820,7 +833,7 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 						AppNames[SelectedGameIdx], "GUEST/NEW")
 				})
 			},
-			fyne.NewSize(350, 1080)) // UKURAN 6X (Original ~180 -> 1080)
+			fyne.NewSize(350, 1080)) // UKURAN 6X
 	})
 	
 	// --- SALIN ID ---
@@ -867,12 +880,12 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 					})
 				}
 			},
-			fyne.NewSize(350, 1080)) // UKURAN 6X (Original ~180 -> 1080)
+			fyne.NewSize(350, 1080)) // UKURAN 6X
 	})
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
 
-	// TOMBOL KELUAR (FIX POSISI)
+	// TOMBOL KELUAR
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
 
 	// CONTENT MENU TENGAH (SCROLLABLE)
@@ -883,7 +896,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		widget.NewSeparator(), 
 	)
 	
-	// FIX LAYOUT: Menggunakan Border. Bottom=btnExit memaksa tombol keluar SELALU di bawah.
 	finalMenuLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
 	
 	// PANEL UTAMA
