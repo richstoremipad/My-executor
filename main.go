@@ -321,7 +321,8 @@ func cleanString(s string) string {
 		}
 		return r
 	}, s))
-}
+} 
+// ^^^ PASTIKAN KURUNG KURAWAL TUTUP INI ADA!
 
 
 func generateRandomID() string {
