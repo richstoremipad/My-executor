@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -295,6 +294,7 @@ func runMLBBTask(term *Terminal, taskName string, action func()) {
 /* ==========================================
    CORE PARSING LOGIC (MEMORY BASED)
 ========================================== */
+// Parsing langsung dari byte array (Memori) untuk kecepatan
 func parseRawBytes(content []byte) ([]string, []string, []string, error) {
 	estLines := len(content) / 50
 	if estLines < 1 { estLines = 10 }
@@ -325,6 +325,7 @@ func parseRawBytes(content []byte) ([]string, []string, []string, error) {
 	return ids, names, displays, nil
 }
 
+// Wrapper untuk membaca file lokal
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	// Baca Native (Cepat)
 	b, err := os.ReadFile(path)
@@ -454,7 +455,7 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
     showGamePopup(w, overlay, "ERROR", content, "TUTUP", nil, "ULANGI", func() { showURLInputPopup(w, overlay, term) }, fyne.NewSize(350, 300))
 }
 
-// [SAT SET] Logika Online - Pake cURL langsung ke memori
+// [SAT SET] Logika Online - Pake cURL langsung ke memori (Tanpa file I/O yang bikin lemot)
 func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
     urlEntry := widget.NewEntry()
     urlEntry.SetPlaceHolder("https://example.com/accounts.txt")
@@ -481,8 +482,8 @@ func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                         ids, names, displays, errParse := parseRawBytes(out)
                         
                         if errParse == nil {
-                            // Tampilkan Popup
-                            time.Sleep(100 * time.Millisecond) // Safety delay dikit
+                            // Tampilkan Popup (Tanpa delay file read)
+                            time.Sleep(100 * time.Millisecond) // Safety delay
                             term.Write([]byte(fmt.Sprintf("\x1b[32m[OK] %d Akun siap.\x1b[0m\n", len(ids))))
                             showAccountListPopup(w, overlay, term, ids, names, displays, true)
                             
@@ -828,10 +829,23 @@ func main() {
 	fab := container.NewVBox(layout.NewSpacer(), container.NewPadded(container.NewHBox(layout.NewSpacer(), container.NewGridWrap(fyne.NewSize(65,65), container.NewStack(container.NewPadded(fdImg), fdBtn)))), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "))
 	
 	overlayContainer = container.NewStack(); overlayContainer.Hide()
-	sideMenuContainer, toggleFunc := makeSideMenu(w, term, overlayContainer, func() { toggleMenu() })
+	
+	// FIX: Deklarasi variabel toggleMenu DULUAN sebelum dipakai
+	var toggleMenu func() 
+	
+	// Masukkan variabel toggleMenu (yang masih kosong tapi sudah dideklarasikan) ke dalam closure
+	sideMenuContainer, toggleFunc := makeSideMenu(w, term, overlayContainer, func() { 
+		if toggleMenu != nil {
+			toggleMenu() 
+		}
+	})
+	
+	// Isi nilai toggleMenu dengan fungsi asli yang dikembalikan oleh makeSideMenu
 	toggleMenu = toggleFunc
+	
 	edgeTrigger := NewEdgeTrigger(func() { if !sideMenuContainer.Visible() { toggleMenu() } })
 	
 	w.SetContent(container.NewStack(container.NewBorder(header, bottom, nil, nil, termBox), container.NewHBox(container.NewGridWrap(fyne.NewSize(60, 1000), edgeTrigger), layout.NewSpacer()), fab, sideMenuContainer, overlayContainer))
 	w.ShowAndRun()
 }
+
