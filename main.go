@@ -649,20 +649,25 @@ func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Termi
 	go func() {
 		ids, names, displays, err := parseAccountFile(path)
 		
-		// Kembali ke UI Thread hanya untuk update layar
-		fyne.CurrentApp().QueueUpdate(func() {
-			if err != nil {
-				term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-				if isOnline {
-					removeFileRoot(OnlineAccFile)
-					showDownloadErrorPopup(w, overlay, term)
-				}
-				return
+	// [FIXED] Menghapus QueueUpdate yang menyebabkan error
+func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
+	// Jalankan parsing di background (Goroutine) agar UI tidak freeze
+	go func() {
+		ids, names, displays, err := parseAccountFile(path)
+		
+		// Langsung update UI (Fyne v2 menghandle thread-safety pada Refresh/Write)
+		if err != nil {
+			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
+			if isOnline {
+				removeFileRoot(OnlineAccFile)
+				showDownloadErrorPopup(w, overlay, term)
 			}
-			// Sukses
-			term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
-			showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
-		})
+			return
+		}
+		
+		// Sukses
+		term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
+		showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
 	}()
 }
 
