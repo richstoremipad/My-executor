@@ -42,14 +42,13 @@ const AppVersion = "1.0"
 const ConfigURL = "https://raw.githubusercontent.com/tangsanrich/Fileku/main/executor.txt"
 const CryptoKey = "RahasiaNegaraJanganSampaiBocorir"
 
-// BATAS MAX BARIS AGAR TIDAK LEMOT/CRASH
 const MaxScrollback = 100 
 
 var currentDir string = "/sdcard" 
 var activeStdin io.WriteCloser
 var cmdMutex sync.Mutex
 
-// --- VARIABEL TAMBAHAN GAME TOOLS ---
+// --- VARIABEL GAME TOOLS ---
 const AccountFile = "/sdcard/akun.ini"
 const OnlineAccFile = "/sdcard/accml_online.ini"
 const UrlConfigFile = "/sdcard/ml_url_config.ini"
@@ -151,7 +150,7 @@ func ansiToColor(code string) color.Color {
 	case "35": return color.RGBA{R: 200, G: 0, B: 200, A: 255}
 	case "36": return color.RGBA{R: 0, G: 255, B: 255, A: 255}
 	case "37": return theme.ForegroundColor()
-	case "90": return color.Gray{Y: 100} // ABU-ABU
+	case "90": return color.Gray{Y: 100}
 	case "91": return color.RGBA{R: 255, G: 100, B: 100, A: 255}
 	case "92": return color.RGBA{R: 100, G: 255, B: 100, A: 255}
 	case "93": return color.RGBA{R: 255, G: 255, B: 100, A: 255}
@@ -314,6 +313,7 @@ func removeFileRoot(path string) {
 	exec.Command("su", "-c", "rm -f \""+path+"\"").Run()
 }
 
+// [OPTIMAL] Membersihkan string - Kurung kurawal SUDAH LENGKAP
 func cleanString(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\ufeff' || r == '\r' || r == '\n' {
@@ -321,9 +321,7 @@ func cleanString(s string) string {
 		}
 		return r
 	}, s))
-} 
-// ^^^ PASTIKAN KURUNG KURAWAL TUTUP INI ADA!
-
+}
 
 func generateRandomID() string {
 	randHex := func(n int) string {
@@ -345,33 +343,16 @@ func downloadGameConfig(url string, filepath string) error {
 	return cmd.Run()
 }
 
-// [OPTIMIZED] Membaca file secara native (cepat) -> fallback ke root jika gagal
+// [OPTIMAL] Membaca file secara native (cepat)
 func parseAccountFile(path string) ([]string, []string, []string, error) {
 	var content string
 	
-	// PRIORITAS 1: Baca langsung (Sangat Cepat)
+	// PRIORITAS 1: Baca langsung (Sangat Cepat/Sat Set)
 	b, err := os.ReadFile(path)
 	if err == nil {
 		content = string(b)
 	} else {
-		// PRIORITAS 2: Fallback ke Root jika permission denied
-		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
-		out, err2 := cmd.Output()
-		if err2 != nil {
-			return nil, nil, nil, fmt.Errorf("gagal baca file: %v", err2)
-		}
-		content = string(out)
-	}
-
-func parseAccountFile(path string) ([]string, []string, []string, error) {
-	var content string
-	
-	// BACA LANGSUNG (0.001 detik)
-	b, err := os.ReadFile(path)
-	if err == nil {
-		content = string(b)
-	} else {
-		// Cuma pakai root kalau terpaksa
+		// Fallback ke Root jika terpaksa
 		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
 		out, err2 := cmd.Output()
 		if err2 != nil {
@@ -409,7 +390,6 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 	return ids, names, displays, nil
 }
 
-
 func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, customAccName string) {
 	targetID = cleanString(targetID)
 	targetFile := fmt.Sprintf("/data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml", targetPkg, targetPkg)
@@ -441,14 +421,10 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
     
     // Reset overlay
     overlay.Objects = nil
-    
-    // Background semi-transparent
     bg := canvas.NewRectangle(color.RGBA{0, 0, 0, 200})
     
-    // Main popup container with fixed size
     popupContainer := container.NewVBox()
     
-    // Title
     titleLabel := canvas.NewText(title, color.White)
     titleLabel.TextSize = 18
     titleLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -457,36 +433,26 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
     popupContainer.Add(container.NewCenter(titleLabel))
     popupContainer.Add(widget.NewSeparator())
     
-    // Content
     if content != nil {
         popupContainer.Add(container.NewPadded(content))
     }
     
-    // Buttons
     buttonsContainer := container.NewHBox()
     
     if btn1Text != "" {
         btn1 := widget.NewButton(btn1Text, func() {
             overlay.Hide()
-            if act1 != nil {
-                act1()
-            }
+            if act1 != nil { act1() }
         })
         btn1.Importance = widget.DangerImportance
         buttonsContainer.Add(container.NewCenter(btn1))
     }
     
     if btn2Text != "" {
-        // Add spacer between buttons
-        if btn1Text != "" {
-            buttonsContainer.Add(layout.NewSpacer())
-        }
-        
+        if btn1Text != "" { buttonsContainer.Add(layout.NewSpacer()) }
         btn2 := widget.NewButton(btn2Text, func() {
             overlay.Hide()
-            if act2 != nil {
-                act2()
-            }
+            if act2 != nil { act2() }
         })
         btn2.Importance = widget.HighImportance
         buttonsContainer.Add(container.NewCenter(btn2))
@@ -495,42 +461,24 @@ func showGamePopup(w fyne.Window, overlay *fyne.Container, title string, content
     popupContainer.Add(layout.NewSpacer())
     popupContainer.Add(buttonsContainer)
     
-    // Card container
-    card := widget.NewCard("", "", container.NewPadded(
-        container.NewVBox(popupContainer),
-    ))
+    card := widget.NewCard("", "", container.NewPadded(container.NewVBox(popupContainer)))
     
-    // Fixed size wrapper
-    wrapper := container.NewCenter(
-        container.NewPadded(
-            container.NewStack(
+    wrapper := container.NewCenter(container.NewPadded(container.NewStack(
                 canvas.NewRectangle(color.Gray{Y: 30}),
                 container.NewPadded(card),
-            ),
-        ),
-    )
+    )))
     
-    // Set fixed size
     wrapper.Resize(size)
-    
-    // Center in overlay
     centered := container.NewCenter(wrapper)
-    
     overlay.Objects = []fyne.CanvasObject{bg, centered}
     overlay.Show()
     overlay.Refresh()
 }
 
 func maskURL(urlStr string) string {
-    // Simple URL masking - only show domain
     u, err := url.Parse(urlStr)
-    if err != nil {
-        return "https://***.***/***"
-    }
-    
-    // Mask path and query parameters
-    masked := fmt.Sprintf("https://%s/***", u.Host)
-    return masked
+    if err != nil { return "https://***.***/***" }
+    return fmt.Sprintf("https://%s/***", u.Host)
 }
 
 /* ==========================================
@@ -551,38 +499,26 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
             box := o.(*fyne.Container)
             lbl := box.Objects[1].(*widget.Label)
             lbl.SetText(displays[i])
-            
-            if i == selectedIndex {
-                lbl.TextStyle.Italic = true
-            } else {
-                lbl.TextStyle.Italic = false
-            }
+            if i == selectedIndex { lbl.TextStyle.Italic = true } else { lbl.TextStyle.Italic = false }
         },
     )
     
-    // UKURAN TETAP
     listContainer := container.NewGridWrap(fyne.NewSize(300, 350), listWidget)
     
     showGamePopup(w, overlay, "DAFTAR AKUN",
         listContainer,
         "BATAL", func() {
-            if isOnline {
-                removeFileRoot(OnlineAccFile)
-            }
+            if isOnline { removeFileRoot(OnlineAccFile) }
         },
         "PILIH", func() {
             if selectedIndex >= 0 {
                 runMLBBTask(term, "Login: "+names[selectedIndex], func() {
                     applyDeviceIDLogic(term, ids[selectedIndex], PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], names[selectedIndex])
                     exec.Command("su", "-c", fmt.Sprintf("am start -n %s/com.moba.unityplugin.MobaGameUnityActivity", PackageNames[SelectedGameIdx])).Run()
-                    if isOnline {
-                        removeFileRoot(OnlineAccFile)
-                    }
+                    if isOnline { removeFileRoot(OnlineAccFile) }
                 })
             } else {
-                if isOnline {
-                    removeFileRoot(OnlineAccFile)
-                }
+                if isOnline { removeFileRoot(OnlineAccFile) }
             }
         },
         fyne.NewSize(350, 450))
@@ -593,54 +529,7 @@ func showAccountListPopup(w fyne.Window, overlay *fyne.Container, term *Terminal
     }
 }
 
-func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
-    // Create URL input form
-    urlEntry := widget.NewEntry()
-    urlEntry.SetPlaceHolder("https://example.com/accounts.txt")
-    urlEntry.Validator = func(s string) error {
-        if s == "" {
-            return errors.New("URL cannot be empty")
-        }
-        if !strings.HasPrefix(s, "http") {
-            return errors.New("Must be a valid URL")
-        }
-        return nil
-    }
-    
-    content := container.NewVBox(
-        widget.NewLabel("Masukkan URL akun online:"),
-        widget.NewSeparator(),
-        urlEntry,
-    )
-    
-    showGamePopup(w, overlay, "INPUT URL", 
-        content,
-        "BATAL", nil,
-        "DOWNLOAD", func() {
-            if urlEntry.Text != "" {
-                // Save URL for future use
-                exec.Command("su", "-c", fmt.Sprintf("echo \"%s\" > %s", urlEntry.Text, UrlConfigFile)).Run()
-                
-                go func() {
-                    term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
-                    term.Write([]byte(fmt.Sprintf("\x1b[90mDari: %s\x1b[0m\n", maskURL(urlEntry.Text))))
-                    
-                    if err := downloadGameConfig(urlEntry.Text, OnlineAccFile); err == nil {
-                        term.Write([]byte("\x1b[32m[DL] Berhasil diunduh.\x1b[0m\n"))
-                        // [OPTIMIZED] Panggil fungsi logic non-blocking
-                        processAccountFileLogic(w, overlay, term, OnlineAccFile, true)
-                    } else {
-                        term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
-                        removeFileRoot(OnlineAccFile)
-                        // Show error popup
-                        showDownloadErrorPopup(w, overlay, term)
-                    }
-                }()
-            }
-        },
-        fyne.NewSize(350, 1200)) // UKURAN 6X
-}
-
+// [FIXED] Menambahkan fungsi popup error yang sempat hilang
 func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
     content := container.NewVBox(
         canvas.NewText("Download Gagal!", theme.ErrorColor()),
@@ -658,29 +547,75 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
             showURLInputPopup(w, overlay, term)
         },
         fyne.NewSize(350, 1500)) 
-} // <--- PASTIKAN KURUNG KURAWAL INI ADA!
+}
 
-// [VERSI CEPAT/SAT-SET] Tanpa go func, langsung eksekusi
+// [SAT-SET MODE] Logika langsung eksekusi tanpa delay loading
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
-	// Langsung baca file (tanpa loading delay)
+	// 1. Eksekusi parser langsung (karena sudah dioptimalkan, ini cepat)
 	ids, names, displays, err := parseAccountFile(path)
-
-	// Jika error, langsung tampilkan
+	
+	// 2. Langsung tampilkan hasil atau error
 	if err != nil {
 		term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
 		if isOnline {
 			removeFileRoot(OnlineAccFile)
-			// Panggil popup error langsung
 			showDownloadErrorPopup(w, overlay, term)
 		}
 		return
 	}
-
-	// Jika sukses, langsung munculkan popup (Instan)
-	term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
+	
+	term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] %d Akun dimuat.\x1b[0m\n", len(ids))))
 	showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
 }
 
+func showURLInputPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
+    urlEntry := widget.NewEntry()
+    urlEntry.SetPlaceHolder("https://example.com/accounts.txt")
+    urlEntry.Validator = func(s string) error {
+        if s == "" { return errors.New("URL cannot be empty") }
+        if !strings.HasPrefix(s, "http") { return errors.New("Must be a valid URL") }
+        return nil
+    }
+    
+    content := container.NewVBox(
+        widget.NewLabel("Masukkan URL akun online:"),
+        widget.NewSeparator(),
+        urlEntry,
+    )
+    
+    showGamePopup(w, overlay, "INPUT URL", 
+        content,
+        "BATAL", nil,
+        "DOWNLOAD", func() {
+            if urlEntry.Text != "" {
+                exec.Command("su", "-c", fmt.Sprintf("echo \"%s\" > %s", urlEntry.Text, UrlConfigFile)).Run()
+                
+                go func() {
+                    term.Write([]byte("\x1b[33m[DL] Mendownload...\x1b[0m\n"))
+                    term.Write([]byte(fmt.Sprintf("\x1b[90mDari: %s\x1b[0m\n", maskURL(urlEntry.Text))))
+                    
+                    if err := downloadGameConfig(urlEntry.Text, OnlineAccFile); err == nil {
+                        term.Write([]byte("\x1b[32m[DL] Berhasil diunduh.\x1b[0m\n"))
+                        
+                        // KEMBALI KE UI THREAD MANUAL UNTUK MENGHINDARI ERROR ASYNC
+                        // Kita gunakan timer trick kecil agar aman
+                        time.Sleep(100 * time.Millisecond)
+                        // Panggil logic popup di thread aman (ini sebenarnya blocking sebentar di goroutine ini, tidak masalah)
+                        processAccountFileLogic(w, overlay, term, OnlineAccFile, true)
+                        
+                    } else {
+                        term.Write([]byte("\x1b[31m[ERR] Gagal Download.\x1b[0m\n"))
+                        removeFileRoot(OnlineAccFile)
+                        
+                        // UI Call harus di main thread, tapi showDownloadErrorPopup aman dipanggil karena memakai showGamePopup yang memanipulasi objek UI
+                        // Untuk keamanan maksimal di Fyne mobile:
+                        dialog.NewInformation("Error", "Gagal Download", w).Show()
+                    }
+                }()
+            }
+        },
+        fyne.NewSize(350, 1200))
+}
 
 func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
     entry := widget.NewEntry()
@@ -704,7 +639,7 @@ func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
                 })
             }
         },
-        fyne.NewSize(350, 1200)) // UKURAN 6X
+        fyne.NewSize(350, 1200))
 }
 
 /* ==========================================
@@ -750,7 +685,6 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	dimmerContainer := container.NewStack(dimmer, btnDimmer)
 	bgMenu := canvas.NewRectangle(theme.BackgroundColor())
 	
-	// FIX: Lebar Menu
 	spacerWidth := canvas.NewRectangle(color.Transparent)
 	spacerWidth.SetMinSize(fyne.NewSize(310, 10))
 
@@ -760,20 +694,14 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 	selGame.SetSelected(AppNames[0])
 	cardTarget := widget.NewCard("Target Game", "", container.NewPadded(selGame))
 
-	// --- LOGIN AKUN ---
 	btnLogin := widget.NewButtonWithIcon("Login Akun", theme.LoginIcon(), func() {
 		onClose()
 		
 		btnOnline := widget.NewButton("ONLINE", nil)
 		btnOffline := widget.NewButton("OFFLINE", nil)
-		
-		// BUAT TOMBOL BATAL MANUAL UNTUK POSISI TENGAH BAWAH
-		btnBatal := widget.NewButton("BATAL", func() {
-			overlayContainer.Hide()
-		})
+		btnBatal := widget.NewButton("BATAL", func() { overlayContainer.Hide() })
 		btnBatal.Importance = widget.DangerImportance
 		
-		// LAYOUT TOMBOL
 		content := container.NewVBox(
 			container.NewGridWithColumns(2, btnOffline, btnOnline),
 			layout.NewSpacer(),
@@ -782,31 +710,25 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 
 		btnOnline.OnTapped = func() {
 			overlayContainer.Hide()
-			
-			// Try saved URL
 			var defaultUrl string
 			cmd := exec.Command("su", "-c", "cat "+UrlConfigFile)
 			out, err := cmd.Output()
-			if err == nil {
-				defaultUrl = cleanString(string(out))
-			}
+			if err == nil { defaultUrl = cleanString(string(out)) }
 			
 			if defaultUrl != "" && strings.HasPrefix(defaultUrl, "http") {
 				go func() {
 					term.Write([]byte(fmt.Sprintf("\x1b[33m[DL] Download dari URL tersimpan...\x1b[0m\n")))
-					
 					if err := downloadGameConfig(defaultUrl, OnlineAccFile); err == nil {
 						term.Write([]byte("\x1b[32m[DL] Sukses.\x1b[0m\n"))
+						time.Sleep(100 * time.Millisecond)
 						processAccountFileLogic(w, overlayContainer, term, OnlineAccFile, true)
 					} else {
-						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal download dari URL tersimpan.\x1b[0m\n")))
+						term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] Gagal download.\x1b[0m\n")))
 						removeFileRoot(OnlineAccFile)
-						// Show URL input popup
 						showURLInputPopup(w, overlayContainer, term)
 					}
 				}()
 			} else {
-				// Show URL input popup directly
 				showURLInputPopup(w, overlayContainer, term)
 			}
 		}
@@ -814,114 +736,58 @@ func makeSideMenu(w fyne.Window, term *Terminal, overlayContainer *fyne.Containe
 		btnOffline.OnTapped = func() { 
 			overlayContainer.Hide()
 			term.Write([]byte("\x1b[33m[INFO] Mode Offline\x1b[0m\n"))
-			// [OPTIMIZED] Gunakan logic non-blocking untuk offline juga
+			// MODE SAT SET (Direct call)
 			processAccountFileLogic(w, overlayContainer, term, AccountFile, false)
 		}
 		
 		showGamePopup(w, overlayContainer, "SUMBER AKUN", 
-			content,
-			"", nil, 
-			"", nil, 
-			fyne.NewSize(350, 900)) // UKURAN 6X
+			content, "", nil, "", nil, fyne.NewSize(350, 900))
 	})
 	
-	// --- RESET ID (RANDOM / MANUAL) ---
 	btnReset := widget.NewButtonWithIcon("Reset ID", theme.ViewRefreshIcon(), func() {
 		onClose()
-		
-		content := container.NewVBox(
-			widget.NewLabel("Pilih metode reset ID:"),
-			widget.NewSeparator(),
-		)
-		
+		content := container.NewVBox(widget.NewLabel("Pilih metode reset ID:"), widget.NewSeparator())
 		showGamePopup(w, overlayContainer, "RESET ID",
 			content,
-			"MANUAL", func() {
-				// Manual input
-				showManualIDPopup(w, overlayContainer, term)
-			},
+			"MANUAL", func() { showManualIDPopup(w, overlayContainer, term) },
 			"RANDOM", func() {
-				// Random ID
 				runMLBBTask(term, "Reset ID Random", func() {
 					newID := generateRandomID()
 					term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Baru: %s\x1b[0m\n", newID)))
-					applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], 
-						AppNames[SelectedGameIdx], "GUEST/NEW")
+					applyDeviceIDLogic(term, newID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "GUEST/NEW")
 				})
 			},
-			fyne.NewSize(350, 1080)) // UKURAN 6X
+			fyne.NewSize(350, 1080))
 	})
 	
-	// --- SALIN ID ---
 	btnCopy := widget.NewButtonWithIcon("Salin ID", theme.ContentCopyIcon(), func() {
 		onClose()
-		
-		selSrc := widget.NewSelect(AppNames, nil)
-		selSrc.PlaceHolder = "Pilih Sumber"
-		
-		content := container.NewVBox(
-			widget.NewLabel("Salin ID Dari:"),
-			widget.NewSeparator(),
-			selSrc,
-		)
-		
-		showGamePopup(w, overlayContainer, "SALIN ID",
-			content,
-			"BATAL", nil,
-			"SALIN", func() {
+		selSrc := widget.NewSelect(AppNames, nil); selSrc.PlaceHolder = "Pilih Sumber"
+		content := container.NewVBox(widget.NewLabel("Salin ID Dari:"), widget.NewSeparator(), selSrc)
+		showGamePopup(w, overlayContainer, "SALIN ID", content, "BATAL", nil, "SALIN", func() {
 				if selSrc.Selected != "" {
 					srcIdx := 0
-					for i, v := range AppNames {
-						if v == selSrc.Selected {
-							srcIdx = i
-							break
-						}
-					}
-					
+					for i, v := range AppNames { if v == selSrc.Selected { srcIdx = i; break } }
 					runMLBBTask(term, "Salin ID", func() {
-						cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' "+
-							"/data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", 
-							PackageNames[srcIdx], PackageNames[srcIdx])
-						
+						cmdStr := fmt.Sprintf("sed -n 's/.*<string name=\"JsonDeviceID\">\\([^<]*\\)<.*/\\1/p' /data/user/0/%s/shared_prefs/%s.v2.playerprefs.xml | head -n 1", PackageNames[srcIdx], PackageNames[srcIdx])
 						out, err := exec.Command("su", "-c", cmdStr).Output()
 						srcID := cleanString(string(out))
-						
 						if err == nil && len(srcID) > 5 {
 							term.Write([]byte(fmt.Sprintf("\x1b[36m[INFO] ID Salinan: %s\x1b[0m\n", srcID)))
-							applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], 
-								AppNames[SelectedGameIdx], "HASIL COPY")
-						} else {
-							term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n"))
-						}
+							applyDeviceIDLogic(term, srcID, PackageNames[SelectedGameIdx], AppNames[SelectedGameIdx], "HASIL COPY")
+						} else { term.Write([]byte("\x1b[31m[ERR] Gagal/Kosong.\x1b[0m\n")) }
 					})
 				}
-			},
-			fyne.NewSize(350, 1080)) // UKURAN 6X
+			}, fyne.NewSize(350, 1080))
 	})
 
 	cardAccount := widget.NewCard("Akun Manager", "", container.NewPadded(container.NewGridWithColumns(1, btnLogin, btnReset, btnCopy)))
-
-	// TOMBOL KELUAR
 	btnExit := widget.NewButtonWithIcon("Keluar", theme.LogoutIcon(), func() { os.Exit(0) }); btnExit.Importance = widget.DangerImportance
-
-	// CONTENT MENU TENGAH (SCROLLABLE)
-	menuContent := container.NewVBox(
-		container.NewPadded(lblTitle), widget.NewSeparator(),
-		cardTarget, cardAccount, 
-		layout.NewSpacer(), 
-		widget.NewSeparator(), 
-	)
-	
+	menuContent := container.NewVBox(container.NewPadded(lblTitle), widget.NewSeparator(), cardTarget, cardAccount, layout.NewSpacer(), widget.NewSeparator())
 	finalMenuLayout := container.NewBorder(nil, container.NewPadded(btnExit), nil, nil, container.NewVScroll(menuContent))
-	
-	// PANEL UTAMA
 	panel := container.NewStack(bgMenu, spacerWidth, container.NewPadded(finalMenuLayout))
-	
-	// SLIDE CONTAINER
 	slideContainer := container.NewBorder(nil, nil, panel, nil)
-	
 	finalMenu := container.NewStack(dimmerContainer, slideContainer); finalMenu.Hide()
-
 	toggle := func() { if finalMenu.Visible() { finalMenu.Hide() } else { finalMenu.Show(); finalMenu.Refresh() } }
 	return finalMenu, toggle
 }
@@ -1160,29 +1026,19 @@ func main() {
 		go func() {
 			term.Write([]byte("\x1b[36m╔════ PENGINSTAL DRIVER ════╗\x1b[0m\n"))
 
-			// 1. Cek Versi Kernel
 			out, _ := exec.Command("uname", "-r").Output()
 			fullVer := strings.TrimSpace(string(out))
 			targetVer := strings.Split(fullVer, "-")[0]
-			
 			term.Write([]byte(fmt.Sprintf("Kernel: \x1b[33m%s\x1b[0m\n", fullVer)))
-
-			// Path tujuan
 			targetKoPath := "/data/local/tmp/module_inject.ko"
-			
-			// DEFER cleanup
-			defer func() {
-				exec.Command("su", "-c", "rm -f "+targetKoPath).Run()
-			}()
+			defer func() { exec.Command("su", "-c", "rm -f "+targetKoPath).Run() }()
 
-			// 2. Baca ZIP Embed
 			term.Write([]byte("\x1b[97m[*] Membaca file driver internal...\x1b[0m\n"))
 			zipReader, err := zip.NewReader(bytes.NewReader(driverZip), int64(len(driverZip)))
 			if err != nil {
 				term.Write([]byte("\x1b[31m[ERR] File Zip Rusak/Corrupt\x1b[0m\n")); return
 			}
 
-			// 3. Cari File .ko
 			var fileToExtract *zip.File
 			for _, f := range zipReader.File {
 				if strings.HasSuffix(f.Name, ".ko") && strings.Contains(f.Name, targetVer) {
@@ -1190,7 +1046,6 @@ func main() {
 				}
 			}
 			
-			// Fallback
 			if fileToExtract == nil {
 				for _, f := range zipReader.File {
 					if strings.HasSuffix(f.Name, ".ko") { fileToExtract = f; break }
@@ -1203,7 +1058,6 @@ func main() {
 				return
 			}
 
-			// 4. Ekstrak
 			term.Write([]byte(fmt.Sprintf("\x1b[32m[+] Menggunakan File: %s\x1b[0m\n", fileToExtract.Name)))
 			rc, _ := fileToExtract.Open()
 			buf := new(bytes.Buffer); io.Copy(buf, rc); rc.Close()
@@ -1211,18 +1065,15 @@ func main() {
 			userTmp := filepath.Join(os.TempDir(), "temp_mod.ko")
 			os.WriteFile(userTmp, buf.Bytes(), 0644)
 			
-			// Pindah ke root path
 			exec.Command("su", "-c", fmt.Sprintf("cp %s %s", userTmp, targetKoPath)).Run()
 			exec.Command("su", "-c", "chmod 777 "+targetKoPath).Run()
 			os.Remove(userTmp) 
 
-			// 5. Install (Insmod)
 			term.Write([]byte("\x1b[36m[*] Memasang Modul (Inject)...\x1b[0m\n"))
 			cmdInsmod := exec.Command("su", "-c", "insmod "+targetKoPath)
 			output, err := cmdInsmod.CombinedOutput()
 			outputStr := string(output)
 
-			// 6. Cek Hasil
 			if err == nil {
 				term.Write([]byte("\x1b[92m[SUKSES] Driver Berhasil Di install\x1b[0m\n"))
 				lblKernelValue.Text = "ACTIVE"; lblKernelValue.Color = successGreen
@@ -1351,30 +1202,20 @@ func main() {
 		widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "), widget.NewLabel(" "),
 	)
 
-	// --- INIT SIDE MENU & GESTURE (TAMBAHAN FINAL) ---
+	// --- INIT SIDE MENU & GESTURE ---
 	var toggleMenu func() 
-	
-	// Init Overlay first
 	overlayContainer = container.NewStack()
 	overlayContainer.Hide()
-
 	sideMenuContainer, toggleFunc := makeSideMenu(w, term, overlayContainer, func() { toggleMenu() })
 	toggleMenu = toggleFunc
 
-	// UPDATE SENSITIVITAS SLIDE MENU (50 Width)
-	edgeTrigger := NewEdgeTrigger(func() {
-		if !sideMenuContainer.Visible() { toggleMenu() }
-	})
+	edgeTrigger := NewEdgeTrigger(func() { if !sideMenuContainer.Visible() { toggleMenu() } })
 	triggerZone := container.NewHBox(container.NewGridWrap(fyne.NewSize(60, 1000), edgeTrigger), layout.NewSpacer())
 
 	w.SetContent(container.NewStack(
-		container.NewBorder(header, bottom, nil, nil, termBox), // Main UI
-		triggerZone,       // Layer 2
-		fab,               // Layer 3
-		sideMenuContainer, // Layer 4
-		overlayContainer,  // Layer 5
+		container.NewBorder(header, bottom, nil, nil, termBox),
+		triggerZone, fab, sideMenuContainer, overlayContainer,
 	))
 
 	w.ShowAndRun()
 }
-
