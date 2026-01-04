@@ -640,22 +640,16 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
         "COBA LAGI", func() {
             showURLInputPopup(w, overlay, term)
         },
-        fyne.NewSize(350, 1500)) // UKURAN 6X
-}
+        fyne.NewSize(350, 1500)) 
+} // <--- PASTIKAN KURUNG KURAWAL INI ADA!
 
-// [OPTIMIZED] Logic utama bridging background process ke UI (Anti-Freeze)
+// [FIXED] Versi tanpa QueueUpdate
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
 	// Jalankan parsing di background (Goroutine)
 	go func() {
 		ids, names, displays, err := parseAccountFile(path)
 		
-	// [FIXED] Menghapus QueueUpdate yang menyebabkan error
-func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
-	// Jalankan parsing di background (Goroutine) agar UI tidak freeze
-	go func() {
-		ids, names, displays, err := parseAccountFile(path)
-		
-		// Langsung update UI (Fyne v2 menghandle thread-safety pada Refresh/Write)
+		// KITA HAPUS QueueUpdate DAN JALANKAN LANGSUNG
 		if err != nil {
 			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
 			if isOnline {
@@ -670,6 +664,7 @@ func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Termi
 		showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
 	}()
 }
+
 
 func showManualIDPopup(w fyne.Window, overlay *fyne.Container, term *Terminal) {
     entry := widget.NewEntry()
