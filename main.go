@@ -314,7 +314,6 @@ func removeFileRoot(path string) {
 	exec.Command("su", "-c", "rm -f \""+path+"\"").Run()
 }
 
-// [OPTIMIZED] Membersihkan string tanpa membebani memori
 func cleanString(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\ufeff' || r == '\r' || r == '\n' {
@@ -323,6 +322,7 @@ func cleanString(s string) string {
 		return r
 	}, s))
 }
+
 
 func generateRandomID() string {
 	randHex := func(n int) string {
@@ -362,7 +362,23 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 		content = string(out)
 	}
 
-	// Estimasi kapasitas array agar tidak resize berulang (Optimasi Memori)
+func parseAccountFile(path string) ([]string, []string, []string, error) {
+	var content string
+	
+	// BACA LANGSUNG (0.001 detik)
+	b, err := os.ReadFile(path)
+	if err == nil {
+		content = string(b)
+	} else {
+		// Cuma pakai root kalau terpaksa
+		cmd := exec.Command("su", "-c", "cat \""+path+"\"")
+		out, err2 := cmd.Output()
+		if err2 != nil {
+			return nil, nil, nil, fmt.Errorf("gagal baca: %v", err2)
+		}
+		content = string(out)
+	}
+
 	estLines := len(content) / 50
 	if estLines < 1 { estLines = 10 }
 	
@@ -373,7 +389,6 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
 		rawLine := scanner.Text()
-		// Skip baris komentar/kosong dengan cepat
 		if len(rawLine) == 0 || rawLine[0] == '#' { continue }
 		
 		line := cleanString(rawLine)
@@ -389,9 +404,10 @@ func parseAccountFile(path string) ([]string, []string, []string, error) {
 			displays = append(displays, name) 
 		}
 	}
-	if len(ids) == 0 { return nil, nil, nil, errors.New("file kosong atau format salah") }
+	if len(ids) == 0 { return nil, nil, nil, errors.New("file kosong") }
 	return ids, names, displays, nil
 }
+
 
 func applyDeviceIDLogic(term *Terminal, targetID, targetPkg, targetAppName, customAccName string) {
 	targetID = cleanString(targetID)
@@ -643,26 +659,25 @@ func showDownloadErrorPopup(w fyne.Window, overlay *fyne.Container, term *Termin
         fyne.NewSize(350, 1500)) 
 } // <--- PASTIKAN KURUNG KURAWAL INI ADA!
 
-// [FIXED] Versi tanpa QueueUpdate
+// [VERSI CEPAT/SAT-SET] Tanpa go func, langsung eksekusi
 func processAccountFileLogic(w fyne.Window, overlay *fyne.Container, term *Terminal, path string, isOnline bool) {
-	// Jalankan parsing di background (Goroutine)
-	go func() {
-		ids, names, displays, err := parseAccountFile(path)
-		
-		// KITA HAPUS QueueUpdate DAN JALANKAN LANGSUNG
-		if err != nil {
-			term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
-			if isOnline {
-				removeFileRoot(OnlineAccFile)
-				showDownloadErrorPopup(w, overlay, term)
-			}
-			return
+	// Langsung baca file (tanpa loading delay)
+	ids, names, displays, err := parseAccountFile(path)
+
+	// Jika error, langsung tampilkan
+	if err != nil {
+		term.Write([]byte(fmt.Sprintf("\x1b[31m[ERR] %s\x1b[0m\n", err.Error())))
+		if isOnline {
+			removeFileRoot(OnlineAccFile)
+			// Panggil popup error langsung
+			showDownloadErrorPopup(w, overlay, term)
 		}
-		
-		// Sukses
-		term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
-		showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
-	}()
+		return
+	}
+
+	// Jika sukses, langsung munculkan popup (Instan)
+	term.Write([]byte(fmt.Sprintf("\x1b[32m[SUKSES] Memuat %d akun.\x1b[0m\n", len(ids))))
+	showAccountListPopup(w, overlay, term, ids, names, displays, isOnline)
 }
 
 
